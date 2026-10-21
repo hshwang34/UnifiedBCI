@@ -28,18 +28,20 @@ recordings.
 - [ ] Welcome window offers **Open project**, **Explore an example**, **Connect hardware**
       (the last is present but disabled with an explanation until phase 2).
 - [ ] "Explore an example" creates a project on disk from the bundled recording and opens it;
-      no network, no terminal, no hardware.
+      creation reads only from the app bundle (no network code on that path), no terminal, no hardware.
 - [ ] Project window: sidebar with Recordings · Protocols · Pipelines · Results · Live Test
       (Protocols/Live Test present but empty with "coming in phase 2/3" copy).
 - [ ] Recording detail shows source (dataset, subject, runs, license/citation), channel map
       with declared labels and units, sample rate, segment list (one per run), and the event
-      table (cue label, onset, run) — nothing inferred from channel count.
-- [ ] "Evaluate" runs the reference CSP+rLDA and the log-variance baseline in the worker with
-      visible progress; the result view shows balanced accuracy, accuracy with a 95 % trial-level
+      table (cue label, onset, run). Labels and units are displayed exactly as stored; a recording
+      without declared labels shows "undeclared", never a 10-20 guess.
+- [ ] "Evaluate" runs the reference CSP+rLDA and the log-variance baseline in the worker with a
+      determinate progress indicator updated at least once per stage (fit, CV, holdout); the result view shows balanced accuracy, accuracy with a 95 % trial-level
       interval, confusion matrix, class counts per split, grouped-by-run split policy, seed,
       exclusions, evidence type (same-session), and the dataset warning.
-- [ ] Re-running with the same seed reproduces the stored result exactly; changing the seed
-      creates a new result record and both remain listed.
+- [ ] Re-running with the same recording, pipeline config and seed produces a byte-identical
+      `evaluation.json` (same machine, same bundled worker) and is stored as a *reproduction*
+      linked to the original; changing the seed creates a new result record. All remain listed.
 - [ ] Export writes a folder with samples (documented binary), `events.jsonl`, channel map,
       pipeline config, model arrays (`.npz`), and `evaluation.json`; a Python one-liner in the
       docs reads it without the app.
@@ -101,6 +103,16 @@ band-power recipe, any claim about the user's own motor imagery.
   personal Team ID, `--options runtime --timestamp`, no `--deep`; hardened runtime on; no
   entitlements unless the smoke test crashes; notarize + staple. Location under `Resources/`
   is fine — my earlier "must move to Frameworks" note was wrong.
+
+- Test plan: `001-test-plan.md`. Design requirements it imposes: `evaluation.json` contains
+  no wall-clock/UUID/duration fields (those go to `result.meta.json`) so byte-identity is
+  testable; the project store exposes a `CommitHook` seam (afterTmpWrite / afterFsync /
+  afterRename / afterManifestAppend) so crash tests kill a helper process at a named point
+  instead of sleeping; export concatenates chunks per segment into `samples.f64` + header so
+  a numpy one-liner (extracted from the docs by the test itself) reads it.
+- Same-seed rerun: we *do* re-run (that is the reproducibility evidence the PRD wants), verify
+  byte-identity, and store it as a reproduction record pointing at the original.
+- "Under 15 minutes without a terminal" is PRD gate 2 (five testers); not ticked from a PR.
 
 ## Risks / what could go wrong for users
 - ~22 trials per class gives a ±15-point interval; a user could read 70 % as "it works".
