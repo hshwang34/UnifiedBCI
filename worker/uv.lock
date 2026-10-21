@@ -8,28 +8,32 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "brainflow" },
-    { name = "mne" },
     { name = "numpy" },
     { name = "scikit-learn" },
     { name = "scipy" },
+    { name = "threadpoolctl" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "mne" },
     { name = "pytest" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "brainflow", specifier = ">=5.12" },
-    { name = "mne", specifier = ">=1.8" },
     { name = "numpy", specifier = ">=2.0,<3" },
     { name = "scikit-learn", specifier = ">=1.5" },
     { name = "scipy", specifier = ">=1.13" },
+    { name = "threadpoolctl", specifier = ">=3" },
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8" }]
+dev = [
+    { name = "mne", specifier = ">=1.8" },
+    { name = "pytest", specifier = ">=8" },
+]
 
 [[package]]
 name = "brainflow"

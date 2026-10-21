@@ -1,29 +1,69 @@
-"""Worker entry point: reads requests from stdin, answers on stdout, logs to stderr.
+"""Worker entry point: reads requests from stdin, answers on the protocol stream,
+logs to stderr.
 
-The macOS app owns this process. It must never block on anything except stdin,
-must never print non-protocol text to stdout, and should exit cleanly on EOF or a
-`shutdown` request so the app can restart it after a failure.
+The macOS app owns this process. Startup splits the original stdout into a private
+protocol stream and points fd 1 at stderr, so no library can print into the framing.
+A reader thread keeps `ping` / `cancel` / `shutdown` responsive while a fit runs on
+the main thread; a watchdog exits when the parent dies; a broken pipe exits quietly.
 """
 
 from __future__ import annotations
 
 import os
-import platform
-import sys
-import time
-import traceback
-from importlib import metadata
-from typing import Any, Callable
 
-from . import pipeline
-from .protocol import PROTOCOL_VERSION, ProtocolError, Request, error, event, response
+# BLAS thread pools are pinned before numpy is imported: one thread keeps reductions
+# bit-reproducible run to run (the brief requires byte-identical repeat evaluations)
+# and keeps a fit from competing with acquisition. The Swift launcher sets the same
+# variables; `setdefault` keeps either side from overriding an explicit operator choice.
+WORKER_THREADS = os.environ.get("BCI_WORKER_THREADS", "1")
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+             "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_var, WORKER_THREADS)
 
-Handler = Callable[[Request, Callable[[str, Any], None]], Any]
+import io  # noqa: E402
+import platform  # noqa: E402
+import queue  # noqa: E402
+import sys  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+import traceback  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
+from importlib import metadata  # noqa: E402
+from typing import Any, Callable, Iterable, TextIO  # noqa: E402
+
+import threadpoolctl  # noqa: E402
+
+from . import pipeline  # noqa: E402
+from .protocol import (  # noqa: E402
+    CONTROL_METHODS,
+    PROTOCOL_VERSION,
+    Cancelled,
+    ProtocolError,
+    Request,
+    error,
+    event,
+    response,
+)
+
+# Belt and braces for pools that were created before the environment variables took
+# effect (e.g. when this module is imported by tests after numpy).
+_THREADPOOL_LIMIT = threadpoolctl.threadpool_limits(limits=int(WORKER_THREADS))
+
+
+@dataclass(frozen=True)
+class Context:
+    """What a handler may do besides return a result."""
+
+    emit: Callable[[str, Any], None]
+    check_cancelled: Callable[[], None]
+
+
+Handler = Callable[[Request, Context], Any]
 
 
 def _versions() -> dict[str, str]:
     out = {"python": platform.python_version()}
-    for dist in ("numpy", "scipy", "scikit-learn", "mne", "brainflow"):
+    for dist in ("numpy", "scipy", "scikit-learn", "brainflow"):
         try:
             out[dist] = metadata.version(dist)
         except metadata.PackageNotFoundError:
@@ -31,23 +71,19 @@ def _versions() -> dict[str, str]:
     return out
 
 
-def handle_hello(req: Request, emit) -> dict[str, Any]:
+def hello() -> dict[str, Any]:
     return {
         "protocol": PROTOCOL_VERSION,
         "pid": os.getpid(),
         "versions": _versions(),
-        "methods": sorted(HANDLERS),
+        "methods": sorted(set(HANDLERS) | CONTROL_METHODS),
     }
 
 
-def handle_ping(req: Request, emit) -> dict[str, Any]:
-    return {"pong": True, "echo": req.params.get("echo"), "t": time.time()}
-
-
-def handle_fit_evaluate_synthetic(req: Request, emit) -> dict[str, Any]:
+def handle_fit_evaluate_synthetic(req: Request, ctx: Context) -> dict[str, Any]:
     p = req.params
     sfreq = float(p.get("sfreq", 125.0))
-    X, y, groups = pipeline.make_synthetic_mi(
+    segments = pipeline.make_synthetic_runs(
         n_runs=int(p.get("n_runs", 4)),
         trials_per_run=int(p.get("trials_per_run", 20)),
         n_channels=int(p.get("n_channels", 16)),
@@ -57,65 +93,180 @@ def handle_fit_evaluate_synthetic(req: Request, emit) -> dict[str, Any]:
     )
     t0 = time.monotonic()
     record = pipeline.fit_evaluate(
-        X, y, groups, sfreq=sfreq,
+        segments,
+        window=(float(p.get("window_offset_s", 0.5)), float(p.get("window_length_s", 2.0))),
         seed=int(p.get("seed", 0)),
         n_components=int(p.get("csp_components", 4)),
-        progress=lambda d: emit("progress", d),
+        progress=lambda d: ctx.emit("progress", d),
+        check_cancelled=ctx.check_cancelled,
     )
+    n_trials = sum(len(s.events) for s in segments)
     record["data_source"] = {
         "kind": "synthetic",
         "warning": "Synthetic data exercises the pipeline only; it is not evidence about any participant.",
-        "shape": list(X.shape),
+        "n_runs": len(segments),
+        "n_trials": n_trials,
+        "n_channels": int(segments[0].data.shape[0]),
     }
     record["elapsed_seconds"] = time.monotonic() - t0
     return record
 
 
-def handle_shutdown(req: Request, emit) -> dict[str, Any]:
-    return {"bye": True}
-
-
 HANDLERS: dict[str, Handler] = {
-    "hello": handle_hello,
-    "ping": handle_ping,
     "fit_evaluate_synthetic": handle_fit_evaluate_synthetic,
-    "shutdown": handle_shutdown,
 }
 
 
-def _write(line: str) -> None:
-    sys.stdout.write(line + "\n")
-    sys.stdout.flush()
+def open_protocol_stream() -> TextIO:
+    """Duplicate fd 1 for protocol output, then point fd 1 at stderr so stray prints
+    from any library (and `sys.stdout`) land in the log, never in the framing."""
+    proto = os.fdopen(os.dup(1), "w", buffering=1, encoding="utf-8", newline="\n")
+    os.dup2(2, 1)
+    sys.stdout = sys.stderr
+    return proto
 
 
-def serve(stdin=None, write=_write) -> int:
-    stdin = stdin or sys.stdin
-    write(event("ready", handle_hello(Request(id="", method="hello"), None)))
-    for raw in stdin:
-        line = raw.strip()
-        if not line:
-            continue
-        req_id: str | None = None
+class Server:
+    """One worker session: a reader thread for requests, the calling thread for work."""
+
+    def __init__(self, stdin: Iterable[str], write: Callable[[str], None], watch_parent: bool = False):
+        self._stdin = stdin
+        self._write_fn = write
+        self._watch_parent = watch_parent
+        self._lock = threading.Lock()
+        self._queue: queue.Queue[Request | None] = queue.Queue()
+        # Request id -> cancel flag, for every request that is queued or running.
+        self._active: dict[str, threading.Event] = {}
+        self._shutting_down = False
+        self._pipe_broken = False
+
+    # -- output ---------------------------------------------------------------
+
+    def write(self, line: str) -> None:
+        with self._lock:
+            if self._pipe_broken:
+                return
+            try:
+                self._write_fn(line)
+            except (BrokenPipeError, ValueError, OSError):
+                # The app went away (or closed our stdout). Nothing to report to; stop quietly.
+                self._pipe_broken = True
+                self._shutting_down = True
+                self._cancel_all()
+                self._queue.put(None)
+
+    # -- control ---------------------------------------------------------------
+
+    def _cancel_all(self) -> None:
+        for flag in self._active.values():
+            flag.set()
+
+    def _handle_control(self, req: Request) -> None:
+        if req.method == "hello":
+            self.write(response(req.id, hello()))
+        elif req.method == "ping":
+            self.write(response(req.id, {"pong": True, "echo": req.params.get("echo"), "t": time.time()}))
+        elif req.method == "cancel":
+            target = req.params.get("id")
+            flag = self._active.get(target) if isinstance(target, str) else None
+            if flag is not None:
+                flag.set()
+            self.write(response(req.id, {"cancelled": flag is not None}))
+        elif req.method == "shutdown":
+            self._shutting_down = True
+            self._cancel_all()
+            self.write(response(req.id, {"bye": True}))
+
+    def _read_loop(self) -> None:
         try:
-            req = Request.parse(line)
-            req_id = req.id
-            handler = HANDLERS.get(req.method)
-            if handler is None:
-                raise ProtocolError("unknown_method", f"no such method: {req.method}")
-            result = handler(req, lambda name, data: write(event(name, data, req.id)))
-            write(response(req.id, result))
-            if req.method == "shutdown":
-                return 0
-        except ProtocolError as exc:
-            write(error(req_id, exc.code, exc.message))
+            for raw in self._stdin:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    req = Request.parse(line)
+                except ProtocolError as exc:
+                    self.write(error(exc.request_id, exc.code, exc.message))
+                    continue
+                if req.method in CONTROL_METHODS:
+                    self._handle_control(req)
+                elif req.method in HANDLERS:
+                    if req.id in self._active:
+                        self.write(error(req.id, "bad_request", f"request id {req.id!r} is already in flight"))
+                        continue
+                    self._active[req.id] = threading.Event()
+                    self._queue.put(req)
+                else:
+                    self.write(error(req.id, "unknown_method", f"no such method: {req.method}"))
+                if self._shutting_down:
+                    break
+        except Exception:  # noqa: BLE001 - a dead stdin is treated like EOF
+            print(traceback.format_exc(), file=sys.stderr, flush=True)
+        finally:
+            self._shutting_down = True
+            self._cancel_all()
+            self._queue.put(None)
+
+    def _watch_parent_loop(self) -> None:
+        parent = os.getppid()
+        while True:
+            time.sleep(0.5)
+            if os.getppid() != parent:
+                os._exit(0)
+
+    # -- work ------------------------------------------------------------------
+
+    def _run(self, req: Request) -> None:
+        flag = self._active[req.id]
+
+        def check_cancelled() -> None:
+            if flag.is_set():
+                raise Cancelled()
+
+        ctx = Context(emit=lambda name, data: self.write(event(name, data, req.id)), check_cancelled=check_cancelled)
+        try:
+            check_cancelled()
+            result = HANDLERS[req.method](req, ctx)
+            check_cancelled()
+            self.write(response(req.id, result))
+        except Cancelled:
+            self.write(error(req.id, "cancelled", "request was cancelled"))
         except Exception as exc:  # noqa: BLE001 - surface anything to the app, keep serving
             print(traceback.format_exc(), file=sys.stderr, flush=True)
-            write(error(req_id, "internal", f"{type(exc).__name__}: {exc}"))
-    return 0
+            self.write(error(req.id, "internal", f"{type(exc).__name__}: {exc}"))
+        finally:
+            self._active.pop(req.id, None)
+
+    def serve(self) -> int:
+        self.write(event("ready", hello()))
+        threading.Thread(target=self._read_loop, name="worker-reader", daemon=True).start()
+        if self._watch_parent:
+            threading.Thread(target=self._watch_parent_loop, name="worker-parent-watchdog", daemon=True).start()
+        while True:
+            req = self._queue.get()
+            if req is None:
+                return 0
+            self._run(req)
+
+
+def serve(stdin: Iterable[str] | None = None, write: Callable[[str], None] | None = None,
+          watch_parent: bool = False) -> int:
+    """Run one session. Tests pass an iterable of lines and a sink; the real entry
+    point passes the process stdin and the private protocol stream."""
+    if write is None:
+        proto = open_protocol_stream()
+
+        def write(line: str) -> None:
+            proto.write(line + "\n")
+            proto.flush()
+
+    if stdin is None:
+        stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace")
+    return Server(stdin, write, watch_parent=watch_parent).serve()
 
 
 def main() -> None:
-    sys.exit(serve())
+    sys.exit(serve(watch_parent=True))
 
 
 if __name__ == "__main__":
