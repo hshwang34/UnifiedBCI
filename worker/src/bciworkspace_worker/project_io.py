@@ -39,7 +39,8 @@ class Recording:
 
     @property
     def recording_id(self) -> str:
-        return str(self.manifest["recordingID"])
+        # UUIDs compare case-insensitively: Swift writes them upper-case, the converter lower.
+        return str(self.manifest["recordingID"]).lower()
 
     @property
     def sfreq(self) -> float:
@@ -65,7 +66,7 @@ def open_recording(project_dir: str | Path, recording_id: str) -> Recording:
         raise ProjectError(f"cannot read recording {recording_id}: {exc}") from exc
     if manifest.get("formatVersion") != FORMAT_VERSION:
         raise ProjectError(f"recording format version {manifest.get('formatVersion')!r} is not {FORMAT_VERSION}")
-    if str(manifest.get("recordingID")) != recording_id:
+    if str(manifest.get("recordingID")).lower() != recording_id.lower():
         raise ProjectError(f"recording.json in {rec_dir} names {manifest.get('recordingID')!r}, not {recording_id!r}")
     return Recording(rec_dir, manifest)
 
@@ -131,7 +132,7 @@ def _events_by_segment(rec: Recording, labels: dict[str, int]) -> dict[int, list
         if label not in labels:
             continue
         assoc = ev.get("sampleAssociation")
-        if not isinstance(assoc, dict) or str(assoc.get("recordingID")) != rec.recording_id:
+        if not isinstance(assoc, dict) or str(assoc.get("recordingID")).lower() != rec.recording_id:
             raise ProjectError(f"{path}:{n}: cue event {ev.get('eventID')} has no sample association for this recording")
         trial_id = ev.get("trialID") or str(ev.get("eventID"))
         out.setdefault(int(assoc["segment"]), []).append((int(assoc["sampleIndex"]), labels[label], str(trial_id)))
