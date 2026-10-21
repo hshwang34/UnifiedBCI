@@ -104,6 +104,20 @@ band-power recipe, any claim about the user's own motor imagery.
   entitlements unless the smoke test crashes; notarize + staple. Location under `Resources/`
   is fine — my earlier "must move to Frameworks" note was wrong.
 
+- PR 1 (foundations) engineering decisions by the writer, 2026-10-20:
+  - Worker API takes continuous `Segment`s (`run_id`, optional `session_id`, events as
+    `(sample_index, label, trial_id)`); the band-pass has no fitted parameters, so it runs once
+    per segment before the split — exactly the online path — then epochs; warm-up (0.55 s from
+    the slowest pole) exclusions are listed.
+  - Split is frozen by `split_manifest`; with a supplied manifest the seed only affects the
+    bootstrap draws.
+  - Dev venv launches Python with `-I`; bundled with `-s -P` + explicit PYTHONPATH; both
+    `-u -B -X utf8`. BLAS single-threaded by default (`BCI_WORKER_THREADS` override) so repeats
+    are byte-identical.
+  - Result bytes pass through the client verbatim (no re-encoding) so `evaluation.json` can be
+    stored byte-for-byte.
+  - BrainFlow log level `warn`; remaining darwin BrainFlow dylibs (33 MB) kept in the worker
+    bundle until trimming has its own smoke test. Bundle 358 MB → 157 MB.
 - Test plan: `001-test-plan.md`. Design requirements it imposes: `evaluation.json` contains
   no wall-clock/UUID/duration fields (those go to `result.meta.json`) so byte-identity is
   testable; the project store exposes a `CommitHook` seam (afterTmpWrite / afterFsync /
