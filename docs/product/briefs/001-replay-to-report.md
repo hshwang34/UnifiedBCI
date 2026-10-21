@@ -1,6 +1,6 @@
 # 001 — Replay to report: reproduce a motor-imagery result with no hardware
 
-**Status:** building (PR 1: foundations; PR 2: feature) · **Owner:** PM · **PR:** — · **Updated:** 2026-10-20
+**Status:** in review (PR #1 foundations; PR 2 feature pending) · **Owner:** PM · **PR:** #1 · **Updated:** 2026-10-20
 
 ## Problem
 A developer who wants to know "does my CSP/LDA experiment actually work?" today assembles
