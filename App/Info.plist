@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>BCIWorkerDevRoot</key>
-	<string>$(SRCROOT)/worker</string>
+	<string>$(BCI_WORKER_DEV_ROOT)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>

@@ -15,9 +15,12 @@ link is practical from Swift.
 - **SwiftUI app** owns navigation, acquisition, recording, cue presentation, and the
   project store.
 - **Analysis worker** is a separate Python 3.12 process (`worker/`) pinned by `uv.lock`
-  (numpy 2.5.4, scipy 1.18.1, scikit-learn 1.9.1, mne 1.13.2, brainflow 5.23.0). The app
-  spawns it, talks JSON-lines over stdio (protocol v1, `WorkerClient.swift` ↔
-  `protocol.py`), and treats its death as a visible "analysis unavailable" state.
+  (runtime: numpy 2.5.4, scipy 1.18.1, scikit-learn 1.9.1, threadpoolctl, brainflow 5.23.0;
+  MNE 1.13.2 is a dev-only test oracle for the CSP port — brief 001). The app spawns it
+  with an isolated interpreter and a scrubbed environment, talks JSON-lines over stdio
+  (protocol v1, `WorkerClient.swift` ↔ `protocol.py`; the worker keeps its protocol
+  stream on a private duplicate of fd 1 so library output can never corrupt it), and
+  treats its death as a visible "analysis unavailable" state.
 - **Training and inference stay in the same Python implementation** so there is no
   Swift-vs-Python numerical parity problem to manage yet. A native inference port is a
   separate, benchmarked decision gated on reference fixtures and tolerances.
@@ -31,11 +34,19 @@ link is practical from Swift.
 - Phase 0 proved: Swift ↔ worker round-trip (ready → ping → fit/evaluate on synthetic
   data → shutdown) works from the Xcode test host in ~1–4 s per call; the worker and the
   Swift bridge load byte-identical BrainFlow builds (asserted by test).
-- `scripts/bundle_worker.sh` produces a relocatable python-build-standalone interpreter plus
-  `--target` site-packages that the build copies into the bundle. **Unproven gates remain:**
-  code-signing every `.so` inside site-packages, hardened runtime with library validation,
-  notarization, and a clean-machine launch. These are the exit criteria for phase 0 that
-  this ADR does not yet claim.
+- `scripts/bundle_worker.sh` produces an **arm64-only** python-build-standalone interpreter
+  plus `--target` site-packages that the build copies into the bundle. The interpreter is
+  statically linked (verified with `otool -L`), so `libpython3.12.dylib`, Tcl/Tk, IDLE,
+  ensurepip and pip are deleted; BrainFlow keeps only its darwin libraries. "Relocatable"
+  is only approximately true: `sysconfig` and the deleted libpython carried stale absolute
+  build paths, harmless for `-m` launches but not a guarantee of relocatability for
+  arbitrary tooling. **Unproven gates remain:** code-signing every Mach-O inside the
+  worker (each file individually, `--options runtime --timestamp`, no `--deep`; the
+  script's `--sign` does this), hardened runtime with library validation, notarization,
+  and a clean-machine launch. These are the exit criteria for phase 0 that this ADR does
+  not yet claim. Mach-O files under `Contents/Resources` are acceptable to notarization
+  as long as each is signed; the earlier note that they had to move under `Frameworks`
+  was wrong.
 - App Sandbox is off for development because the dev venv lives outside the bundle. A
   release build with a bundled worker should re-evaluate sandboxing.
 - Rejected: all-Swift numerics (increases parity and correctness burden without improving

@@ -48,18 +48,17 @@ final class FeasibilityModel {
                 try await board.startStream()
                 let start = ContinuousClock.now
                 var drained = 0
-                var lastSeq: Double? = nil
-                var seqSkips = 0
+                var accounting = SequenceAccounting(board: desc)
+                var findings: [SequenceAccounting.Finding] = []
+                var overflows = 0
                 var firstTS: Double? = nil, lastTS: Double? = nil
                 while ContinuousClock.now - start < .seconds(seconds) {
                     try await Task.sleep(for: .milliseconds(50))
                     let chunk = try await board.readAll()
                     guard chunk.count > 0 else { continue }
                     drained += chunk.count
-                    for v in chunk.row(desc.packageNumRow) {
-                        if let p = lastSeq, v != p + 1, !(p == 255 && v == 0) { seqSkips += 1 }
-                        lastSeq = v
-                    }
+                    if chunk.overflowSuspected { overflows += 1 }
+                    findings += accounting.ingest(counters: chunk.row(desc.packageNumRow), timestamps: chunk.row(desc.timestampRow))
                     let ts = chunk.row(desc.timestampRow)
                     if firstTS == nil { firstTS = ts.first }
                     lastTS = ts.last
@@ -68,8 +67,8 @@ final class FeasibilityModel {
                 self.board = nil
                 let span = (lastTS ?? 0) - (firstTS ?? 0)
                 let effective = span > 0 ? Double(drained) / span : 0
-                syntheticStream = .passed(String(format: "%@ @ %d Hz nominal: drained %d samples over %.2f s of receipt timestamps (%.1f Hz effective), %d sequence discontinuities",
-                                                 desc.name, desc.samplingRate, drained, span, effective, seqSkips))
+                syntheticStream = .passed(String(format: "%@ @ %d Hz nominal (step %d): drained %d samples over %.2f s of wall-clock timestamps (%.1f Hz effective), %d sequence/clock findings, %d overflow-suspected drains",
+                                                 desc.name, desc.samplingRate, desc.sequenceStep, drained, span, effective, findings.count, overflows))
             } catch {
                 try? await self.board?.release()
                 self.board = nil
@@ -106,7 +105,7 @@ final class FeasibilityModel {
         fitSummary = []
         Task {
             let progressTask = Task {
-                for await ev in await worker.events where ev.name == "progress" {
+                for await ev in worker.events where ev.name == "progress" {
                     if let p = try? JSONSerialization.jsonObject(with: ev.data) as? [String: Any] {
                         fitProgress = "\(p["model"] ?? "") fold \(p["fold"] ?? "")/\(p["of"] ?? "")"
                     }

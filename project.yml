@@ -14,6 +14,9 @@ settings:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     MACOSX_DEPLOYMENT_TARGET: "15.0"
+    # Apple Silicon only for v0.x (brief 001, decision #5): the bundled worker is arm64-only.
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
     # Ad-hoc signing for local development. Release builds use a Developer ID identity
     # and must re-enable hardened runtime (see docs/adr/0002-native-boundary.md).
     CODE_SIGN_STYLE: Manual
@@ -23,6 +26,12 @@ settings:
     ENABLE_APP_SANDBOX: NO
     DEAD_CODE_STRIPPING: YES
     SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+    # Where WorkerLaunch.locate finds worker/.venv. Debug only; Release leaves it empty so a
+    # shipped app can never reach outside its bundle for an interpreter.
+    BCI_WORKER_DEV_ROOT: ""
+  configs:
+    Debug:
+      BCI_WORKER_DEV_ROOT: $(SRCROOT)/worker
 
 targets:
   BCIWorkspace:
@@ -54,19 +63,27 @@ targets:
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: ""
-        # Development-only: lets the app find worker/.venv without bundling it.
-        # Ignored when a bundled worker is present in Contents/Resources/worker.
-        BCIWorkerDevRoot: $(SRCROOT)/worker
+        # Development-only: lets the app find worker/.venv without bundling it. Empty in
+        # Release (see BCI_WORKER_DEV_ROOT). Ignored when Contents/Resources/worker exists.
+        BCIWorkerDevRoot: $(BCI_WORKER_DEV_ROOT)
     dependencies:
       - framework: native/brainflow/lib/libBoardController.dylib
         embed: true
         codeSign: true
     postCompileScripts:
       - name: Copy bundled worker if built
-        # scripts/bundle_worker.sh produces build/worker-dist; skip silently when absent (dev builds).
+        # scripts/bundle_worker.sh produces build/worker-dist; skip silently when absent (dev
+        # builds) and skip the rsync when nothing under it changed since the last copy (stamp).
         script: |
-          if [ -d "$SRCROOT/build/worker-dist" ]; then
-            rsync -a --delete "$SRCROOT/build/worker-dist/" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/worker/"
+          SRC="$SRCROOT/build/worker-dist"
+          DST="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/worker"
+          STAMP="$DERIVED_FILE_DIR/worker-dist.stamp"
+          if [ -d "$SRC" ]; then
+            mkdir -p "$DERIVED_FILE_DIR"
+            if [ ! -f "$STAMP" ] || [ ! -d "$DST" ] || [ -n "$(find "$SRC" -newer "$STAMP" -print -quit)" ]; then
+              rsync -a --delete "$SRC/" "$DST/"
+              touch "$STAMP"
+            fi
           fi
         basedOnDependencyAnalysis: false
 

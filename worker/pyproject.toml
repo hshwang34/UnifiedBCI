@@ -7,7 +7,7 @@ dependencies = [
     "numpy>=2.0,<3",
     "scipy>=1.13",
     "scikit-learn>=1.5",
-    "mne>=1.8",
+    "threadpoolctl>=3",
     "brainflow>=5.12",
 ]
 
@@ -15,7 +15,8 @@ dependencies = [
 bciworkspace-worker = "bciworkspace_worker.main:main"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+# MNE is a test oracle only (CSP parity); it never ships in the bundled worker.
+dev = ["pytest>=8", "mne>=1.8"]
 
 [build-system]
 requires = ["hatchling"]
