@@ -259,14 +259,23 @@ public actor ProjectStore {
     }
 
     /// Deletes every `.tmp-*` entry a crash could have left: temp manifests, temp chunks,
-    /// and temp pipeline/result directories. Committed files are never touched.
+    /// and temp pipeline/result directories. Committed files are never touched. The walk
+    /// never follows a symbolic link (lstat semantics) and refuses to delete anything
+    /// whose resolved path is not inside the project, so a hostile `.bciproj` cannot aim
+    /// the sweep at the user's files.
     private static func removeOrphans(in project: URL) throws -> [String] {
         let fm = FileManager.default
+        let root = project.resolvingSymlinksInPath().path + "/"
         var removed: [String] = []
+        func isSymlink(_ url: URL) -> Bool {
+            (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) ?? true
+        }
         func sweep(_ dir: URL) throws {
-            guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
+            guard !isSymlink(dir), let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
             for name in names where name.hasPrefix(AtomicFile.tempPrefix) {
-                try fm.removeItem(at: dir.appendingPathComponent(name))
+                let entry = dir.appendingPathComponent(name)
+                guard !isSymlink(entry), entry.resolvingSymlinksInPath().path.hasPrefix(root) else { continue }
+                try fm.removeItem(at: entry)
                 removed.append(dir.lastPathComponent + "/" + name)
             }
         }
@@ -274,8 +283,10 @@ public actor ProjectStore {
         for child in ["recordings", "pipelines", "results"] {
             let childDir = project.appendingPathComponent(child, isDirectory: true)
             try sweep(childDir)
+            guard !isSymlink(childDir) else { continue }
             for name in (try? fm.contentsOfDirectory(atPath: childDir.path)) ?? [] where UUID(uuidString: name) != nil {
                 let entry = childDir.appendingPathComponent(name, isDirectory: true)
+                guard !isSymlink(entry) else { continue }
                 try sweep(entry)
                 try sweep(entry.appendingPathComponent("chunks", isDirectory: true))
             }

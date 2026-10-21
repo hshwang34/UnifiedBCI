@@ -332,4 +332,134 @@ final class ProjectStoreTests: XCTestCase {
         let attribution = try String(contentsOf: out.appendingPathComponent("ATTRIBUTION.md"), encoding: .utf8)
         XCTAssertTrue(attribution.contains("synthetic recording on test"))
     }
+
+    // MARK: Hostile manifests
+
+    private func expectThrows(_ body: () async throws -> Void, file: StaticString = #filePath, line: UInt = #line,
+                              _ check: (Error) -> Void = { _ in }) async {
+        do {
+            try await body()
+            XCTFail("expected an error", file: file, line: line)
+        } catch {
+            check(error)
+        }
+    }
+
+    /// Rewrites one recording's manifest through a JSON-level edit so the test can
+    /// produce shapes the Swift types would never encode.
+    private func editManifest(_ store: ProjectStore, _ id: UUID, _ edit: (inout [String: Any]) -> Void) throws {
+        let url = store.directory.appendingPathComponent("recordings/\(id.uuidString)/recording.json")
+        var obj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        edit(&obj)
+        try JSONSerialization.data(withJSONObject: obj).write(to: url)
+    }
+
+    func testManifestWithChannelRowOutsideChunk_isRefusedNotCrashed() async throws {
+        let url = scratch.appendingPathComponent("row.bciproj")
+        let store = try ProjectStore.create(at: url, name: "H")
+        let manifest = sampleManifest(rows: 3)
+        let writer = try await store.createRecording(manifest)
+        try await writer.append(payload(0))
+        try editManifest(store, manifest.recordingID) { obj in
+            var channels = obj["channels"] as! [[String: Any]]
+            channels[1]["sourceRow"] = 99
+            obj["channels"] = channels
+        }
+        let reopened = try ProjectStore.open(at: url)
+        await expectThrows({ _ = try await reopened.recording(id: manifest.recordingID) }) { error in
+            guard case ProjectStoreError.invalidManifest(let why) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(why.contains("row 99"), why)
+        }
+        // Export goes through the same validation and must fail cleanly, not index out of range.
+        let meta = try await storeFakeResult(in: reopened, seed: 0, createdAt: Date())
+        var fixed = meta
+        fixed.recordingID = manifest.recordingID
+        try ContractJSON.encoder().encode(fixed).write(to: url.appendingPathComponent("results/\(meta.resultID.uuidString)/result.meta.json"))
+        let target = scratch.appendingPathComponent("x")
+        await expectThrows { try await reopened.export(result: meta.resultID, to: target) }
+    }
+
+    func testManifestWithOverflowingChunkDimensions_isRefused() async throws {
+        let url = scratch.appendingPathComponent("ovf.bciproj")
+        let store = try ProjectStore.create(at: url, name: "H")
+        let manifest = sampleManifest(rows: 3)
+        let writer = try await store.createRecording(manifest)
+        try await writer.append(payload(0))
+        try editManifest(store, manifest.recordingID) { obj in
+            var chunks = obj["chunks"] as! [[String: Any]]
+            chunks[0]["rowCount"] = Int.max / 4
+            chunks[0]["sampleCount"] = 8
+            obj["chunks"] = chunks
+        }
+        await expectThrows({ _ = try await ProjectStore.open(at: url).recording(id: manifest.recordingID) }) { error in
+            guard case ProjectStoreError.invalidChunk(let why) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(why.contains("overflows"), why)
+        }
+        try editManifest(store, manifest.recordingID) { obj in
+            var chunks = obj["chunks"] as! [[String: Any]]
+            chunks[0]["rowCount"] = 3
+            chunks[0]["sampleCount"] = 5     // file holds 3×4
+            obj["chunks"] = chunks
+        }
+        let handle = try await ProjectStore.open(at: url).recording(id: manifest.recordingID)
+        XCTAssertEqual(handle.verify().map(\.kind), [.sizeMismatch])
+        XCTAssertThrowsError(try handle.chunk(handle.manifest.chunks[0]))
+    }
+
+    func testChunkFileNameCannotEscapeTheRecordingDirectory() async throws {
+        let url = scratch.appendingPathComponent("trav.bciproj")
+        let store = try ProjectStore.create(at: url, name: "H")
+        let manifest = sampleManifest(rows: 3)
+        let writer = try await store.createRecording(manifest)
+        try await writer.append(payload(0))
+        // A secret outside the project with exactly the bytes the manifest expects.
+        let secret = scratch.appendingPathComponent("secret.bin")
+        let chunk = url.appendingPathComponent("recordings/\(manifest.recordingID.uuidString)/chunks/000000.f64")
+        try FileManager.default.copyItem(at: chunk, to: secret)
+        try editManifest(store, manifest.recordingID) { obj in
+            var chunks = obj["chunks"] as! [[String: Any]]
+            chunks[0]["fileName"] = "../../../secret.bin"
+            obj["chunks"] = chunks
+        }
+        await expectThrows({ _ = try await ProjectStore.open(at: url).recording(id: manifest.recordingID) }) { error in
+            guard case ProjectStoreError.invalidManifest = error else { return XCTFail("\(error)") }
+        }
+        // A symlink in place of the chunk file is not followed outside either.
+        try editManifest(store, manifest.recordingID) { obj in
+            var chunks = obj["chunks"] as! [[String: Any]]
+            chunks[0]["fileName"] = "chunks/000000.f64"
+            obj["chunks"] = chunks
+        }
+        try FileManager.default.removeItem(at: chunk)
+        try FileManager.default.createSymbolicLink(at: chunk, withDestinationURL: secret)
+        let handle = try await ProjectStore.open(at: url).recording(id: manifest.recordingID)
+        XCTAssertEqual(handle.verify().map(\.kind), [.missingChunk])
+        XCTAssertThrowsError(try handle.chunk(handle.manifest.chunks[0]))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: secret.path))
+    }
+
+    func testOrphanSweepDoesNotFollowSymlinksOutOfTheProject() async throws {
+        let url = scratch.appendingPathComponent("sym.bciproj")
+        _ = try ProjectStore.create(at: url, name: "H")
+        let outside = scratch.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside.appendingPathComponent("chunks"), withIntermediateDirectories: true)
+        let victim = outside.appendingPathComponent(".tmp-precious")
+        let victim2 = outside.appendingPathComponent("chunks/.tmp-000000")
+        try Data("keep".utf8).write(to: victim)
+        try Data("keep".utf8).write(to: victim2)
+        // A UUID-named symlink where a recording directory would be, a symlinked
+        // results/ directory, and a symlinked temp entry inside a real recording.
+        try FileManager.default.createSymbolicLink(at: url.appendingPathComponent("recordings/\(UUID().uuidString)"), withDestinationURL: outside)
+        try FileManager.default.removeItem(at: url.appendingPathComponent("results"))
+        try FileManager.default.createSymbolicLink(at: url.appendingPathComponent("results"), withDestinationURL: outside)
+        let real = url.appendingPathComponent("recordings/\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: real.appendingPathComponent(".tmp-link"), withDestinationURL: victim)
+
+        let store = try ProjectStore.open(at: url)
+        let removed = await store.removedOrphans
+        XCTAssertEqual(removed, [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: victim.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: victim2.path))
+    }
 }

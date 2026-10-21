@@ -60,7 +60,12 @@ extension ProjectStore {
             for entry in handle.chunks(inSegment: segment.index) {
                 let chunk = try handle.chunk(entry)
                 for (i, row) in channelRows.enumerated() {
+                    // `validate` already rejected rows outside the chunk; this is the
+                    // belt to that brace, so a future manifest edit cannot crash here.
                     let start = row * entry.sampleCount
+                    guard row >= 0, start + entry.sampleCount <= chunk.count else {
+                        throw ProjectStoreError.invalidManifest("channel row \(row) outside chunk \(entry.index) (\(entry.rowCount) rows)")
+                    }
                     rows[i].append(contentsOf: chunk[start..<(start + entry.sampleCount)])
                 }
                 sampleCount += entry.sampleCount
