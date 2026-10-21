@@ -183,11 +183,45 @@ def test_evidence_label_is_derived_from_session_ids():
         s.session_id = "A" if s.run_id in ("run00", "run01") else "B"
     manifest = {
         "holdout_runs": ["run02", "run03"], "training_runs": ["run00", "run01"],
+        "holdout_trials": sorted(e[2] for s in segs[2:] for e in s.events),
         "folds": [{"fold": 1, "test_runs": ["run00"]}, {"fold": 2, "test_runs": ["run01"]}],
     }
     rec = pipeline.fit_evaluate(segs, seed=12, split_manifest=manifest)
     assert rec["split_policy"]["evidence"] == "cross-session"
     assert rec["models"]["reference_csp_rlda"]["holdout"]["n_test_runs"] == 2
+
+
+def test_missing_session_ids_report_unknown_session_not_same_session():
+    segs = small_runs(n_runs=4, trials_per_run=6, seed=19)
+    for s in segs:
+        s.session_id = None
+    assert pipeline.fit_evaluate(segs, seed=19)["split_policy"]["evidence"] == "unknown-session"
+    segs[0].session_id = "A"  # one missing id is still unknown
+    assert pipeline.fit_evaluate(segs, seed=19)["split_policy"]["evidence"] == "unknown-session"
+
+
+def test_duplicate_run_ids_are_rejected():
+    segs = small_runs(n_runs=4, trials_per_run=6, seed=20)
+    segs[1].run_id = segs[0].run_id
+    with pytest.raises(ValueError, match="duplicate run ids"):
+        pipeline.fit_evaluate(segs, seed=20)
+
+
+def test_manifest_schema_errors_are_value_errors_with_clear_messages():
+    segs = small_runs(n_runs=4, trials_per_run=4, seed=21)
+    good = pipeline.fit_evaluate(segs, seed=21)["split_manifest"]
+    cases = [
+        ({k: v for k, v in good.items() if k != "holdout_trials"}, "missing required key 'holdout_trials'"),
+        ({k: v for k, v in good.items() if k != "folds"}, "missing required key 'folds'"),
+        (dict(good, folds=[{"fold": 1, "test_runs": []}] + good["folds"][1:]), "non-empty 'test_runs'"),
+        (dict(good, folds=good["folds"][:1]), "at least 2 folds"),
+        (dict(good, folds=[dict(f, test_runs=good["training_runs"][:1]) for f in good["folds"]]), "cover each training run exactly once"),
+        (dict(good, holdout_runs="run00"), "must be a list"),
+        ("not a dict", "must be a JSON object"),
+    ]
+    for bad, message in cases:
+        with pytest.raises(ValueError, match=message):
+            pipeline.fit_evaluate(segs, seed=21, split_manifest=bad)
 
 
 def test_uncertainty_blocks_per_run_bootstrap_and_paired_comparison():

@@ -108,7 +108,9 @@ def handle_fit_evaluate_synthetic(req: Request, ctx: Context) -> dict[str, Any]:
         "n_trials": n_trials,
         "n_channels": int(segments[0].data.shape[0]),
     }
-    record["elapsed_seconds"] = time.monotonic() - t0
+    # Timing is reported as an event, never in `result`: the client stores `result`
+    # byte-for-byte as evaluation.json and repeat evaluations must be identical.
+    ctx.emit("done", {"elapsed_seconds": time.monotonic() - t0})
     return record
 
 
@@ -135,8 +137,10 @@ class Server:
         self._watch_parent = watch_parent
         self._lock = threading.Lock()
         self._queue: queue.Queue[Request | None] = queue.Queue()
-        # Request id -> cancel flag, for every request that is queued or running.
+        # Request id -> cancel flag, for every request that is queued or running. Touched by
+        # both threads, so every access goes through `_active_lock`.
         self._active: dict[str, threading.Event] = {}
+        self._active_lock = threading.Lock()
         self._shutting_down = False
         self._pipe_broken = False
 
@@ -158,8 +162,26 @@ class Server:
     # -- control ---------------------------------------------------------------
 
     def _cancel_all(self) -> None:
-        for flag in self._active.values():
+        with self._active_lock:
+            flags = list(self._active.values())
+        for flag in flags:
             flag.set()
+
+    def _register(self, request_id: str) -> threading.Event | None:
+        """Creates the cancel flag for a new request; None if the id is already in flight."""
+        with self._active_lock:
+            if request_id in self._active:
+                return None
+            flag = self._active[request_id] = threading.Event()
+            return flag
+
+    def _lookup(self, request_id: str) -> threading.Event | None:
+        with self._active_lock:
+            return self._active.get(request_id)
+
+    def _forget(self, request_id: str) -> None:
+        with self._active_lock:
+            self._active.pop(request_id, None)
 
     def _handle_control(self, req: Request) -> None:
         if req.method == "hello":
@@ -168,7 +190,7 @@ class Server:
             self.write(response(req.id, {"pong": True, "echo": req.params.get("echo"), "t": time.time()}))
         elif req.method == "cancel":
             target = req.params.get("id")
-            flag = self._active.get(target) if isinstance(target, str) else None
+            flag = self._lookup(target) if isinstance(target, str) else None
             if flag is not None:
                 flag.set()
             self.write(response(req.id, {"cancelled": flag is not None}))
@@ -191,10 +213,9 @@ class Server:
                 if req.method in CONTROL_METHODS:
                     self._handle_control(req)
                 elif req.method in HANDLERS:
-                    if req.id in self._active:
+                    if self._register(req.id) is None:
                         self.write(error(req.id, "bad_request", f"request id {req.id!r} is already in flight"))
                         continue
-                    self._active[req.id] = threading.Event()
                     self._queue.put(req)
                 else:
                     self.write(error(req.id, "unknown_method", f"no such method: {req.method}"))
@@ -203,9 +224,15 @@ class Server:
         except Exception:  # noqa: BLE001 - a dead stdin is treated like EOF
             print(traceback.format_exc(), file=sys.stderr, flush=True)
         finally:
-            self._shutting_down = True
-            self._cancel_all()
-            self._queue.put(None)
+            # The sentinel must reach the work loop whatever else fails here, or the main
+            # thread blocks on `queue.get()` forever.
+            try:
+                self._shutting_down = True
+                self._cancel_all()
+            except Exception:  # noqa: BLE001 - log, never let the sentinel be skipped
+                print(traceback.format_exc(), file=sys.stderr, flush=True)
+            finally:
+                self._queue.put(None)
 
     def _watch_parent_loop(self) -> None:
         parent = os.getppid()
@@ -217,7 +244,9 @@ class Server:
     # -- work ------------------------------------------------------------------
 
     def _run(self, req: Request) -> None:
-        flag = self._active[req.id]
+        flag = self._lookup(req.id)
+        if flag is None:
+            return
 
         def check_cancelled() -> None:
             if flag.is_set():
@@ -235,7 +264,7 @@ class Server:
             print(traceback.format_exc(), file=sys.stderr, flush=True)
             self.write(error(req.id, "internal", f"{type(exc).__name__}: {exc}"))
         finally:
-            self._active.pop(req.id, None)
+            self._forget(req.id)
 
     def serve(self) -> int:
         self.write(event("ready", hello()))
@@ -266,7 +295,11 @@ def serve(stdin: Iterable[str] | None = None, write: Callable[[str], None] | Non
 
 
 def main() -> None:
-    sys.exit(serve(watch_parent=True))
+    status = serve(watch_parent=True)
+    # The reader thread may still be blocked in stdin.readline(); a normal interpreter
+    # shutdown would wait on it and complain about locks. Flush and leave.
+    sys.stderr.flush()
+    os._exit(status)
 
 
 if __name__ == "__main__":

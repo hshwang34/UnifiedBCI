@@ -20,6 +20,7 @@ Evaluation rules follow the PRD (section 6):
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
@@ -403,9 +404,31 @@ def draw_split_manifest(
 
 
 def _validate_manifest(manifest: dict[str, Any], groups: np.ndarray, trial_ids: np.ndarray) -> None:
+    """Schema and consistency checks for a supplied split manifest. Every failure is a
+    ValueError with a message a user can act on; nothing here may surface as KeyError."""
+    if not isinstance(manifest, dict):
+        raise ValueError("split manifest must be a JSON object")
+    required = {"holdout_runs": list, "training_runs": list, "holdout_trials": list, "folds": list}
+    for key, kind in required.items():
+        if key not in manifest:
+            raise ValueError(f"split manifest is missing required key {key!r}")
+        if not isinstance(manifest[key], kind):
+            raise ValueError(f"split manifest key {key!r} must be a list")
+    for key in ("holdout_runs", "training_runs", "holdout_trials"):
+        if not all(isinstance(v, str) for v in manifest[key]):
+            raise ValueError(f"split manifest {key!r} must contain only strings")
+    for i, fold in enumerate(manifest["folds"]):
+        if not isinstance(fold, dict) or not isinstance(fold.get("test_runs"), list) or not fold["test_runs"]:
+            raise ValueError(f"split manifest fold {i + 1} needs a non-empty 'test_runs' list")
+        if not all(isinstance(v, str) for v in fold["test_runs"]):
+            raise ValueError(f"split manifest fold {i + 1} 'test_runs' must contain only strings")
+        fold.setdefault("fold", i + 1)
+
     present = {str(g) for g in groups}
     holdout = set(manifest["holdout_runs"])
     training = set(manifest["training_runs"])
+    if not holdout or not training:
+        raise ValueError("split manifest needs at least one holdout run and one training run")
     if holdout & training:
         raise ValueError(f"split manifest leaks runs into both splits: {sorted(holdout & training)}")
     missing = (holdout | training) - present
@@ -413,11 +436,17 @@ def _validate_manifest(manifest: dict[str, Any], groups: np.ndarray, trial_ids: 
         raise ValueError(f"split manifest names runs absent from the data: {sorted(missing)}")
     if present - (holdout | training):
         raise ValueError(f"data has runs the split manifest does not place: {sorted(present - (holdout | training))}")
+    if len(manifest["folds"]) < 2:
+        raise ValueError("split manifest needs at least 2 folds")
+    covered: list[str] = []
     for fold in manifest["folds"]:
         if not set(fold["test_runs"]) <= training:
             raise ValueError(f"fold {fold['fold']} tests on runs outside the training split")
+        covered += fold["test_runs"]
+    if sorted(covered) != sorted(training):
+        raise ValueError("split manifest folds must cover each training run exactly once")
     expected_trials = sorted(str(t) for t, g in zip(trial_ids, groups) if str(g) in holdout)
-    if "holdout_trials" in manifest and list(manifest["holdout_trials"]) != expected_trials:
+    if sorted(manifest["holdout_trials"]) != expected_trials:
         raise ValueError("split manifest holdout trials do not match the data; refusing to re-score a different split")
 
 
@@ -503,7 +532,11 @@ def holdout_report(y_true, y_pred, groups) -> dict[str, Any]:
 
 
 def _evidence(segments: Sequence[Segment], manifest: dict[str, Any]) -> str:
+    """`same-session` and `cross-session` are claims; a missing session id on any run
+    makes the claim unsupportable, so it is reported as `unknown-session`."""
     session_of = {s.run_id: s.session_id for s in segments}
+    if any(sid is None for sid in session_of.values()):
+        return "unknown-session"
     holdout_sessions = {session_of[r] for r in manifest["holdout_runs"]}
     training_sessions = {session_of[r] for r in manifest["training_runs"]}
     if holdout_sessions == training_sessions and len(holdout_sessions) == 1:
@@ -532,6 +565,10 @@ def fit_evaluate(
     fitted arrays (`fitted_arrays`) for the caller to write as `.npz`."""
     if not segments:
         raise ValueError("no segments")
+    run_ids = [s.run_id for s in segments]
+    duplicates = sorted({r for r in run_ids if run_ids.count(r) > 1})
+    if duplicates:
+        raise ValueError(f"duplicate run ids across segments: {duplicates}; a run is one segment")
     sfreq = segments[0].sfreq
     sos = bandpass.design(sfreq)
     warmup_samples = settling_samples(sos) if warmup_seconds is None else int(round(warmup_seconds * sfreq))
@@ -541,7 +578,9 @@ def fit_evaluate(
     if split_manifest is None:
         manifest = draw_split_manifest(y, groups, trial_ids, seed, holdout_fraction)
     else:
-        manifest = {**split_manifest}
+        if not isinstance(split_manifest, dict):
+            raise ValueError("split manifest must be a JSON object")
+        manifest = copy.deepcopy(split_manifest)
         _validate_manifest(manifest, groups, trial_ids)
     assert not set(manifest["holdout_runs"]) & set(manifest["training_runs"])
     hold = np.isin(groups, manifest["holdout_runs"])

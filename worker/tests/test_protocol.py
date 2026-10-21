@@ -206,6 +206,67 @@ def test_broken_pipe_on_write_stops_quietly():
     assert not t.is_alive()
 
 
+def test_handler_result_is_byte_identical_across_repeats():
+    """The client stores `result` verbatim as evaluation.json, so nothing run-dependent
+    (timing, pids) may live in it; timing travels as a `done` event instead."""
+    from bciworkspace_worker.protocol import Request
+    events = []
+    ctx = worker_main.Context(emit=lambda name, data: events.append((name, data)), check_cancelled=lambda: None)
+    req = Request(id="r", method="fit_evaluate_synthetic", params={"n_runs": 4, "trials_per_run": 6, "n_channels": 4, "seed": 5})
+    a = json.dumps(worker_main.handle_fit_evaluate_synthetic(req, ctx))
+    b = json.dumps(worker_main.handle_fit_evaluate_synthetic(req, ctx))
+    assert a == b
+    assert "elapsed_seconds" not in a
+    assert [e for e in events if e[0] == "done"] and all("elapsed_seconds" in e[1] for e in events if e[0] == "done")
+
+
+def test_reader_exit_delivers_sentinel_even_if_cancel_all_raises(monkeypatch):
+    """Regression: a RuntimeError in the reader's finally (dict changed size during
+    iteration) used to skip the sentinel and leave the work loop blocked forever."""
+    def boom(self):
+        raise RuntimeError("dict changed size during iteration")
+    monkeypatch.setattr(worker_main.Server, "_cancel_all", boom)
+    feed, sink = LineFeed(), Sink()
+    t = threading.Thread(target=worker_main.serve, kwargs={"stdin": feed, "write": sink}, daemon=True)
+    t.start()
+    sink.wait_for(lambda m: m.get("event") == "ready")
+    feed.close()  # EOF
+    t.join(timeout=10)
+    assert not t.is_alive(), "work loop must exit on EOF even when cancellation bookkeeping fails"
+
+
+def test_cancel_all_snapshots_active_while_work_thread_pops():
+    """Deterministic interleaving: the main thread pops from `_active` while
+    `_cancel_all` iterates; with the lock+snapshot this cannot raise."""
+    server = worker_main.Server(iter([]), lambda line: None)
+    for i in range(50):
+        server._register(f"r{i}")
+    original = dict.values
+
+    def racing_values(d):
+        # Simulate the work thread finishing a request mid-iteration.
+        server._forget("r0")
+        return original(d)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(worker_main.Server, "_cancel_all", lambda self: [f.set() for f in list(racing_values(self._active))])
+        server._cancel_all()
+    assert server._lookup("r0") is None and server._lookup("r1").is_set()
+
+
+def test_eof_during_fit_terminates_promptly_stress():
+    for i in range(5):
+        feed, sink = LineFeed(), Sink()
+        t = threading.Thread(target=worker_main.serve, kwargs={"stdin": feed, "write": sink}, daemon=True)
+        t.start()
+        sink.wait_for(lambda m: m.get("event") == "ready")
+        feed.push({"v": 1, "id": "fit", "method": "fit_evaluate_synthetic", "params": {"n_runs": 6, "trials_per_run": 20, "seed": i}})
+        sink.wait_for(lambda m: m.get("event") == "progress")
+        feed.close()
+        t.join(timeout=60)
+        assert not t.is_alive(), f"iteration {i}: worker hung after EOF during a fit"
+        assert sink.response("fit")["error"]["code"] == "cancelled"
+
+
 # --- the real process -------------------------------------------------------------------------
 
 
