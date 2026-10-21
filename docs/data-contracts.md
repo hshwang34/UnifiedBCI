@@ -9,7 +9,8 @@ shipped yet, so the 2026-10-20 revisions below stay at version 1.
 
 ```
 MyExperiment.bciproj/
-  project.json                 ProjectManifest (name, format version, created, child id indexes)
+  project.json                 ProjectManifest (name, format version, created) — no child index
+  README.md                    optional; the bundled example carries its license text here
   recordings/<uuid>/
     recording.json             RecordingManifest
     chunks/000000.f64 …        append-only sample chunks (see below)
@@ -19,12 +20,25 @@ MyExperiment.bciproj/
     fitted.npz                 explicit arrays only (filters, CSP patterns, LDA weights)
   results/<uuid>/
     evaluation.json            worker evaluation record (verbatim bytes from the worker)
-    predictions.jsonl          PredictionRecord per line (replay and live)
-  index.sqlite                 derived; rebuildable from the files above, never authoritative
+    result.meta.json           ResultMeta: wall clock, durations, worker build, reproduction link
+    predictions.jsonl          PredictionRecord per line (replay and live; not written yet)
 ```
 
-Everything under `recordings/`, `pipelines/`, `results/` is immutable once committed. New
-versions are new directories; nothing is edited in place.
+**Index: none. The directory scan is the truth.** A recording, pipeline or result exists
+iff its UUID-named directory holds its manifest (`recording.json`, `pipeline.json`,
+`result.meta.json`); `project.json` lists nothing. The `index.sqlite` the PRD allows for
+navigation is not written in format 1 — it would be derived and rebuildable, never
+authoritative, and nothing needs it yet. Everything under `recordings/`, `pipelines/`,
+`results/` is immutable once committed. New versions are new directories; nothing is
+edited in place. UUIDs in directory names and JSON compare case-insensitively (Swift
+writes upper-case, the dataset converter lower-case).
+
+A `.bciproj` may come from anyone, so every manifest is validated as hostile input on
+open: chunk file names must be the canonical `chunks/NNNNNN.f64` for their index (the
+path is built from the index, never taken from the manifest), dimensions must be
+positive with overflow-checked byte sizes, every channel's `sourceRow` must be a row of
+every chunk, chunk paths must resolve inside `chunks/`, and the orphan sweep never
+follows symbolic links or deletes anything that resolves outside the project.
 
 ### JSON coding
 
@@ -53,7 +67,14 @@ open. Append-only files (`events.jsonl`, `predictions.jsonl`) are appended with 
   `RecordingManifest.chunks[]`. A chunk whose hash does not match is reported, not repaired.
 - Commit protocol: write to `chunks/.tmp-NNNNNN`, fsync, rename, then rewrite the manifest
   (atomic rewrite above) with the new `ChunkEntry`. A crash leaves at most one orphan temp
-  file, which is deleted on open. The committed prefix is always readable.
+  file, which is deleted on open, or one renamed-but-unlisted chunk, which `verify`
+  reports as `unlistedChunk` and nothing adopts or deletes. The committed prefix is always
+  readable. `ChunkWriter` exposes the four commit points (`afterTmpWrite`, `afterFsync`,
+  `afterRename`, `afterManifestWrite`) through a `CommitHook` so the crash tests kill a
+  helper process at each one instead of sleeping.
+- Imported recordings (`source.kind == "public_dataset"`) have no counter or timestamp
+  rows: the chunk rows are exactly the channels, `channels[i].sourceRow == i`, and the
+  timing/package fields of each `ChunkEntry` are `null`.
 - Each `ChunkEntry` also records `drainedAtMonotonicNanos` (when the app drained it), the
   first/last BrainFlow timestamp, and the first/last package number, so gaps and clock
   anomalies can be re-derived from the manifest without reading the chunk.
@@ -74,8 +95,14 @@ Three clocks, never mixed:
 - `RecordingManifest.clockMapping` holds one anchor pair (`anchorMonotonicNanos`,
   `anchorWall`) taken at recording start, plus the epoch definition string, so monotonic
   values can be placed on a calendar after the fact and across machines.
-- `TimingSemantics.timestampGeneratedBy` is `"host"` for every supported board today. If a
-  board ever supplies device timestamps, that is a new value, not a reinterpretation.
+- `TimingSemantics.timestampGeneratedBy` is `"host"` for every supported board today, and
+  `"none"` for an import that carries no per-sample timestamps at all (sample time is
+  `index / nominalSampleRateHz` from segment start; `timestampClock` is then `host_wall`
+  only because the field is required). If a board ever supplies device timestamps, that is
+  a new value, not a reinterpretation.
+- An import also has no drain clock. Its `clockMapping.monotonicEpoch` says so
+  (`"synthetic: nanoseconds of sample time since the first sample of the source file"`),
+  `anchorMonotonicNanos` is 0 and `anchorWall` is the source file's header start date.
 - `TimingSemantics.sequenceStep` is the expected package-counter increment per committed
   sample: **1** for the synthetic board and Cyton alone, **2 for Cyton+Daisy** (BrainFlow
   commits one sample per board/Daisy packet pair and writes the even packet's counter, so
@@ -108,6 +135,10 @@ Three clocks, never mixed:
 - `sessionID`: one sitting (cap on, montage unchanged). `runID`: one start-to-stop
   acquisition inside it. Both are stored on the recording, on every segment, and on every
   event so split-by-run and split-by-session are derivable from stored data alone.
+  `sessionID` is optional: when the source does not define a session it is `null`, and
+  the worker reports `unknown-session` evidence rather than claiming `same-session`. The
+  bundled EEGMMIDB example is `null` — PhysioNet lists 14 runs per subject but never says
+  which were one sitting, and every EDF carries the same placeholder start date.
 - A `StreamSegment` is a contiguous run from one `start_stream` to a stop, disconnect, or
   failure (`endReason`). Reconnecting starts a new segment with its own sample indices.
   Filters and any stateful preprocessing reset at segment start (`preprocessingStatePolicy =
@@ -118,6 +149,16 @@ Three clocks, never mixed:
 
 ## Source and configuration
 
+- `Source.kind` is `"brainflow"`, `"synthetic"` or `"public_dataset"`. For a public
+  dataset the provenance fields are filled: `dataset`, `doi`, `license`, `subject`, `runs`,
+  a `warning` the UI shows on the first line of the source panel ("Public dataset, not
+  recorded on OpenBCI Cyton+Daisy…"), `attribution` (citations with DOIs, shown in the
+  info panel and written to every export), `derivations` (every conversion applied on
+  import — channel crop, unit handling, name normalization; resampling is never one) and
+  `sourceFiles` (input file names with SHA-256). `boardName` is then the original
+  acquisition device as the dataset documents it, `boardID` is `null`, `brainflowVersion`
+  is `"n/a"` and `appVersion` names the converter. The bundled example is produced by
+  `worker/tools/convert_eegmmidb.py` (dev-time, byte-deterministic, tested).
 - `Source.dataPath` distinguishes `radio_125` (dongle, 125 Hz, alternating packets) from
   `sd_250` (on-board SD card, 250 Hz). They are different recordings; neither is a
   resample of the other. It is `nil` for synthetic and imported sources.
@@ -136,11 +177,35 @@ Scalp positions are never inferred from channel count. Pipelines record
 
 `fitted.npz` holds explicit arrays only: band-pass SOS coefficients, CSP spatial filters and
 patterns, chosen component indices and eigenvalues, LDA coefficients/intercept/classes, and
-a `feature_kind` tag. No pickled estimators. `pipeline.predict_from_arrays` in the worker is
-the reference reader and is tested against the sklearn objects the arrays came from.
+a `feature_kind` tag. No pickled estimators. The reference model's arrays are at the top
+level; the baseline's are the same names prefixed `baseline__`, so one file carries both
+fits of one evaluation. `pipeline.predict_from_arrays` in the worker is the reference
+reader and is tested against the sklearn objects the arrays came from. The worker writes
+the file to a path the app supplies inside `pipelines/.tmp-<uuid>/` (binary never crosses
+the protocol pipe); `storeResult` renames the directory into place.
 `PipelineRecord.splitManifest` stores the worker's `split_manifest` verbatim.
-`PipelineRecord.configHash` is SHA-256 over the canonical JSON of `configuration` +
-`expectedChannelIDs` + `expectedSampleRateHz` + dependency versions.
+`PipelineRecord.configHash` is SHA-256 over the canonical JSON (sorted keys, compact) of
+`configuration` + `expectedChannelIDs` + `expectedSampleRateHz` + `dependencyVersions`,
+computed by the worker. The seed is deliberately not part of it: a result is identified by
+recording + `configHash` + seed.
+
+## Results and reproduction
+
+`results/<uuid>/` is written as `.tmp-<uuid>` and renamed, so it is complete or absent.
+`evaluation.json` is the `evaluation` member of the worker's `fit_evaluate_project`
+response, byte-for-byte (the client slices it out of the response line without
+re-encoding). `result.meta.json` (`ResultMeta`) carries everything that varies between
+two runs of the same evaluation and therefore must stay out of `evaluation.json`:
+wall-clock `createdAt`, `durationsSeconds` (worker stages from its `done` event plus the
+app's total), `workerVersions`, `workerOrigin`, `evaluationSHA256`, and the reproduction
+link. Results are listed by `createdAt`.
+
+Same recording + `configHash` + seed as an earlier result: the evaluation is still run
+(that is the reproducibility evidence), the bytes are compared, and the new record is
+stored with `reproductionOf` = the root original when identical, or `divergedFrom` = that
+original when not. Both stay listed. A different seed is simply a new result.
+
+Export (`ProjectStore.export(result:to:)`) is documented in `docs/export-format.md`.
 
 ## Evaluation record (from the worker)
 
@@ -171,7 +236,9 @@ client passes the worker's `result` bytes through without re-encoding):
 - `config` — derived from the fitted objects: filter band/order/sections/direction,
   warm-up, window, CSP components and chosen indices, per-class shrinkage, LDA solver and
   shrinkage.
-- `data_source` — `kind` and, for synthetic data, a warning string that the UI must display.
+- `data_source` — `kind`, recording id, counts, and for synthetic or public-dataset data the
+  `warning` string the UI must display, plus `dataset`/`doi`/`license`/`subject`/`runs`
+  passed through from the recording's `source`.
 
 ## Prediction and action
 
