@@ -30,7 +30,8 @@ Rules the client relies on:
 - `shutdown` — answers `{"bye": true}`, cancels anything running or queued, and the
   process exits once the current handler reaches a checkpoint.
 - Error codes: `bad_json`, `bad_request`, `unsupported_version`, `unknown_method`,
-  `cancelled`, `internal`.
+  `cancelled`, `integrity` (a project chunk's bytes do not match its manifest hash;
+  the worker never repairs or skips it), `internal`.
 
 The Swift side mirrors these shapes in WorkerClient.swift; bump PROTOCOL_VERSION in
 both places together.

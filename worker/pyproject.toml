@@ -24,3 +24,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/bciworkspace_worker"]
+
+[tool.pytest.ini_options]
+markers = ["slow: runs the full bundled S001 example (seconds, not milliseconds)"]

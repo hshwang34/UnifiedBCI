@@ -611,6 +611,8 @@ def fit_evaluate(
         model.fit(Xtr, ytr)
         predictions[name] = model.predict(Xho)
         fitted[name] = fitted_arrays(model, sos)
+        if progress:
+            progress({"model": name, "holdout": True, "step": step + 1, "steps": len(models)})
         results[name] = {
             "cv_balanced_accuracy_per_fold": fold_scores,
             "cv_balanced_accuracy_mean": float(np.mean(fold_scores)),
