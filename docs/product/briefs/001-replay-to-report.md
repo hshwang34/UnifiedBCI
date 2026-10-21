@@ -136,3 +136,19 @@ band-power recipe, any claim about the user's own motor imagery.
   the same. Mitigation: source panel says so in the first line.
 - 150–200 MB download because of the bundled scientific stack. Acceptable for a developer
   tool; documented.
+
+## Resume 2026-10-21
+- **PR #1 merged** (foundations). **PR 2 (data path) is code-complete** on branch `feature-replay-data`
+  (pushed, 5 commits `8628060..f3a9885`, worktree `.claude/worktrees/feature-replay-data`), check green
+  in the lead's hands (52 pytest + 3 skipped, 59 XCTest, 0 warnings). Real S001 numbers, seed 0, untuned:
+  reference BA 0.625 (acc 0.60, CI 0.32–0.84, n = 15, holdout run S001R12), baseline BA 0.536;
+  evidence `unknown-session` (PhysioNet does not define sessions). Bundled example 7.5 MB.
+- **Gate for PR 2 was started, not finished:** a tester and a fresh reviewer were launched at the pause
+  and stopped; their reports, if any arrived, are in the session transcript only. **Single next step:**
+  re-run the PR 2 gate (tester probes per `001-test-plan.md` + fresh reviewer on `git diff main...feature-replay-data`),
+  fix round if needed, open PR 2 with the PM-facing body, then start PR 3 (screens) from `001-ui-spec.md`
+  stacked on PR 2 if unmerged.
+- Writer deviations to carry into PR 3 copy: evidence reads `unknown-session`, not `same-session`;
+  `.failed(reason)` state exists beside `analysisUnavailable`; reproduction stores `reproductionOf` or
+  `divergedFrom`; `fitted.npz` holds both models.
+- Out of scope until the PM picks them up: signing/notarization, clean-machine launch, live Cyton+Daisy smoke.
