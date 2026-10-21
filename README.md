@@ -25,8 +25,8 @@ Sources/WorkerClient/       JSON-lines IPC client that owns the Python worker pr
 Sources/Contracts/          on-disk record types: Recording, Event, Pipeline, Prediction
 Tests/                      XCTest: bridge, worker round-trip, contract round-trip
 native/brainflow/           C headers (5.23.0) + module map; dylib vendored by script
-worker/                     Python 3.12 package, pinned by uv.lock
-  src/bciworkspace_worker/  protocol.py · pipeline.py (CSP+rLDA, baseline) · main.py
+worker/                     Python 3.12 package, pinned by uv.lock (runtime: numpy/scipy/sklearn/brainflow;
+  src/bciworkspace_worker/  mne is dev-only) protocol.py · pipeline.py (own CSP+rLDA, baseline) · main.py
 docs/                       data contracts, ADRs, phase results
 scripts/                    bootstrap.sh · vendor_brainflow.sh · bundle_worker.sh
 ```
@@ -42,20 +42,25 @@ xcodebuild -project BCIWorkspace.xcodeproj -scheme BCIWorkspace test
 (cd worker && uv run pytest)  # worker-only tests
 ```
 
-Development builds launch the worker from `worker/.venv` (path baked into Info.plist as
-`BCIWorkerDevRoot`). `scripts/bundle_worker.sh` assembles a relocatable interpreter +
-site-packages under `build/worker-dist/`, which the build copies into the app bundle and
-the app prefers when present. The app never falls back to a system Python.
+Debug builds launch the worker from `worker/.venv` (path baked into Info.plist as
+`BCIWorkerDevRoot`; empty in Release). `scripts/bundle_worker.sh` assembles an arm64-only
+interpreter + site-packages under `build/worker-dist/` (157 MB), which the build copies
+into the app bundle and the app prefers when present; `--sign <identity>` signs every
+Mach-O individually. The interpreter is launched isolated (`-I`, or `-s -P` when the
+bundled site needs `PYTHONPATH`) with a scrubbed environment; the app never falls back to
+a system Python.
 
 ## Design rules carried from the PRD
 
 - One owner for acquisition; UI and training never block draining the device.
-- Record sequence numbers, receipt timestamps, host monotonic time, and gaps. Never
-  reinterpret bursty arrival times as an irregular ADC clock; never interpolate raw data.
+- Record sequence numbers (step +1, or +2 mod 256 on Cyton+Daisy), BrainFlow's wall-clock
+  timestamps, host monotonic drain time, and gaps. Never reinterpret bursty arrival times
+  as an irregular ADC clock; never interpolate raw data.
 - Fit every pipeline step inside the training fold; split by run/session, never by window;
   freeze a holdout before fitting; report per-trial uncertainty and a simpler baseline.
 - Offline evaluation replays the same causal transforms, state policy, and gap behavior
-  used online.
+  used online: the band-pass runs once over each continuous segment from zero state and
+  trials are cut afterwards; trials inside the filter warm-up are excluded and listed.
 - Explicit channel maps and montages; nothing is inferred from channel count.
 - A two-class classifier does not detect "no intent"; abstention is a policy, not evidence.
 
