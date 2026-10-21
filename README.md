@@ -44,7 +44,7 @@ xcodebuild -project BCIWorkspace.xcodeproj -scheme BCIWorkspace test
 
 Debug builds launch the worker from `worker/.venv` (path baked into Info.plist as
 `BCIWorkerDevRoot`; empty in Release). `scripts/bundle_worker.sh` assembles an arm64-only
-interpreter + site-packages under `build/worker-dist/` (157 MB), which the build copies
+interpreter + site-packages under `build/worker-dist/` (149 MB), which the build copies
 into the app bundle and the app prefers when present; `--sign <identity>` signs every
 Mach-O individually. The interpreter is launched isolated (`-I`, or `-s -P` when the
 bundled site needs `PYTHONPATH`) with a scrubbed environment; the app never falls back to

@@ -77,10 +77,11 @@ targets:
         script: |
           SRC="$SRCROOT/build/worker-dist"
           DST="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/worker"
-          STAMP="$DST/.rsync-stamp"
+          STAMP="$DERIVED_FILE_DIR/worker-dist.stamp"
           if [ -d "$SRC" ]; then
-            if [ ! -f "$STAMP" ] || [ -n "$(find "$SRC" -newer "$STAMP" -print -quit)" ]; then
-              rsync -a --delete --exclude .rsync-stamp "$SRC/" "$DST/"
+            mkdir -p "$DERIVED_FILE_DIR"
+            if [ ! -f "$STAMP" ] || [ ! -d "$DST" ] || [ -n "$(find "$SRC" -newer "$STAMP" -print -quit)" ]; then
+              rsync -a --delete "$SRC/" "$DST/"
               touch "$STAMP"
             fi
           fi

@@ -133,6 +133,19 @@ final class SequenceAccountingTests: XCTestCase {
         XCTAssertEqual(acc.samplesSeen, 1)
     }
 
+    func testNonFiniteOrFractionalCountersAreReportedNotTrapped() {
+        let f = ingest([5, 6, 7], step: 1, timestamps: [0, 1, 2]).count
+        XCTAssertEqual(f, 0)
+        var acc = SequenceAccounting(expectedStep: 1)
+        let findings = acc.ingest(counters: [5.0, .nan, .infinity, 6.5, 6.0][...], timestamps: [0, 1, 2, 3, 4][...])
+        XCTAssertEqual(findings.map(\.afterSampleIndex), [0, 1, 2])
+        for finding in findings {
+            guard case .invalidCounter = finding.kind else { return XCTFail("expected invalidCounter, got \(finding)") }
+        }
+        XCTAssertEqual(acc.lastCounter, 6, "valid counters still advance the state")
+        XCTAssertEqual(acc.samplesSeen, 5)
+    }
+
     func testOverflowSuspectedNearBufferCapacity() {
         XCTAssertTrue(SequenceAccounting.overflowSuspected(available: 44_900, bufferSize: 45_000))
         XCTAssertTrue(SequenceAccounting.overflowSuspected(available: 45_000, bufferSize: 45_000))

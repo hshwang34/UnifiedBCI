@@ -77,6 +77,18 @@ echo "==> trim BrainFlow to darwin libraries (the worker never opens a board)"
 find "$OUT/site/brainflow/lib" -type f \( -name '*.dll' -o -name '*.so' \) -delete
 find "$OUT/site/brainflow/lib" -type f -name 'libonnxruntime*' ! -name '*arm64*' -delete
 
+echo "==> thin universal Mach-O files to arm64"
+THINNED=0
+while IFS= read -r -d '' f; do
+  file -b "$f" | grep -q 'Mach-O' || continue
+  archs="$(lipo -archs "$f" 2>/dev/null || true)"
+  if [[ "$archs" == *x86_64* && "$archs" == *arm64* ]]; then
+    lipo "$f" -thin arm64 -output "$f.arm64" && mv -f "$f.arm64" "$f"
+    THINNED=$((THINNED + 1))
+  fi
+done < <(find "$OUT" -type f \( -name '*.so' -o -name '*.dylib' -o -path '*/bin/*' \) -print0)
+echo "   thinned $THINNED universal binaries"
+
 echo "==> trim site-packages"
 find "$OUT" -name "__pycache__" -type d -prune -exec rm -rf {} +
 find "$OUT/site" -type d -name tests -prune -exec rm -rf {} + 2>/dev/null || true  # not "testing": numpy.testing is imported at runtime

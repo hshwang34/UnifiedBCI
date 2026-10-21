@@ -46,9 +46,10 @@ public struct WorkerLaunch: Sendable, Equatable {
     /// Inherited environment minus anything that redirects the interpreter, plus the
     /// settings the worker expects. Mirrors what worker/main.py sets for itself.
     public func environment(inheriting base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
-        var env = base
-        for key in ["PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE", "PYTHONSTARTUP", "PYTHONEXECUTABLE",
-                    "PYTHONSAFEPATH", "PYTHONNOUSERSITE", "PYTHONPLATLIBDIR", "VIRTUAL_ENV", "CONDA_PREFIX"] {
+        // Every PYTHON* variable (PYTHONINSPECT=1 alone would park the worker in a REPL)
+        // and every DYLD_* injection goes; then the handful we rely on are set explicitly.
+        var env = base.filter { !($0.key.hasPrefix("PYTHON") || $0.key.hasPrefix("DYLD_")) }
+        for key in ["VIRTUAL_ENV", "CONDA_PREFIX"] {
             env.removeValue(forKey: key)
         }
         env["PYTHONUNBUFFERED"] = "1"

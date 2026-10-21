@@ -108,11 +108,12 @@ is the audit trail.
 12. **MNE dropped from the runtime set.** CSP is implemented in the worker (Ledoit-Wolf
     shrinkage, generalized eigendecomposition) and checked against `mne.decoding.CSP` in
     the dev test suite. Worker cold start no longer pays MNE's import.
-13. **Bundle after trimming:** `scripts/bundle_worker.sh` now yields **157 MB** (was
+13. **Bundle after trimming:** `scripts/bundle_worker.sh` now yields **149 MB** (was
     358 MB): interpreter 29 MB (libpython, Tcl/Tk, IDLE, ensurepip, pip removed), site
-    128 MB (scipy 52, BrainFlow 33, sklearn 23, numpy 12). BrainFlow's remaining 33 MB
-    is its darwin dylibs (DataHandler, MLModule, onnxruntime arm64, vendor SDKs); the
-    worker only needs `libBoardController` for version parity, so a further ~25 MB is
+    120 MB (scipy 52, BrainFlow 25 after `lipo -thin arm64` of its 10 universal dylibs,
+    sklearn 23, numpy 12). BrainFlow's remaining 25 MB is its darwin dylibs
+    (DataHandler, MLModule, onnxruntime arm64, vendor SDKs); the
+    worker only needs `libBoardController` for version parity, so a further ~20 MB is
     available if the package is trimmed to that one library — deliberately not done in
     PR 1 because `brainflow.__init__` imports modules that load the others lazily and
     that needs its own smoke test. The script's smoke test runs a real fit from an

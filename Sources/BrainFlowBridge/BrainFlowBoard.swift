@@ -277,6 +277,8 @@ public struct SequenceAccounting: Sendable, Equatable {
         case gap(estimatedMissing: Int, ambiguous: Bool, parityViolation: Bool)
         case staleHalf
         case duplicateCounter
+        /// The counter row held a non-finite or non-integer value; it is skipped, not trusted.
+        case invalidCounter(value: Double)
         case clockAnomaly(backwardSeconds: Double)
     }
 
@@ -312,7 +314,11 @@ public struct SequenceAccounting: Sendable, Equatable {
         precondition(counters.count == timestamps.count)
         var findings: [Finding] = []
         for (offset, (c, t)) in zip(counters, timestamps).enumerated() {
-            let counter = Int(c)
+            guard c.isFinite, let counter = Int(exactly: c) else {
+                findings.append(Finding(afterSampleIndex: offset - 1, kind: .invalidCounter(value: c)))
+                samplesSeen += 1
+                continue
+            }
             if let prev = lastCounter {
                 let delta = ((counter - prev) % Self.modulus + Self.modulus) % Self.modulus
                 if delta == expectedStep {

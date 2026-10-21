@@ -283,8 +283,9 @@ final class WorkerClientTests: XCTestCase {
 
     func testLaunchScrubsInheritedPythonEnvironment() {
         let dev = WorkerLaunch(origin: .developmentVenv, python: URL(fileURLWithPath: "/v/bin/python"), pythonPath: nil, workingDirectory: URL(fileURLWithPath: "/v"))
-        let env = dev.environment(inheriting: ["PYTHONHOME": "/usr", "PYTHONPATH": "/evil", "VIRTUAL_ENV": "/x", "PYTHONSTARTUP": "/s", "PYTHONUSERBASE": "/u", "HOME": "/h"])
-        for key in ["PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "PYTHONSTARTUP", "PYTHONUSERBASE"] { XCTAssertNil(env[key], key) }
+        let env = dev.environment(inheriting: ["PYTHONHOME": "/usr", "PYTHONPATH": "/evil", "VIRTUAL_ENV": "/x", "PYTHONSTARTUP": "/s", "PYTHONUSERBASE": "/u",
+                                               "PYTHONINSPECT": "1", "DYLD_INSERT_LIBRARIES": "/evil.dylib", "DYLD_LIBRARY_PATH": "/evil", "HOME": "/h"])
+        for key in ["PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONINSPECT", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH"] { XCTAssertNil(env[key], key) }
         XCTAssertEqual(env["HOME"], "/h")
         XCTAssertEqual(env["PYTHONUNBUFFERED"], "1")
         XCTAssertEqual(env["OMP_NUM_THREADS"], "1")

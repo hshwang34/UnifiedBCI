@@ -94,6 +94,10 @@ public enum GapEvidence: String, Codable, Sendable {
     case sequenceSkip = "sequence_skip"
     /// Counter repeated (Daisy: one half of a packet pair was lost; the sample mixes halves).
     case staleHalf = "stale_half"
+    /// Counter repeated on a step-1 board: a duplicated packet, not a loss. Provenance only.
+    case duplicateCounter = "duplicate_counter"
+    /// Counter value was not a finite integer; the sample's position in the sequence is unknown.
+    case invalidCounter = "invalid_counter"
     /// Receipt interval looked long, but no counter evidence. `estimatedMissingSamples` is nil.
     case receiptInterval = "receipt_interval"
     /// BrainFlow's ring buffer was near full at drain time; it drops oldest silently.

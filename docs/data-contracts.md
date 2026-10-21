@@ -89,6 +89,10 @@ Three clocks, never mixed:
     samples alias to smaller ones.
   - `stale_half` — counter repeated on a step-2 board: one half of the packet pair was lost
     and the committed sample mixes halves.
+  - `duplicate_counter` — counter repeated on a step-1 board: a duplicated packet, not a
+    loss. Provenance only, `estimatedMissingSamples: nil`.
+  - `invalid_counter` — the counter row held a non-finite or non-integer value; the sample
+    is kept but its place in the sequence is unknown.
   - `overflow_suspected` — at drain time BrainFlow reported ≥ `bufferSize − 125` samples
     available; its ring buffer drops the oldest silently.
   - `clock_anomaly` — the wall-clock timestamp stepped backwards. Provenance only; never a
@@ -144,14 +148,17 @@ Produced by `pipeline.fit_evaluate` and stored byte-for-byte as `evaluation.json
 client passes the worker's `result` bytes through without re-encoding):
 
 - `split_policy` — unit (`trial`), grouping (`run`), holdout description, CV description,
-  `evidence` (`same-session` | `cross-session` | `mixed-session`, derived from the session
-  ids of held-out vs training runs), seed.
+  `evidence` (`same-session` | `cross-session` | `mixed-session` | `unknown-session`,
+  derived from the session ids of held-out vs training runs; any run without a session
+  id makes it `unknown-session` — the stronger labels are claims, not defaults), seed.
 - `split_manifest` — the frozen split by id: `holdout_runs`, `holdout_trials`,
   `training_runs`, and `folds[].test_runs`. Supplying it back re-scores the identical
   split regardless of seed; a manifest that does not match the data is refused.
 - `class_counts` — per split.
-- `exclusions` — trials dropped and why (`window_starts_before_filter_warmup`,
-  `window_exceeds_segment`, …); empty is a valid answer.
+- `exclusions` — trials dropped and why; empty is a valid answer. Reasons:
+  `window_starts_before_filter_warmup` (the window begins inside the band-pass warm-up,
+  derived from the filter's slowest pole, so its features would carry a start transient
+  the online path never sees), `window_starts_before_segment`, `window_exceeds_segment`.
 - `models.<name>` — per-fold grouped CV balanced accuracy, and a `holdout` block with
   balanced accuracy, accuracy, confusion matrix, `n_test_trials`, `n_test_runs`, a 95 %
   Clopper-Pearson interval over held-out **trials**, `per_run` scores, and a run-level
