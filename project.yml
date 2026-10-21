@@ -1,0 +1,97 @@
+# XcodeGen spec. Regenerate the .xcodeproj with `xcodegen generate` (scripts/bootstrap.sh does it).
+# The .xcodeproj is not committed; this file is the source of truth for the Xcode project.
+name: BCIWorkspace
+options:
+  bundleIdPrefix: com.hshwang34
+  deploymentTarget:
+    macOS: "15.0"
+  xcodeVersion: "26.2"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
+    # Ad-hoc signing for local development. Release builds use a Developer ID identity
+    # and must re-enable hardened runtime (see docs/adr/0002-native-boundary.md).
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: NO
+    ENABLE_APP_SANDBOX: NO
+    DEAD_CODE_STRIPPING: YES
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+
+targets:
+  BCIWorkspace:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+      - path: Sources
+      # Pins the BrainFlow build the bridge was vendored against; tests compare it to the
+      # version the dylib and the worker report at runtime.
+      - path: native/brainflow/lib/VERSION
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hshwang34.BCIWorkspace
+        PRODUCT_NAME: BCIWorkspace
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/native/brainflow/include
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/native/brainflow/lib
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@executable_path/../Frameworks"
+        GENERATE_INFOPLIST_FILE: NO
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleName: BCI Workspace
+        CFBundleDisplayName: BCI Workspace
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        LSApplicationCategoryType: public.app-category.developer-tools
+        NSHumanReadableCopyright: ""
+        # Development-only: lets the app find worker/.venv without bundling it.
+        # Ignored when a bundled worker is present in Contents/Resources/worker.
+        BCIWorkerDevRoot: $(SRCROOT)/worker
+    dependencies:
+      - framework: native/brainflow/lib/libBoardController.dylib
+        embed: true
+        codeSign: true
+    postCompileScripts:
+      - name: Copy bundled worker if built
+        # scripts/bundle_worker.sh produces build/worker-dist; skip silently when absent (dev builds).
+        script: |
+          if [ -d "$SRCROOT/build/worker-dist" ]; then
+            rsync -a --delete "$SRCROOT/build/worker-dist/" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/worker/"
+          fi
+        basedOnDependencyAnalysis: false
+
+  BCIWorkspaceTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: BCIWorkspace
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hshwang34.BCIWorkspaceTests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/native/brainflow/include
+
+schemes:
+  BCIWorkspace:
+    build:
+      targets:
+        BCIWorkspace: all
+        BCIWorkspaceTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - BCIWorkspaceTests

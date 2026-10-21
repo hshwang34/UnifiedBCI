@@ -1,0 +1,10 @@
+// Clang module exposing BrainFlow's C ABI to Swift. Only board_controller.h and
+// board_info_getter.h are wrapped; DataHandler / MLModule stay inside the Python worker.
+// brainflow_constants.h is C++ (`enum class`) and is mirrored by hand in
+// Sources/BrainFlowBridge/BrainFlowConstants.swift — keep the two in sync on upgrades.
+module CBrainFlow {
+    header "board_controller.h"
+    header "board_info_getter.h"
+    link "BoardController"
+    export *
+}
