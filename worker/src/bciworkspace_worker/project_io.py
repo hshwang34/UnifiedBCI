@@ -171,7 +171,8 @@ def _chunk_path(rec: Recording, index: int) -> Path:
         raise IntegrityError(f"chunk {name} is missing: {exc}") from exc
     if not stat.S_ISREG(st.st_mode):
         raise IntegrityError(f"chunk {name} is not a regular file")
-    chunk_dir = (rec.directory / "chunks").resolve()
+    # `chunks` itself is not resolved, so a `chunks` symlink pointing elsewhere fails too.
+    chunk_dir = rec.directory.resolve() / "chunks"
     if path.resolve().parent != chunk_dir:
         raise IntegrityError(f"chunk {name} resolves outside the recording directory")
     return path
