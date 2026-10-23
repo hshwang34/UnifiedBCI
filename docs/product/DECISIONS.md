@@ -40,3 +40,12 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #12 · 2026-10-22 · The accuracy range bar marks the larger-class rate with "Interval includes / lies above / lies below the larger-class rate."
 *Why:* a plain "is this better than always guessing the bigger class?" cue, derived from stored counts only. Brief 001 visual spec §2.6.
+
+#13 · 2026-10-22 · Onboarding = animated first-run intro (4 steps: what it does · honest uncertainty · try the example · hardware in phase 2) in the welcome window, first launch only, skippable, replayable from Help. Decision #7 still holds (no project auto-opens).
+*Why:* PM choice. Brief 003.
+
+#14 · 2026-10-22 · Intro motion is an expressive showpiece (neural field, electrode map, self-drawing trace, glass morphs) — still 60 fps, Reduce Motion gives still frames, own imagery only.
+*Why:* PM choice over the calmer recommendation. Brief 003.
+
+#15 · 2026-10-22 · Brief 003 ships as its own PR after PR 3 merges.
+*Why:* keeps PR 3 reviewable. Brief 003.

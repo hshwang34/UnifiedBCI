@@ -161,3 +161,16 @@ band-power recipe, any claim about the user's own motor imagery.
   `.failed(reason)` state exists beside `analysisUnavailable`; reproduction stores `reproductionOf` or
   `divergedFrom`; `fitted.npz` holds both models.
 - Out of scope until the PM picks them up: signing/notarization, clean-machine launch, live Cyton+Daisy smoke.
+
+## Resume 2026-10-23
+- **PR #1 and #2 merged.** PR 3 (screens + glass restyle) is on `feature-replay-screens`, worktree
+  `.claude/worktrees/feature-replay-screens`, pushed, no PR opened yet.
+- Round 1 (glass restyle per `001-visual-spec.md`, 7 lifecycle fixes) passed the gate: pytest 70 / XCTest 111 green.
+  Tester and re-review found no blockers but asked for round 2.
+- **Round 2 (last allowed) was paused mid-way**, committed as "WIP PR 3 round 2 … (unverified)". It covers
+  single-scroll recording detail (Source card clipped at 1100x640), no clipped table columns at 1100 pt, the
+  Held-out runs ghost row, `Workspace.closeAll()` so quit awaits every in-flight save, nits, and named pending stages.
+- **Single next step:** finish round 2 — build + full gate, screenshots `pr3v3-*` (recording at 1100x640 incl. Events tab,
+  red "analysis unavailable" banner, result, progress; light + dark), check nothing is clipped, then open PR 3 and merge.
+- Then brief 003 (first-run intro, approved) in a new worktree from main.
+- Needs the PM by hand, not blocking merge: VoiceOver, Reduce Transparency, Increase Contrast, Wi-Fi-off run, macOS 15.
