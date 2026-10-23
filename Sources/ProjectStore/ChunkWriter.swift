@@ -50,11 +50,16 @@ public actor ChunkWriter {
     public let directory: URL
     public private(set) var manifest: RecordingManifest
     private let hook: CommitHook?
+    /// The index the next chunk gets. Advanced as soon as a chunk file has been renamed
+    /// into place, so a retry after a later step threw never renames over a committed
+    /// file; the abandoned index stays on disk as an `unlistedChunk` for `verify`.
+    private var nextIndex: Int
 
     init(directory: URL, manifest: RecordingManifest, hook: CommitHook?) {
         self.directory = directory
         self.manifest = manifest
         self.hook = hook
+        self.nextIndex = (manifest.chunks.map(\.index).max() ?? -1) + 1
     }
 
     @discardableResult
@@ -63,19 +68,26 @@ public actor ChunkWriter {
             throw ProjectStoreError.invalidChunk("\(chunk.samples.count) samples is not \(chunk.rowCount)×\(chunk.sampleCount)")
         }
         guard chunk.sampleCount > 0, chunk.rowCount > 0 else { throw ProjectStoreError.invalidChunk("empty chunk") }
-        let index = manifest.chunks.count
+        // Never reuse an index whose file exists (a chunk committed by an attempt that
+        // threw after its rename, or one a hostile project planted): skip past it.
+        let chunkDir = directory.appendingPathComponent("chunks")
+        while FileManager.default.fileExists(atPath: chunkDir.appendingPathComponent(String(format: "%06d.f64", nextIndex)).path) {
+            nextIndex += 1
+        }
+        let index = nextIndex
         let name = String(format: "%06d.f64", index)
-        let final = directory.appendingPathComponent("chunks").appendingPathComponent(name)
-        let tmp = directory.appendingPathComponent("chunks").appendingPathComponent(AtomicFile.tempPrefix + String(format: "%06d", index))
+        let final = chunkDir.appendingPathComponent(name)
+        let tmp = chunkDir.appendingPathComponent(AtomicFile.tempPrefix + String(format: "%06d", index))
 
         var bytes = Data(capacity: chunk.samples.count * MemoryLayout<Double>.size)
         for v in chunk.samples {
             var le = v.bitPattern.littleEndian
             withUnsafeBytes(of: &le) { bytes.append(contentsOf: $0) }
         }
-        try AtomicFile.writeAndSync(bytes, to: tmp, afterWrite: { [hook] in hook?.handler(.afterTmpWrite, index) })
+        try AtomicFile.writeAndSync(bytes, to: tmp, fresh: true, afterWrite: { [hook] in hook?.handler(.afterTmpWrite, index) })
         hook?.handler(.afterFsync, index)
         try AtomicFile.rename(tmp, to: final)
+        nextIndex = index + 1
         try AtomicFile.syncDirectory(final.deletingLastPathComponent())
         hook?.handler(.afterRename, index)
 
@@ -102,7 +114,7 @@ public actor ChunkWriter {
         var line = try ContractJSON.lineEncoder().encode(event)
         line.append(0x0A)
         let url = directory.appendingPathComponent(ProjectStore.eventsFileName)
-        let fd = open(url.path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0o644)
+        let fd = open(url.path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0o644)
         guard fd >= 0 else { throw ProjectStoreError.io("open events.jsonl", errno) }
         defer { close(fd) }
         try line.withUnsafeBytes { buf in
@@ -110,7 +122,7 @@ public actor ChunkWriter {
                 throw ProjectStoreError.io("append events.jsonl", errno)
             }
         }
-        if fcntl(fd, F_FULLFSYNC) != 0, fsync(fd) != 0 { throw ProjectStoreError.io("fsync events.jsonl", errno) }
+        try AtomicFile.fullSync(fd, "events.jsonl")
     }
 
     private func writeManifest() throws {

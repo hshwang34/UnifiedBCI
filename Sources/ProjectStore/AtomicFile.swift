@@ -17,7 +17,7 @@ enum AtomicFile {
     /// kill the process at a named point; production passes nothing.
     static func write(_ data: Data, to target: URL, between: ((Step) -> Void)? = nil) throws {
         let tmp = tempURL(for: target)
-        try writeAndSync(data, to: tmp, afterWrite: { between?(.tmpWritten) })
+        try writeAndSync(data, to: tmp, fresh: true, afterWrite: { between?(.tmpWritten) })
         between?(.synced)
         try rename(tmp, to: target)
         try syncDirectory(target.deletingLastPathComponent())
@@ -26,9 +26,14 @@ enum AtomicFile {
 
     enum Step { case tmpWritten, synced, renamed }
 
-    /// Creates (or truncates) `url`, writes all of `data`, and fsyncs the file.
-    static func writeAndSync(_ data: Data, to url: URL, afterWrite: (() -> Void)? = nil) throws {
-        let fd = open(url.path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o644)
+    /// Creates (or truncates) `url`, writes all of `data`, and fsyncs the file. Never
+    /// follows a symbolic link at `url`. `fresh` is for temp files: whatever is at `url`
+    /// (a crash leftover, or a link planted in a hostile project) is unlinked first and
+    /// the file is created exclusively, so the bytes can only land in a new inode.
+    static func writeAndSync(_ data: Data, to url: URL, fresh: Bool = false, afterWrite: (() -> Void)? = nil) throws {
+        if fresh, unlink(url.path) != 0, errno != ENOENT { throw ProjectStoreError.io("unlink \(url.lastPathComponent)", errno) }
+        let flags = O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC | (fresh ? O_EXCL : O_TRUNC)
+        let fd = open(url.path, flags, 0o644)
         guard fd >= 0 else { throw ProjectStoreError.io("open \(url.lastPathComponent)", errno) }
         defer { close(fd) }
         try data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
@@ -43,11 +48,41 @@ enum AtomicFile {
             }
         }
         afterWrite?()
-        // F_FULLFSYNC asks the drive to flush its own cache too; plain fsync(2) on
-        // macOS only pushes to the drive. Fall back when the volume does not support it.
+        try fullSync(fd, url.lastPathComponent)
+    }
+
+    /// F_FULLFSYNC asks the drive to flush its own cache too; plain fsync(2) on macOS
+    /// only pushes to the drive. Fall back when the volume does not support it.
+    static func fullSync(_ fd: Int32, _ name: String) throws {
         if fcntl(fd, F_FULLFSYNC) != 0, fsync(fd) != 0 {
-            throw ProjectStoreError.io("fsync \(url.lastPathComponent)", errno)
+            throw ProjectStoreError.io("fsync \(name)", errno)
         }
+    }
+
+    /// Fsyncs a file someone else wrote (the worker's `fitted.npz`, a copied chunk).
+    static func syncFile(_ url: URL) throws {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw ProjectStoreError.io("open \(url.lastPathComponent)", errno) }
+        defer { close(fd) }
+        try fullSync(fd, url.lastPathComponent)
+    }
+
+    /// Fsyncs every regular file under `dir`, then every directory bottom-up, so a
+    /// following `rename` of `dir` publishes content that is already on disk. Symbolic
+    /// links are neither followed nor synced.
+    static func syncTree(_ dir: URL) throws {
+        let fm = FileManager.default
+        for name in try fm.contentsOfDirectory(atPath: dir.path) {
+            let url = dir.appendingPathComponent(name)
+            var st = stat()
+            guard lstat(url.path, &st) == 0 else { throw ProjectStoreError.io("lstat \(name)", errno) }
+            switch st.st_mode & S_IFMT {
+            case S_IFREG: try syncFile(url)
+            case S_IFDIR: try syncTree(url)
+            default: continue
+            }
+        }
+        try syncDirectory(dir)
     }
 
     static func rename(_ from: URL, to: URL) throws {
@@ -60,9 +95,7 @@ enum AtomicFile {
         let fd = open(dir.path, O_RDONLY | O_CLOEXEC)
         guard fd >= 0 else { throw ProjectStoreError.io("open dir \(dir.lastPathComponent)", errno) }
         defer { close(fd) }
-        if fcntl(fd, F_FULLFSYNC) != 0, fsync(fd) != 0 {
-            throw ProjectStoreError.io("fsync dir \(dir.lastPathComponent)", errno)
-        }
+        try fullSync(fd, "dir \(dir.lastPathComponent)")
     }
 
     static func sha256Hex(_ data: Data) -> String {
@@ -102,7 +135,7 @@ public enum ProjectStoreError: Error, CustomStringConvertible, Sendable {
 
 /// A chunk whose bytes disagree with the manifest. Reported, never repaired: the
 /// manifest is the claim and the file is the evidence; the app does not get to pick.
-public struct IntegrityIssue: Sendable, Equatable, CustomStringConvertible {
+public struct IntegrityIssue: Error, Sendable, Equatable, CustomStringConvertible {
     public enum Kind: String, Sendable { case hashMismatch, missingChunk, sizeMismatch, unlistedChunk }
     public var kind: Kind
     public var file: String

@@ -38,7 +38,13 @@ Each `segment-<runID>.f64` is every chunk of that segment concatenated in sample
 with **only the channel rows** (counter and timestamp rows a live recording stores are
 left out), in the order of `manifest.channels`. Values are in the unit each channel
 declares (`channels[i].unit`, `uV` for the bundled example). Segments are never joined:
-one file per segment, and the filter state the worker uses resets at each one.
+one file per segment, and the filter state the worker uses resets at each one. When two
+segments would share a name (a reconnect inside one run, or run ids that differ only in
+characters replaced by `_` or in case), each of them gets its segment index appended,
+`segment-<runID>-<index>.f64`; the `files[].file` entries are always the names to open.
+An export whose chunks do not tile a segment contiguously from sample 0 is refused.
+The folder is written as a `.tmp-<name>` sibling and renamed into place, so it is
+complete or absent.
 
 Read it with numpy alone (`python -I` ignores every environment variable, so this is a
 clean-room check; `np.fromfile` needs the explicit `<f8` dtype):

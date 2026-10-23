@@ -58,9 +58,10 @@ public struct RecordingHandle: Sendable {
     }
 
     /// The chunk's path, built from its index and confirmed (after resolving symlinks) to
-    /// lie inside this recording's `chunks/` directory.
+    /// lie inside this recording's `chunks/` directory. `chunks` itself is not resolved,
+    /// so a `chunks` symlink pointing elsewhere fails the check too.
     func chunkURL(_ entry: RecordingManifest.ChunkEntry) throws -> URL {
-        let chunkDir = directory.appendingPathComponent("chunks", isDirectory: true).resolvingSymlinksInPath()
+        let chunkDir = directory.resolvingSymlinksInPath().appendingPathComponent("chunks", isDirectory: true)
         let url = directory.appendingPathComponent(Self.chunkFileName(index: entry.index))
         let resolved = url.resolvingSymlinksInPath()
         guard resolved.path.hasPrefix(chunkDir.path + "/") else {
@@ -72,15 +73,18 @@ public struct RecordingHandle: Sendable {
     /// Raw little-endian float64 bytes of one chunk, verified. Throws `.integrity` on
     /// any disagreement with the manifest; the file is left exactly as found.
     public func chunkBytes(_ entry: RecordingManifest.ChunkEntry) throws -> Data {
-        if let issue = check(entry) { throw ProjectStoreError.integrity([issue]) }
-        return try Data(contentsOf: try chunkURL(entry))
+        switch verifiedBytes(entry) {
+        case .success(let data): return data
+        case .failure(let issue): throw ProjectStoreError.integrity([issue])
+        }
     }
 
     /// One chunk as `rowCount × sampleCount` doubles, row-major, host byte order (little).
     public func chunk(_ entry: RecordingManifest.ChunkEntry) throws -> [Double] {
         let data = try chunkBytes(entry)
         return data.withUnsafeBytes { buf in
-            Array(buf.bindMemory(to: UInt64.self)).map { Double(bitPattern: UInt64(littleEndian: $0)) }
+            // `Data` makes no alignment promise, so read each value unaligned.
+            (0..<(buf.count / 8)).map { Double(bitPattern: UInt64(littleEndian: buf.loadUnaligned(fromByteOffset: $0 * 8, as: UInt64.self))) }
         }
     }
 
@@ -113,22 +117,38 @@ public struct RecordingHandle: Sendable {
     }
 
     private func check(_ entry: RecordingManifest.ChunkEntry) -> IntegrityIssue? {
-        guard let url = try? chunkURL(entry) else {
-            return IntegrityIssue(kind: .missingChunk, file: entry.fileName, detail: "resolves outside the recording directory")
+        if case .failure(let issue) = verifiedBytes(entry) { return issue }
+        return nil
+    }
+
+    /// The chunk's bytes if the file is a regular file of exactly the declared size
+    /// (checked with `fstat` before anything is read) whose SHA-256 matches; otherwise
+    /// the first disagreement. Opened with `O_NOFOLLOW` and non-blocking, so a symbolic
+    /// link or a FIFO in place of a chunk is refused rather than followed or waited on.
+    private func verifiedBytes(_ entry: RecordingManifest.ChunkEntry) -> Result<Data, IntegrityIssue> {
+        func issue(_ kind: IntegrityIssue.Kind, _ detail: String) -> Result<Data, IntegrityIssue> {
+            .failure(IntegrityIssue(kind: kind, file: entry.fileName, detail: detail))
         }
-        guard let data = FileManager.default.contents(atPath: url.path) else {
-            return IntegrityIssue(kind: .missingChunk, file: entry.fileName, detail: "listed in the manifest but absent")
+        guard (try? chunkURL(entry)) != nil else { return issue(.missingChunk, "resolves outside the recording directory") }
+        guard let expected = try? Self.expectedByteCount(entry) else { return issue(.sizeMismatch, "declared size overflows") }
+        let path = directory.appendingPathComponent(Self.chunkFileName(index: entry.index)).path
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else {
+            return issue(.missingChunk, errno == ENOENT ? "listed in the manifest but absent" : "cannot be opened: \(String(cString: strerror(errno)))")
         }
-        guard let expected = try? Self.expectedByteCount(entry) else {
-            return IntegrityIssue(kind: .sizeMismatch, file: entry.fileName, detail: "declared size overflows")
+        defer { close(fd) }
+        var st = stat()
+        guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG else { return issue(.missingChunk, "not a regular file") }
+        guard st.st_size == off_t(expected) else {
+            return issue(.sizeMismatch, "\(st.st_size) bytes, manifest says \(entry.rowCount)×\(entry.sampleCount) float64 = \(expected)")
         }
-        if data.count != expected {
-            return IntegrityIssue(kind: .sizeMismatch, file: entry.fileName, detail: "\(data.count) bytes, manifest says \(entry.rowCount)×\(entry.sampleCount) float64 = \(expected)")
+        guard let data = try? FileHandle(fileDescriptor: fd, closeOnDealloc: false).readToEnd() ?? Data(), data.count == expected else {
+            return issue(.sizeMismatch, "file changed size while being read")
         }
         let digest = AtomicFile.sha256Hex(data)
         if digest != entry.sha256 {
-            return IntegrityIssue(kind: .hashMismatch, file: entry.fileName, detail: "SHA-256 \(digest) ≠ manifest \(entry.sha256)")
+            return issue(.hashMismatch, "SHA-256 \(digest) ≠ manifest \(entry.sha256)")
         }
-        return nil
+        return .success(data)
     }
 }

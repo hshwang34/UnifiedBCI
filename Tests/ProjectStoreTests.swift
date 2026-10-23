@@ -141,6 +141,28 @@ final class ProjectStoreTests: XCTestCase {
                        "a refused import must not leave a recording behind")
     }
 
+    func testImportBundledExample_failureLeavesNothingAndRetrySucceeds() async throws {
+        let damaged = scratch.appendingPathComponent("damaged.bciproj")
+        try FileManager.default.copyItem(at: try Self.tinyFixtureURL(), to: damaged)
+        let rec = try XCTUnwrap(try FileManager.default.contentsOfDirectory(atPath: damaged.appendingPathComponent("recordings").path).first)
+        let chunk = damaged.appendingPathComponent("recordings/\(rec)/chunks/000005.f64")
+        var bytes = try Data(contentsOf: chunk)
+        bytes[1] ^= 0x10
+        try bytes.write(to: chunk)
+        let dest = scratch.appendingPathComponent("retry.bciproj")
+        XCTAssertThrowsError(try ProjectStore.importBundledExample(from: damaged, into: dest))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path), "a failed import leaves no project at the destination")
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: scratch.path).filter { $0.hasPrefix(".tmp-") }
+        XCTAssertEqual(siblings, [], "nor a temp directory beside it")
+
+        let store = try ProjectStore.importBundledExample(from: try Self.tinyFixtureURL(), into: dest)
+        let ids = try await store.recordingIDs()
+        XCTAssertEqual(ids.count, 1)
+        let issues = try await store.verify(recording: ids[0])
+        XCTAssertEqual(issues, [])
+        XCTAssertEqual(store.directory, dest)
+    }
+
     // MARK: Integrity
 
     func testCorruptChunk_reportedNotRepaired() async throws {
@@ -164,6 +186,48 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(try handle.chunk(handle.manifest.chunks[0]), payload(0).samples, "the good chunk still reads")
         XCTAssertThrowsError(try handle.chunk(handle.manifest.chunks[1]))
         XCTAssertEqual(try Data(contentsOf: chunk), bytes)
+    }
+
+    func testOversizedOrSpecialChunkFile_refusedFromStatWithoutReading() async throws {
+        let url = scratch.appendingPathComponent("big.bciproj")
+        let store = try ProjectStore.create(at: url, name: "B")
+        let manifest = sampleManifest()
+        let writer = try await store.createRecording(manifest)
+        try await writer.append(payload(0))
+        try await writer.append(payload(1))
+        let chunks = url.appendingPathComponent("recordings/\(manifest.recordingID.uuidString)/chunks")
+        // 16 GiB sparse: reading it would take minutes and the memory to hold it.
+        let fh = try FileHandle(forWritingTo: chunks.appendingPathComponent("000000.f64"))
+        try fh.truncate(atOffset: 16 << 30)
+        try fh.close()
+        // A FIFO would block a plain read forever.
+        try FileManager.default.removeItem(at: chunks.appendingPathComponent("000001.f64"))
+        XCTAssertEqual(mkfifo(chunks.appendingPathComponent("000001.f64").path, 0o644), 0)
+
+        let handle = try await store.recording(id: manifest.recordingID)
+        let started = ContinuousClock.now
+        let issues = handle.verify()
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(2), "refused from fstat, not after reading")
+        XCTAssertEqual(issues.map(\.kind), [.sizeMismatch, .missingChunk])
+        XCTAssertTrue(issues[0].detail.contains("\(16 << 30) bytes"), issues[0].detail)
+        XCTAssertTrue(issues[1].detail.contains("not a regular file"), issues[1].detail)
+    }
+
+    func testChunkWriter_neverReusesAnIndexWhoseFileExists() async throws {
+        let url = scratch.appendingPathComponent("idx.bciproj")
+        let store = try ProjectStore.create(at: url, name: "I")
+        let manifest = sampleManifest()
+        let writer = try await store.createRecording(manifest)
+        try await writer.append(payload(0))
+        // What an append leaves when it throws after its rename: a committed, unlisted file.
+        let stray = url.appendingPathComponent("recordings/\(manifest.recordingID.uuidString)/chunks/000001.f64")
+        try Data([9, 9, 9]).write(to: stray)
+        let entry = try await writer.append(payload(1))
+        XCTAssertEqual(entry.index, 2)
+        XCTAssertEqual(try Data(contentsOf: stray), Data([9, 9, 9]), "the existing file is not replaced")
+        let handle = try await store.recording(id: manifest.recordingID)
+        XCTAssertEqual(try handle.chunk(entry), payload(1).samples)
+        XCTAssertEqual(handle.verify().map(\.kind), [.unlistedChunk])
     }
 
     func testOrphanTempFilesRemovedOnOpen_committedFilesUntouched() async throws {
@@ -297,6 +361,92 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(pipelineCount, 2)
     }
 
+    func testResults_skipCorruptMetaAndReportIt() async throws {
+        let url = scratch.appendingPathComponent("bad.bciproj")
+        let store = try ProjectStore.create(at: url, name: "R")
+        let good = try await storeFakeResult(in: store, seed: 1, createdAt: Date(timeIntervalSince1970: 100))
+        let broken = try await storeFakeResult(in: store, seed: 2, createdAt: Date(timeIntervalSince1970: 200))
+        try Data("{ not json".utf8).write(to: url.appendingPathComponent("results/\(broken.resultID.uuidString)/result.meta.json"))
+        let listed = try await store.results().map(\.resultID)
+        XCTAssertEqual(listed, [good.resultID], "one damaged result must not hide the others")
+        let unreadable = await store.unreadableResults
+        XCTAssertEqual(unreadable.map(\.resultID), [broken.resultID])
+        XCTAssertFalse(unreadable[0].reason.isEmpty)
+    }
+
+    func testResult_refusesEvaluationBytesThatDisagreeWithTheMeta() async throws {
+        let url = scratch.appendingPathComponent("hash.bciproj")
+        let store = try ProjectStore.create(at: url, name: "R")
+        let meta = try await storeFakeResult(in: store, seed: 1, createdAt: Date())
+        try Data("{\"x\":2}".utf8).write(to: url.appendingPathComponent("results/\(meta.resultID.uuidString)/evaluation.json"))
+        await expectThrows({ _ = try await store.result(id: meta.resultID) }) { error in
+            guard case ProjectStoreError.integrity(let issues) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(issues.map(\.kind), [.hashMismatch])
+        }
+    }
+
+    /// A force-quit mid-evaluation leaves the worker's staging directory and possibly a
+    /// half-assembled result or pipeline directory. Reopening shows every earlier result
+    /// byte-for-byte and none of the debris.
+    func testKillDuringEvaluation_keepsCompletedResults() async throws {
+        let url = scratch.appendingPathComponent("kill.bciproj")
+        let store = try ProjectStore.create(at: url, name: "K")
+        let earlier = try await storeFakeResult(in: store, seed: 1, createdAt: Date(timeIntervalSince1970: 100), evaluation: "{\"kept\": 1.0}")
+        let before = try await store.result(id: earlier.resultID)
+        // Debris as a kill leaves it: an unheld staging lock, a worker-written npz, a
+        // result directory with only its evaluation written.
+        let staging = url.appendingPathComponent("pipelines/.tmp-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Data().write(to: staging.appendingPathComponent(ProjectStore.stagingLockFileName))
+        try Data("PK".utf8).write(to: staging.appendingPathComponent("fitted.npz"))
+        let partialPipeline = url.appendingPathComponent("pipelines/.tmp-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: partialPipeline, withIntermediateDirectories: true)
+        try Data("{".utf8).write(to: partialPipeline.appendingPathComponent("pipeline.json"))
+        let partialResult = url.appendingPathComponent("results/.tmp-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: partialResult, withIntermediateDirectories: true)
+        try Data("{\"half\"".utf8).write(to: partialResult.appendingPathComponent("evaluation.json"))
+
+        let reopened = try ProjectStore.open(at: url)
+        let removed = await reopened.removedOrphans
+        XCTAssertEqual(removed.count, 3, "\(removed)")
+        let listed = try await reopened.results()
+        XCTAssertEqual(listed.map(\.resultID), [earlier.resultID])
+        let after = try await reopened.result(id: earlier.resultID)
+        XCTAssertEqual(after.evaluationJSON, before.evaluationJSON)
+        XCTAssertEqual(after.meta, before.meta)
+        XCTAssertEqual(after.pipeline, before.pipeline)
+        let pipelines = try FileManager.default.contentsOfDirectory(atPath: url.appendingPathComponent("pipelines").path)
+        XCTAssertEqual(pipelines, [earlier.pipelineID.uuidString])
+    }
+
+    func testOpenSweep_isBestEffortAndSkipsALiveStagingDirectory() async throws {
+        let url = scratch.appendingPathComponent("sweep.bciproj")
+        let live = try ProjectStore.create(at: url, name: "S")
+        let staging = try await live.stagingDirectory()
+        try Data("PK".utf8).write(to: staging.appendingPathComponent("fitted.npz"))
+        // A temp directory whose contents cannot be deleted (read-only parent of a file).
+        let stuck = url.appendingPathComponent("results/.tmp-stuck")
+        try FileManager.default.createDirectory(at: stuck, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: stuck.appendingPathComponent("evaluation.json"))
+        XCTAssertEqual(chmod(stuck.path, 0o500), 0)
+        defer { chmod(stuck.path, 0o700) }
+
+        let second = try ProjectStore.open(at: url)     // must not throw
+        let kept = await second.keptOrphans
+        XCTAssertEqual(kept.count, 2, "\(kept)")
+        XCTAssertTrue(kept.contains { $0.hasPrefix("pipelines/\(staging.lastPathComponent): in use") }, "\(kept)")
+        XCTAssertTrue(kept.contains { $0.hasPrefix("results/.tmp-stuck") }, "\(kept)")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staging.appendingPathComponent("fitted.npz").path),
+                      "a staging directory in use by a live evaluation is not deleted")
+
+        await live.discardStagingDirectory(staging)
+        chmod(stuck.path, 0o700)
+        let third = try ProjectStore.open(at: url)
+        let removed = await third.removedOrphans
+        XCTAssertEqual(removed, ["results/.tmp-stuck"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+    }
+
     // MARK: Export
 
     func testExport_samplesConcatenateChunksInChannelOrder() async throws {
@@ -331,6 +481,66 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: out.appendingPathComponent("evaluation.json")), Data("{\"x\":1}".utf8))
         let attribution = try String(contentsOf: out.appendingPathComponent("ATTRIBUTION.md"), encoding: .utf8)
         XCTAssertTrue(attribution.contains("synthetic recording on test"))
+    }
+
+    /// A recording with two segments whose run ids sanitize to the same file name, and a
+    /// result pointing at it.
+    private func twoSegmentExportFixture(_ name: String, runIDs: (String, String)) async throws -> (ProjectStore, RecordingManifest, ResultMeta) {
+        let url = scratch.appendingPathComponent(name)
+        let store = try ProjectStore.create(at: url, name: "E")
+        var manifest = sampleManifest(rows: 3)
+        let t0 = manifest.createdAt
+        manifest.segments = [
+            .init(index: 0, sessionID: nil, runID: runIDs.0, startedAtWall: t0, startedAtMonotonicNanos: 0, endedAtMonotonicNanos: nil, endReason: nil, detectedGaps: []),
+            .init(index: 1, sessionID: nil, runID: runIDs.1, startedAtWall: t0, startedAtMonotonicNanos: 0, endedAtMonotonicNanos: nil, endReason: nil, detectedGaps: []),
+        ]
+        let writer = try await store.createRecording(manifest)
+        try await writer.append(payload(0))
+        try await writer.append(payload(1))
+        var second = payload(2)
+        second.segment = 1
+        second.firstSampleIndex = 0
+        try await writer.append(second)
+        var meta = try await storeFakeResult(in: store, seed: 0, createdAt: Date())
+        meta.recordingID = manifest.recordingID
+        try ContractJSON.encoder().encode(meta).write(to: url.appendingPathComponent("results/\(meta.resultID.uuidString)/result.meta.json"))
+        return (store, manifest, meta)
+    }
+
+    func testExport_collidingRunIDsGetDistinctFiles() async throws {
+        let (store, _, meta) = try await twoSegmentExportFixture("col.bciproj", runIDs: ("run/1", "run:1"))
+        let out = scratch.appendingPathComponent("export")
+        try await store.export(result: meta.resultID, to: out)
+        let header = try ContractJSON.decoder().decode(ExportedRecording.self, from: Data(contentsOf: out.appendingPathComponent("recording.json")))
+        XCTAssertEqual(header.samples.files.map(\.file), ["segment-run_1-0.f64", "segment-run_1-1.f64"])
+        XCTAssertEqual(header.samples.files.map(\.sampleCount), [8, 4])
+        for file in header.samples.files {
+            XCTAssertEqual(AtomicFile.sha256Hex(try Data(contentsOf: out.appendingPathComponent(file.file))), file.sha256)
+        }
+        // Case-only differences collide on APFS too; distinct names stay as they were.
+        let s = ProjectStore.segmentFileNames
+        let seg = { (i: Int, run: String) in RecordingManifest.StreamSegment(index: i, sessionID: nil, runID: run, startedAtWall: Date(),
+                                                                          startedAtMonotonicNanos: 0, endedAtMonotonicNanos: nil, endReason: nil, detectedGaps: []) }
+        XCTAssertEqual(s([seg(0, "A"), seg(1, "a")]), ["segment-A-0.f64", "segment-a-1.f64"])
+        XCTAssertEqual(s([seg(0, "x"), seg(1, "x"), seg(2, "x-1")]), ["segment-x-0.f64", "segment-x-1.f64", "segment-x-1_.f64"])
+        XCTAssertEqual(s([seg(0, "R04"), seg(1, "R08")]), ["segment-R04.f64", "segment-R08.f64"])
+    }
+
+    func testExport_refusesChunksThatDoNotTileTheSegment_andLeavesNothing() async throws {
+        let (store, manifest, meta) = try await twoSegmentExportFixture("gap.bciproj", runIDs: ("a", "b"))
+        try editManifest(store, manifest.recordingID) { obj in
+            var chunks = obj["chunks"] as! [[String: Any]]
+            chunks[1]["firstSampleIndex"] = 5      // chunk 0 covers 0..<4: a one-sample gap
+            obj["chunks"] = chunks
+        }
+        let out = scratch.appendingPathComponent("export")
+        await expectThrows({ try await store.export(result: meta.resultID, to: out) }) { error in
+            guard case ProjectStoreError.invalidManifest(let why) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(why.contains("expected 4"), why)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: out.path))
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: scratch.path).filter { $0.hasPrefix(".tmp-") }
+        XCTAssertEqual(siblings, [], "a failed export leaves no temp directory")
     }
 
     // MARK: Hostile manifests
