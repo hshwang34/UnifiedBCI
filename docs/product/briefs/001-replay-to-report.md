@@ -25,31 +25,31 @@ recordings.
   was split, and what would make the number misleading.
 
 ## Acceptance criteria
-- [ ] Welcome window offers **Open project**, **Explore an example**, **Connect hardware**
+- [x] Welcome window offers **Open project**, **Explore an example**, **Connect hardware**
       (the last is present but disabled with an explanation until phase 2).
-- [ ] "Explore an example" creates a project on disk from the bundled recording and opens it;
+- [x] "Explore an example" creates a project on disk from the bundled recording and opens it;
       creation reads only from the app bundle (no network code on that path), no terminal, no hardware.
-- [ ] Project window: sidebar with Recordings · Protocols · Pipelines · Results · Live Test
+- [x] Project window: sidebar with Recordings · Protocols · Pipelines · Results · Live Test
       (Protocols/Live Test present but empty with "coming in phase 2/3" copy).
-- [ ] Recording detail shows source (dataset, subject, runs, license/citation), channel map
+- [x] Recording detail shows source (dataset, subject, runs, license/citation), channel map
       with declared labels and units, sample rate, segment list (one per run), and the event
       table (cue label, onset, run). Labels and units are displayed exactly as stored; a recording
       without declared labels shows "undeclared", never a 10-20 guess.
-- [ ] "Evaluate" runs the reference CSP+rLDA and the log-variance baseline in the worker with a
+- [x] "Evaluate" runs the reference CSP+rLDA and the log-variance baseline in the worker with a
       determinate progress indicator updated at least once per stage (fit, CV, holdout); the result view shows balanced accuracy, accuracy with a 95 % trial-level
       interval, confusion matrix, class counts per split, grouped-by-run split policy, seed,
       exclusions, evidence type (same-session), and the dataset warning.
-- [ ] Re-running with the same recording, pipeline config and seed produces a byte-identical
+- [x] Re-running with the same recording, pipeline config and seed produces a byte-identical
       `evaluation.json` (same machine, same bundled worker) and is stored as a *reproduction*
       linked to the original; changing the seed creates a new result record. All remain listed.
-- [ ] Export writes a folder with samples (documented binary), `events.jsonl`, channel map,
+- [x] Export writes a folder with samples (documented binary), `events.jsonl`, channel map,
       pipeline config, model arrays (`.npz`), and `evaluation.json`; a Python one-liner in the
       docs reads it without the app.
-- [ ] Project directory survives force-quit mid-evaluation: reopening shows the recording and
+- [x] Project directory survives force-quit mid-evaluation: reopening shows the recording and
       any completed results; nothing corrupted.
-- [ ] Worker death during evaluation shows an explicit "analysis unavailable" state with a
+- [x] Worker death during evaluation shows an explicit "analysis unavailable" state with a
       retry; the recording stays usable.
-- [ ] Attribution for the bundled dataset (PhysioNet / Schalk 2004 / Goldberger 2000, ODC-BY)
+- [x] Attribution for the bundled dataset (PhysioNet / Schalk 2004 / Goldberger 2000, ODC-BY)
       is shown in the example's info panel and in the export.
 
 ## Out of scope
