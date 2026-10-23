@@ -147,9 +147,11 @@ PROJECT_DEFAULTS: dict[str, Any] = {
 
 def handle_fit_evaluate_defaults(req: Request, ctx: Context) -> dict[str, Any]:
     """The defaults `fit_evaluate_project` applies, and a plain description of the two
-    recipes it runs, built from the same objects the fit uses. No data is read."""
+    recipes it runs, built from the same objects the fit uses. No data is read.
+    Optional param `csp_components` describes the recipe with that count instead of the
+    default, so the prose matches what an evaluation with an override would fit."""
     bandpass = pipeline.BandpassSpec()
-    n_components = int(PROJECT_DEFAULTS["csp_components"])
+    n_components = int(req.params.get("csp_components", PROJECT_DEFAULTS["csp_components"]))
     ref = pipeline.reference_pipeline(n_components)
     csp = ref.named_steps["csp"]
     lda = ref.named_steps["lda"]

@@ -8,7 +8,7 @@ struct EvaluateInspector: View {
     var body: some View {
         if let handle = session.selectedRecording {
             let model = EvaluateInspectorModel(manifest: handle.manifest, events: session.eventsByRecording[handle.id] ?? [],
-                                               latest: session.latestReport[handle.id], defaults: session.workerDefaults,
+                                               latest: session.latestReport[handle.id], defaults: session.workerDefaults, recipes: session.recipes,
                                                modelName: session.modelName)
             Form {
                 Section("Evaluate") {

@@ -113,6 +113,17 @@ enum EvidenceText {
         }
     }
 
+    /// The evidence as a short phrase for running text; never the raw token.
+    static func short(_ evidence: String) -> String {
+        switch evidence {
+        case "unknown-session": return "Session unknown"
+        case "same-session": return "Same session"
+        case "cross-session": return "Cross-session"
+        case "mixed-session": return "Mixed sessions"
+        default: return "Evidence: \(evidence)"
+        }
+    }
+
     static func exclusionReason(_ code: String) -> String {
         switch code {
         case "window_starts_before_filter_warmup": return "window starts before filter warm-up"
@@ -204,7 +215,7 @@ struct ResultDetailModel {
         }
         let h = ref.holdout
         headline = Self.headline(h)
-        trialsLine = "n = \(h.nTestTrials) held-out trials in \(h.nTestRuns) run\(h.nTestRuns == 1 ? "" : "s") · \(r.splitPolicy.evidence)"
+        trialsLine = "n = \(h.nTestTrials) held-out trials in \(h.nTestRuns) run\(h.nTestRuns == 1 ? "" : "s") · \(EvidenceText.short(r.splitPolicy.evidence))"
         warning = r.dataSource?.warning
         evidence = EvidenceText.describe(r.splitPolicy.evidence)
 
@@ -325,9 +336,9 @@ struct EvaluateInspectorModel {
     let splitExplanation: [String]
 
     init(manifest m: RecordingManifest, events: [EventRecord], latest: EvaluationReport?,
-         defaults: EvaluationDefaults?, modelName: (String) -> String) {
+         defaults: EvaluationDefaults?, recipes: [EvaluationDefaults.Recipe] = [], modelName: (String) -> String) {
         recordingTitle = RecordingDetailModel.title(for: m)
-        let recipes = defaults?.recipes.map(\.name) ?? []
+        let recipes = recipes.map(\.name)
         let what = recipes.isEmpty ? "the reference recipe and its baseline" : recipes.joined(separator: " and ")
         changes = [
             "Runs \(what) on the \(m.segments.count) run\(m.segments.count == 1 ? "" : "s") of this recording, in the analysis worker.",

@@ -63,7 +63,12 @@ final class ProjectSession: Identifiable {
     var selectedResultID: UUID? {
         didSet { if selectedResultID != oldValue { loadSelectedResult() } }
     }
-    var parameters = Parameters()
+    var parameters = Parameters() {
+        didSet { if parameters.cspComponents != oldValue.cspComponents { refreshRecipes() } }
+    }
+    /// The recipes as the worker describes them for the current CSP component count.
+    private(set) var recipes: [EvaluationDefaults.Recipe] = []
+    @ObservationIgnored private var recipesTask: Task<Void, Never>?
     var showInspector = true
     /// Results whose reruns the user folded away in the list (all start expanded).
     var collapsedResults: Set<UUID> = []
@@ -134,7 +139,9 @@ final class ProjectSession: Identifiable {
         defaultsTask = Task { [weak self] in
             guard let self else { return }
             do {
-                self.defaults = .loaded(try await self.runner.defaults())
+                let d = try await self.runner.defaults()
+                self.defaults = .loaded(d)
+                if self.parameters.cspComponents == nil { self.recipes = d.recipes } else { self.refreshRecipes() }
             } catch let error as WorkerError {
                 self.defaults = .unavailable(error.message)
             } catch {
@@ -142,6 +149,19 @@ final class ProjectSession: Identifiable {
             }
         }
     }
+
+    private func refreshRecipes() {
+        recipesTask?.cancel()
+        let count = parameters.cspComponents
+        recipesTask = Task { [weak self] in
+            guard let self, let d = try? await self.runner.defaults(cspComponents: count),
+                  self.parameters.cspComponents == count else { return }
+            self.recipes = d.recipes
+        }
+    }
+
+    /// Waits for the recipe description to follow the parameters (tests).
+    func awaitRecipes() async { await recipesTask?.value }
 
     private func loadSelectedResult() {
         resultLoad?.cancel()
@@ -181,7 +201,7 @@ final class ProjectSession: Identifiable {
     }
 
     func modelName(_ key: String) -> String {
-        workerDefaults?.recipes.first { $0.model == key }?.name ?? key
+        recipes.first { $0.model == key }?.name ?? key
     }
 
     var isRunning: Bool {
@@ -316,8 +336,21 @@ final class ProjectSession: Identifiable {
         announce(noticeText(notice!))
     }
 
+    /// True once `shutdown()` has finished: no run, no worker, nothing loading.
+    private(set) var isShutDown = false
+
+    /// Stops everything this project runs: cancels the evaluation and waits (bounded) for
+    /// it to end — a run that is storing its result finishes the commit first — then
+    /// stops the worker for good. Called when the window closes and when the app quits.
     func shutdown() async {
-        runner.cancel()
+        defaultsTask?.cancel()
+        resultLoad?.cancel()
+        recipesTask?.cancel()
+        await runner.stop(within: Self.stopLimit)
         await runner.shutdown()
+        isShutDown = true
     }
+
+    /// Under the app's 5 s quit backstop, so a commit in progress normally completes.
+    static let stopLimit: Duration = .seconds(4)
 }

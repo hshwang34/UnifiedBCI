@@ -7,7 +7,9 @@ import SwiftUI
 @main
 struct BCIWorkspaceApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    #if DEBUG
     @State private var feasibility = FeasibilityModel()
+    #endif
 
     var body: some Scene {
         Window("Welcome", id: "welcome") {
@@ -29,6 +31,8 @@ struct BCIWorkspaceApp: App {
         .restorationBehavior(.disabled)
         .commandsRemoved()
 
+        #if DEBUG
+        // Phase-0 feasibility checks: developer tooling, not in Release builds.
         Window("Phase 0 Feasibility", id: "feasibility") {
             FeasibilityView(model: feasibility)
                 .frame(minWidth: 720, minHeight: 520)
@@ -36,17 +40,48 @@ struct BCIWorkspaceApp: App {
         .windowResizability(.contentSize)
         .restorationBehavior(.disabled)
         .commandsRemoved()
+        #endif
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let workspace = Workspace(recents: SystemRecentDocuments(), launch: WorkerLaunch.locate())
+    let workspace: Workspace
+
+    override convenience init() {
+        self.init(workspace: Workspace(recents: SystemRecentDocuments(), launch: WorkerLaunch.locate()))
+    }
+
+    init(workspace: Workspace) {
+        self.workspace = workspace
+        super.init()
+    }
 
     /// Closing the last project window leaves the app running; Welcome stays reachable.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// Dock click with no window open: show Welcome.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { workspace.openWindow?(id: "welcome") }
+        return true
+    }
+
+    /// Finder double-click / "Open With" on a `.bciproj`: through `Workspace.open`, so the
+    /// one-window-per-project rule and recents apply exactly as for Open….
+    func application(_ application: NSApplication, open urls: [URL]) {
+        Task { await route(urls) }
+    }
+
+    func route(_ urls: [URL]) async {
+        for url in urls { await workspace.open(url) }
+    }
+
+    /// Lets every project stop before the app does: a run is cancelled, one that is
+    /// storing its result finishes the commit, and each worker exits (the worker also
+    /// exits on its own when its parent dies, so a force-quit leaves nothing behind).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let sessions = Array(workspace.sessions.values)
-        guard !sessions.isEmpty else { return .terminateNow }
+        guard !sessions.isEmpty || workspace.isClosingAny else { return .terminateNow }
         var replied = false
         func reply() {
             guard !replied else { return }
@@ -54,7 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sender.reply(toApplicationShouldTerminate: true)
         }
         Task {
-            for s in sessions { await s.shutdown() }
+            for s in sessions { await workspace.close(s.url) }
             reply()
         }
         // A worker that does not answer must not keep the app from quitting.
@@ -106,8 +141,10 @@ struct WorkspaceCommands: Commands {
                 .keyboardShortcut(".")
                 .disabled(!(session?.isRunning ?? false))
         }
+        #if DEBUG
         CommandMenu("Debug") {
             Button("Phase 0 Feasibility Checks") { openWindow(id: "feasibility") }
         }
+        #endif
     }
 }

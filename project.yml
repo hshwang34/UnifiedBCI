@@ -88,7 +88,7 @@ targets:
         CFBundleDocumentTypes:
           - CFBundleTypeName: BCI Workspace Project
             CFBundleTypeRole: Editor
-            LSHandlerRank: Owner
+            LSHandlerRank: Default
             LSTypeIsPackage: true
             LSItemContentTypes: [com.hshwang34.bciproj]
     dependencies:

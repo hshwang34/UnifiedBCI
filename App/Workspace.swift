@@ -61,7 +61,12 @@ final class Workspace {
     /// Installed by the first view that has `openWindow` in its environment.
     @ObservationIgnored var openWindow: OpenWindowAction?
     @ObservationIgnored private var opening: [URL: Task<ProjectSession, Error>] = [:]
+    @ObservationIgnored private var adopting: [URL: Task<ProjectSession, Never>] = [:]
+    /// Sessions being shut down, by key. The key stays reserved until the old session's
+    /// worker and run have stopped, so a reopen never overlaps two stores on one directory.
+    @ObservationIgnored private var closing: [URL: Task<Void, Never>] = [:]
     @ObservationIgnored private var windows: [URL: WeakWindow] = [:]
+    @ObservationIgnored private var closeGuards: [URL: CloseGuard] = [:]
     @ObservationIgnored private let recentStore: RecentDocuments
 
     init(recents: RecentDocuments, launch: WorkerLaunch?) {
@@ -70,20 +75,35 @@ final class Workspace {
         refreshRecents()
     }
 
-    /// The one spelling of a project path: standardized (`.`/`..` removed), symlinks
-    /// resolved, always with a trailing slash. Two URLs naming the same directory compare equal.
+    /// The one key for a project directory, always with a trailing slash. For an existing
+    /// directory it is the path the file system reports for the open directory
+    /// (`F_GETPATH`): symlinks resolved and the on-disk letter case, so `Tiny.bciproj` and
+    /// `tiny.bciproj` on a case-insensitive APFS volume are one project. A path that does
+    /// not exist yet falls back to a standardized, symlink-resolved spelling.
     nonisolated static func canonical(_ url: URL) -> URL {
-        URL(fileURLWithPath: url.standardizedFileURL.resolvingSymlinksInPath().path, isDirectory: true)
+        let path = url.standardizedFileURL.path
+        let fd = Darwin.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        if fd >= 0 {
+            defer { Darwin.close(fd) }
+            var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+            if fcntl(fd, F_GETPATH, &buf) != -1 {
+                let resolved = String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+                return URL(fileURLWithPath: resolved, isDirectory: true)
+            }
+        }
+        return URL(fileURLWithPath: url.standardizedFileURL.resolvingSymlinksInPath().path, isDirectory: true)
     }
 
     // MARK: Sessions
 
     /// The session for the project at `url`, opening it if needed. Concurrent calls for
-    /// the same project share one open.
+    /// the same project share one open; a session still shutting down is waited for.
     func session(for url: URL) async throws -> ProjectSession {
         let key = Self.canonical(url)
+        while let teardown = closing[key] { await teardown.value }
         if let existing = sessions[key] { return existing }
         if let pending = opening[key] { return try await pending.value }
+        if let pending = adopting[key] { return await pending.value }
         let launch = self.launch
         let task = Task { try await ProjectSession.open(at: key, launch: launch) }
         opening[key] = task
@@ -93,22 +113,54 @@ final class Workspace {
         return session
     }
 
-    /// Registers a store that is already open (just created or imported).
+    /// The session for a project window that may close before the open finishes. If the
+    /// window is gone by then (`stillWanted` false) and no other window shows the project,
+    /// the session is closed instead of leaking with its worker.
+    func session(forWindow url: URL, stillWanted: () -> Bool) async throws -> ProjectSession? {
+        let session = try await session(for: url)
+        guard stillWanted() || windows[session.url]?.window != nil else {
+            await close(session.url)
+            return nil
+        }
+        return session
+    }
+
+    /// Registers a store that is already open (just created or imported). Concurrent
+    /// adopts of one project share one session.
     func adopt(_ store: ProjectStore) async -> ProjectSession {
         let key = Self.canonical(store.directory)
+        while let teardown = closing[key] { await teardown.value }
         if let existing = sessions[key] { return existing }
-        let session = await ProjectSession.adopt(store, url: key, launch: launch)
+        if let pending = adopting[key] { return await pending.value }
+        if let pending = opening[key], let session = try? await pending.value { return session }
+        let launch = self.launch
+        let task = Task { await ProjectSession.adopt(store, url: key, launch: launch) }
+        adopting[key] = task
+        defer { adopting[key] = nil }
+        let session = await task.value
         sessions[key] = session
         return session
     }
 
-    /// Ends a project's session: stops its worker and forgets it.
+    /// Ends a project's session: stops its run (bounded) and worker, then forgets it. The
+    /// key stays reserved until that is done.
     func close(_ url: URL) async {
         let key = Self.canonical(url)
         windows[key] = nil
+        closeGuards[key] = nil
+        if let teardown = closing[key] { return await teardown.value }
         guard let session = sessions.removeValue(forKey: key) else { return }
-        await session.shutdown()
+        // The task releases the key itself, before anyone awaiting it resumes, so a
+        // waiter's re-check never sees a finished teardown still holding the key.
+        let task = Task {
+            await session.shutdown()
+            self.closing[key] = nil
+        }
+        closing[key] = task
+        await task.value
     }
+
+    var isClosingAny: Bool { !closing.isEmpty }
 
     // MARK: Windows
 
@@ -134,16 +186,27 @@ final class Workspace {
         }
         guard windows[key]?.window !== window else { return }
         windows[key] = WeakWindow(window: window)
+        let closeGuard = CloseGuard(window: window) { [weak self] in self?.sessions[key] }
+        closeGuards[key] = closeGuard
         let closingID = ObjectIdentifier(window)
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let registered = self.windows[key]?.window, ObjectIdentifier(registered) == closingID else { return }
+                // Synchronously, so a reopen in the same turn opens a new window.
+                self.windows[key] = nil
                 Task { await self.close(key) }
             }
         }
     }
 
     var hasProjectWindows: Bool { windows.values.contains { $0.window != nil } }
+
+    /// Whether closing this project's window must ask first: a run is in flight and can
+    /// still be cancelled. (While storing, closing waits for the commit instead.)
+    static func closeNeedsConfirmation(_ session: ProjectSession?) -> Bool {
+        guard let session, session.isRunning else { return false }
+        return session.runner.state != .running(.storing)
+    }
 
     // MARK: Recents
 
@@ -287,6 +350,53 @@ final class Workspace {
         alert.informativeText = info
         alert.alertStyle = .warning
         alert.runModal()
+    }
+}
+
+/// Sits in front of SwiftUI's window delegate: asks before a project window closes during
+/// an evaluation ("Stop the evaluation and close? Nothing will be saved."); every other
+/// delegate message goes to SwiftUI's delegate unchanged.
+@MainActor
+final class CloseGuard: NSObject, NSWindowDelegate {
+    private weak var original: NSWindowDelegate?
+    private weak var window: NSWindow?
+    private let session: @MainActor () -> ProjectSession?
+
+    init(window: NSWindow, session: @escaping @MainActor () -> ProjectSession?) {
+        self.original = window.delegate
+        self.window = window
+        self.session = session
+        super.init()
+        window.delegate = self
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        let current = session()
+        guard Workspace.closeNeedsConfirmation(current), let current else {
+            return original?.windowShouldClose?(sender) ?? true
+        }
+        let alert = NSAlert()
+        alert.messageText = "Stop the evaluation and close?"
+        alert.informativeText = "Nothing will be saved."
+        alert.addButton(withTitle: "Stop and Close")
+        alert.addButton(withTitle: "Keep Running")
+        alert.beginSheetModal(for: sender) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            MainActor.assumeIsolated {
+                current.cancel()
+                sender.close()
+            }
+        }
+        return false
+    }
+
+    override func responds(to aSelector: Selector!) -> Bool {
+        super.responds(to: aSelector) || (original?.responds(to: aSelector) ?? false)
+    }
+
+    override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        if let original, original.responds(to: aSelector) { return original }
+        return super.forwardingTarget(for: aSelector)
     }
 }
 

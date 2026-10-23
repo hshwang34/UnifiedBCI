@@ -191,6 +191,7 @@ final class ScreenModelTests: XCTestCase {
         XCTAssertEqual(m.headline.accuracy, "Accuracy 0.70 · 95 % CI 0.51–0.85 (trial-level, n = 14)")
         XCTAssertEqual(m.headline.balancedAccuracyInterval, "Balanced-accuracy interval: unavailable (one held-out run)")
         XCTAssertEqual(m.differenceInterval, "Difference interval: unavailable (one held-out run)")
+        XCTAssertEqual(m.trialsLine, "n = 14 held-out trials in 1 run · Session unknown", "the evidence phrase, never the raw token")
     }
 
     func testHeadline_trialLevelIntervalNeverLabelledAsBalancedAccuracy() throws {

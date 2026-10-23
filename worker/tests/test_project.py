@@ -404,6 +404,10 @@ def test_defaults_method_reports_what_the_handler_applies():
     assert int(cfg["csp_components"]) == p["csp_components"]
     assert float(cfg["holdout_fraction"]) == p["holdout_fraction"]
     assert out["pipeline"]["seed"] == p["seed"]
+    assert "4 components" in d["recipes"][0]["steps"][1]
+    two = worker_main.handle_fit_evaluate_defaults(Request(id="d2", method="fit_evaluate_defaults", params={"csp_components": 2}), ctx)
+    assert "2 components" in two["recipes"][0]["steps"][1], "the prose uses the CSP count it is asked about"
+    assert two["params"] == d["params"], "the defaults themselves do not change"
     # The test helper's explicit parameters are the defaults too, so it tests the default path.
     explicit, _ = run_in_process(params(TINY))
     assert explicit["pipeline"]["configHash"] == out["pipeline"]["configHash"]

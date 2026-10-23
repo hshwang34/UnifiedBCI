@@ -40,8 +40,11 @@ struct ProjectWindowRoot: View {
         .task(id: url) {
             guard let url else { phase = .failed("No project."); return }
             do {
-                let session = try await workspace.session(for: url)
-                phase = .open(session)
+                // The window may close while the project is still opening; then the
+                // session is closed rather than left running without a window.
+                if let session = try await workspace.session(forWindow: url, stillWanted: { !Task.isCancelled }) {
+                    phase = .open(session)
+                }
             } catch {
                 phase = .failed(Workspace.openFailureMessage(error))
             }
@@ -246,8 +249,8 @@ private struct PipelinesList: View {
         case .unavailable(let why):
             ContentUnavailableView("Pipelines unavailable", systemImage: "exclamationmark.octagon",
                                    description: Text("The analysis worker did not describe its recipes. \(why)"))
-        case .loaded(let d):
-            List(d.recipes) { recipe in
+        case .loaded:
+            List(session.recipes) { recipe in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text(recipe.name).font(.headline)

@@ -204,6 +204,135 @@ final class ProjectSessionTests: XCTestCase {
         XCTAssertFalse(reopened === sa)
     }
 
+    // MARK: Review round 1: lifecycle
+
+    private func waitUntil(_ timeout: Duration = .seconds(60), _ condition: () -> Bool) async {
+        let deadline = ContinuousClock.now + timeout
+        while !condition(), ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(10)) }
+    }
+
+    func testCloseMidRun_asksFirst_thenStopsTheRunAndSavesNothing() async throws {
+        // A worker that reports one stage, then waits for the app's cancel (as the real one
+        // does at its checkpoints), so "mid-run" is deterministic.
+        let real = try realLaunch()
+        let dir = scratch.appendingPathComponent("fake-cancel", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let script = dir.appendingPathComponent("fake_worker.py")
+        try """
+        import os, sys, json
+        def out(o):
+            sys.stdout.write(json.dumps(o) + "\\n"); sys.stdout.flush()
+        out({"v": 1, "event": "ready", "id": None, "data": {"protocol": 1, "pid": os.getpid(), "versions": {}, "methods": []}})
+        for line in sys.stdin:
+            if not line.strip():
+                continue
+            req = json.loads(line)
+            if req["method"] == "fit_evaluate_project":
+                out({"v": 1, "event": "progress", "id": req["id"], "data": {"stage": "loading"}})
+            elif req["method"] == "cancel":
+                out({"v": 1, "id": req["id"], "ok": True, "result": {"cancelled": True}})
+                out({"v": 1, "id": req["params"]["id"], "ok": False, "error": {"code": "cancelled", "message": "request was cancelled"}})
+            elif req["method"] == "shutdown":
+                out({"v": 1, "id": req["id"], "ok": True, "result": {"bye": True}})
+                break
+            else:
+                out({"v": 1, "id": req["id"], "ok": False, "error": {"code": "unknown_method", "message": "no"}})
+        """.write(to: script, atomically: true, encoding: .utf8)
+        workspace = Workspace(recents: InMemoryRecentDocuments(),
+                              launch: WorkerLaunch(origin: real.origin, python: real.python, pythonPath: nil, workingDirectory: dir, entry: .script(script)))
+        let session = try await workspace.session(for: project)
+        XCTAssertFalse(Workspace.closeNeedsConfirmation(session), "idle: closes without asking")
+        session.evaluate()
+        await waitUntil { session.runner.state == .running(.loading) }
+        XCTAssertTrue(Workspace.closeNeedsConfirmation(session), "a cancellable run asks before closing")
+        await workspace.close(project)
+        XCTAssertTrue(session.isShutDown)
+        XCTAssertFalse(session.runner.isBusy, "close waited for the run to end")
+        XCTAssertTrue(session.runner.isShutDown)
+        XCTAssertEqual(session.runner.state, .cancelled)
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: project.appendingPathComponent("pipelines").path)
+        XCTAssertEqual(leftovers, [], "nothing saved, no staging left")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: project.appendingPathComponent("results").path), [])
+    }
+
+    func testWindowClosedWhileOpening_closesTheSession() async throws {
+        let session = try await workspace.session(forWindow: project, stillWanted: { false })
+        XCTAssertNil(session)
+        XCTAssertTrue(workspace.sessions.isEmpty, "no session (and no worker) is left without a window")
+        let kept = try await workspace.session(forWindow: project, stillWanted: { true })
+        XCTAssertNotNil(kept)
+        XCTAssertEqual(workspace.sessions.count, 1)
+    }
+
+    func testCaseInsensitiveSpelling_isTheSameProject() async throws {
+        let upper = URL(fileURLWithPath: project.deletingLastPathComponent().path + "/TINY.BCIPROJ")
+        guard FileManager.default.fileExists(atPath: upper.path) else {
+            throw XCTSkip("scratch volume is case-sensitive")
+        }
+        let a = try await workspace.session(for: project)
+        let b = try await workspace.session(for: upper)
+        XCTAssertTrue(a === b)
+        XCTAssertEqual(workspace.sessions.count, 1)
+        XCTAssertEqual(Workspace.canonical(upper), Workspace.canonical(project))
+        XCTAssertEqual(Workspace.canonical(upper).lastPathComponent, "tiny.bciproj", "the on-disk case")
+    }
+
+    func testReopenDuringTeardown_waitsForTheOldSession() async throws {
+        let first = try await workspace.session(for: project)
+        let ws = workspace!, url = project!
+        let closing = Task { await ws.close(url) }
+        await Task.yield()
+        let second = try await workspace.session(for: project)
+        XCTAssertFalse(first === second)
+        XCTAssertTrue(first.isShutDown, "the new session opened only after the old one stopped")
+        await closing.value
+        XCTAssertTrue(workspace.sessions[Workspace.canonical(project)] === second)
+    }
+
+    func testConcurrentAdopt_givesOneSession() async throws {
+        let store = try ProjectStore.open(at: project)
+        let ws = workspace!
+        let a = Task { await ws.adopt(store) }
+        let b = Task { await ws.adopt(store) }
+        let sa = await a.value, sb = await b.value
+        XCTAssertTrue(sa === sb)
+        XCTAssertEqual(workspace.sessions.count, 1)
+    }
+
+    func testFinderOpen_routesThroughWorkspaceOpen() async throws {
+        let delegate = AppDelegate(workspace: workspace)
+        delegate.application(NSApplication.shared, open: [project])
+        await waitUntil(.seconds(30)) { !workspace.sessions.isEmpty }
+        XCTAssertEqual(Array(workspace.sessions.keys), [Workspace.canonical(project)])
+        XCTAssertEqual(workspace.recents.map(\.url), [Workspace.canonical(project)], "noted in recents like Open…")
+        XCTAssertFalse(delegate.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
+    }
+
+    func testCloseGuard_forwardsToTheOriginalDelegate() {
+        final class Original: NSObject, NSWindowDelegate {
+            var asked = false
+            func windowShouldClose(_ sender: NSWindow) -> Bool { asked = true; return false }
+        }
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled, .closable], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let original = Original()
+        window.delegate = original
+        let guardian = CloseGuard(window: window) { nil }
+        XCTAssertTrue(window.delegate === guardian)
+        XCTAssertFalse(guardian.windowShouldClose(window), "no run: the original delegate decides")
+        XCTAssertTrue(original.asked)
+        XCTAssertTrue(guardian.responds(to: #selector(NSWindowDelegate.windowShouldClose(_:))))
+    }
+
+    func testRecipes_followTheCSPOverride() async throws {
+        let session = try await workspace.session(for: project)
+        await session.awaitDefaults()
+        XCTAssertTrue(session.recipes.first?.steps.joined().contains("4 components") ?? false, "\(session.recipes)")
+        session.parameters.cspComponents = 2
+        await session.awaitRecipes()
+        XCTAssertTrue(session.recipes.first?.steps.joined().contains("2 components") ?? false, "\(session.recipes)")
+    }
+
     func testRecents_noteCanonicalAndDedupe() async throws {
         workspace.noteRecent(project)
         workspace.noteRecent(URL(fileURLWithPath: project.path + "/"))
