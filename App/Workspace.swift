@@ -67,6 +67,7 @@ final class Workspace {
     @ObservationIgnored private var closing: [URL: Task<Void, Never>] = [:]
     @ObservationIgnored private var windows: [URL: WeakWindow] = [:]
     @ObservationIgnored private var closeGuards: [URL: CloseGuard] = [:]
+    @ObservationIgnored private var closeObservers: [URL: NSObjectProtocol] = [:]
     @ObservationIgnored private let recentStore: RecentDocuments
 
     init(recents: RecentDocuments, launch: WorkerLaunch?) {
@@ -129,10 +130,17 @@ final class Workspace {
     /// adopts of one project share one session.
     func adopt(_ store: ProjectStore) async -> ProjectSession {
         let key = Self.canonical(store.directory)
-        while let teardown = closing[key] { await teardown.value }
-        if let existing = sessions[key] { return existing }
-        if let pending = adopting[key] { return await pending.value }
-        if let pending = opening[key], let session = try? await pending.value { return session }
+        // Every await below can change the state, so re-check from the top after each.
+        while true {
+            if let teardown = closing[key] { await teardown.value; continue }
+            if let existing = sessions[key] { return existing }
+            if let pending = adopting[key] { return await pending.value }
+            if let pending = opening[key] {
+                if let session = try? await pending.value { return session }
+                continue    // that open failed; this store is still good to adopt
+            }
+            break
+        }
         let launch = self.launch
         let task = Task { await ProjectSession.adopt(store, url: key, launch: launch) }
         adopting[key] = task
@@ -144,10 +152,15 @@ final class Workspace {
 
     /// Ends a project's session: stops its run (bounded) and worker, then forgets it. The
     /// key stays reserved until that is done.
-    func close(_ url: URL) async {
+    func close(_ url: URL, window closingWindow: ObjectIdentifier? = nil) async {
         let key = Self.canonical(url)
+        // A window closing late must not unregister a newer window for the same project.
+        if let closingWindow, let current = windows[key]?.window, ObjectIdentifier(current) != closingWindow {
+            return
+        }
         windows[key] = nil
         closeGuards[key] = nil
+        if let observer = closeObservers.removeValue(forKey: key) { NotificationCenter.default.removeObserver(observer) }
         if let teardown = closing[key] { return await teardown.value }
         guard let session = sessions.removeValue(forKey: key) else { return }
         // The task releases the key itself, before anyone awaiting it resumes, so a
@@ -161,6 +174,18 @@ final class Workspace {
     }
 
     var isClosingAny: Bool { !closing.isEmpty }
+
+    /// Closes every project at once (quit): sessions still open and teardowns already
+    /// under way, concurrently, so N projects take one shutdown's time, not N. A window
+    /// closed mid-commit is waited for here too, so quitting never cuts a store short.
+    func closeAll() async {
+        let keys = Array(sessions.keys)
+        let teardowns = Array(closing.values)
+        await withTaskGroup(of: Void.self) { group in
+            for key in keys { group.addTask { await self.close(key) } }
+            for teardown in teardowns { group.addTask { await teardown.value } }
+        }
+    }
 
     // MARK: Windows
 
@@ -189,12 +214,14 @@ final class Workspace {
         let closeGuard = CloseGuard(window: window) { [weak self] in self?.sessions[key] }
         closeGuards[key] = closeGuard
         let closingID = ObjectIdentifier(window)
-        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+        if let old = closeObservers.removeValue(forKey: key) { NotificationCenter.default.removeObserver(old) }
+        closeObservers[key] = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let registered = self.windows[key]?.window, ObjectIdentifier(registered) == closingID else { return }
                 // Synchronously, so a reopen in the same turn opens a new window.
                 self.windows[key] = nil
-                Task { await self.close(key) }
+                if let observer = self.closeObservers.removeValue(forKey: key) { NotificationCenter.default.removeObserver(observer) }
+                Task { await self.close(key, window: closingID) }
             }
         }
     }

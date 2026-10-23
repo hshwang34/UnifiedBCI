@@ -333,7 +333,8 @@ private struct ClassCountsCard: View {
             }
             .scrollContentBackground(.hidden)
             .scrollDisabled(true)
-            .frame(height: 40 + CGFloat(model.classCounts.count) * 40)
+            .alternatingRowBackgrounds(.disabled)
+            .frame(height: ResultTableMetrics.height(rows: model.classCounts.count, twoLine: true))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
@@ -354,11 +355,21 @@ private struct HeldOutRunsCard: View {
             }
             .scrollContentBackground(.hidden)
             .scrollDisabled(true)
-            .frame(height: 40 + CGFloat(max(model.perRun.count, 1)) * 32)
+            .alternatingRowBackgrounds(.disabled)
+            .frame(height: ResultTableMetrics.height(rows: model.perRun.count, twoLine: false))
             Text("Reference: \(model.referenceName)").font(.caption).foregroundStyle(Theme.textSecondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
+    }
+}
+
+/// Heights of the short, non-scrolling result tables, measured from the rendered Table
+/// (header 33 pt; rows 27 pt, or 37 pt with the two-line class name), so no empty row
+/// shows below the last one.
+enum ResultTableMetrics {
+    static func height(rows: Int, twoLine: Bool) -> CGFloat {
+        33 + CGFloat(max(rows, 1)) * (twoLine ? 37 : 27)
     }
 }
 

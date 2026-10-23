@@ -52,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let workspace: Workspace
 
     override convenience init() {
-        self.init(workspace: Workspace(recents: SystemRecentDocuments(), launch: WorkerLaunch.locate()))
+        self.init(workspace: Workspace(recents: SystemRecentDocuments(), launch: LaunchArguments.workerLaunch(default: WorkerLaunch.locate())))
     }
 
     init(workspace: Workspace) {
@@ -87,8 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// storing its result finishes the commit, and each worker exits (the worker also
     /// exits on its own when its parent dies, so a force-quit leaves nothing behind).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let sessions = Array(workspace.sessions.values)
-        guard !sessions.isEmpty || workspace.isClosingAny else { return .terminateNow }
+        guard !workspace.sessions.isEmpty || workspace.isClosingAny else { return .terminateNow }
         var replied = false
         func reply() {
             guard !replied else { return }
@@ -96,7 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sender.reply(toApplicationShouldTerminate: true)
         }
         Task {
-            for s in sessions { await workspace.close(s.url) }
+            await workspace.closeAll()
             reply()
         }
         // A worker that does not answer must not keep the app from quitting.

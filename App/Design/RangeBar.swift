@@ -39,8 +39,10 @@ struct RangeBar: View {
                 }
                 // Interval: gradient capsule with a surface1 outline (reads under Increase Contrast).
                 if let interval {
-                    let lo = x(interval.lowerBound), hi = x(interval.upperBound)
-                    let width = max(hi - lo, Self.trackHeight)
+                    let hi = x(interval.upperBound)
+                    let width = min(max(hi - x(interval.lowerBound), Self.trackHeight), w)
+                    // A minimum-width capsule near 1 is pulled back inside the track.
+                    let lo = min(x(interval.lowerBound), w - width)
                     Capsule()
                         .fill(LinearGradient(colors: [Theme.accentInk, Theme.aurora], startPoint: .leading, endPoint: .trailing))
                         .overlay(Capsule().strokeBorder(Theme.surface1, lineWidth: 1.5))
@@ -54,7 +56,7 @@ struct RangeBar: View {
                     let rx = x(reference.value)
                     Rectangle().fill(Theme.textSecondary)
                         .frame(width: 2, height: Self.marker + 8)
-                        .position(x: rx, y: barY)
+                        .position(x: clamp(rx, width: w, half: 1), y: barY)
                     Text("\(Fmt.fixed(reference.value)) \(reference.label)")
                         .font(.caption)
                         .foregroundStyle(Theme.textSecondary)
@@ -65,7 +67,7 @@ struct RangeBar: View {
                 Circle().fill(Theme.accentFill)
                     .overlay(Circle().strokeBorder(Theme.surface1, lineWidth: 2))
                     .frame(width: Self.marker, height: Self.marker)
-                    .position(x: x(value), y: barY)
+                    .position(x: clamp(x(value), width: w, half: Self.marker / 2), y: barY)
                 Text(Fmt.fixed(value))
                     .font(Theme.Fonts.mono.weight(.semibold))
                     .foregroundStyle(Theme.textPrimary)

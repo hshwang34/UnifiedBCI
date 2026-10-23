@@ -67,12 +67,15 @@ struct ProjectWindow: View {
                 .navigationSplitViewColumnWidth(min: 250, ideal: 250, max: 360)
         } detail: {
             DetailColumn(session: session)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Zero minimums: the page scrolls inside; it must never make the window
+                // content taller or wider than the window (a banner adds height above it).
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                 .background {
                     // Under the Result hero the glow continues beneath sidebar and inspector (26).
                     if session.section == .results { AmbientBackdrop().extendedBackground() } else { AmbientBackdrop() }
                 }
                 .safeAreaInset(edge: .top, spacing: 0) { StatusArea(session: session) }
+                
         }
         // The Evaluate inspector belongs to Recordings only; the preference is kept.
         .inspector(isPresented: Binding(get: { session.showInspector && session.section == .recordings },
@@ -331,7 +334,8 @@ private struct DetailColumn: View {
         case .recordings:
             if let handle = session.selectedRecording {
                 RecordingDetailView(model: RecordingDetailModel(manifest: handle.manifest, events: session.eventsByRecording[handle.id] ?? []),
-                                    info: ExampleInfo(manifest: handle.manifest))
+                                    info: ExampleInfo(manifest: handle.manifest),
+                                    tab: Binding(get: { session.recordingTab }, set: { session.recordingTab = $0 }))
                     .id(handle.id)
             } else {
                 Placeholder(title: "No Recording Selected", symbol: "waveform", text: nil)
@@ -388,9 +392,11 @@ private struct StatusArea: View {
                     .transition(.opacity.combined(with: .offset(y: -8)))
             }
         }
-        // Zero ideal width: the panel takes the width it is offered (up to 680) and never
-        // asks the split view for more, which would push the window's columns out of it.
-        .frame(minWidth: 0, idealWidth: 0, maxWidth: 680)
+        // A modest ideal width (narrower than the detail column at the 1100 pt minimum with
+        // the inspector open): the panel never asks the split view for more width, and its
+        // text is measured at a real width (an ideal of 0 measured one word per line, and
+        // that height pushed the window content past the window).
+        .frame(minWidth: 0, idealWidth: 300, maxWidth: 680)
         .padding(.horizontal, Theme.Space.l)
         .padding(.top, Theme.Space.m)
         .animation(Theme.motion(reduceMotion: reduceMotion), value: session.progress == nil)
@@ -405,11 +411,19 @@ private struct ProgressPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.s) {
-            // Every stage named when there is room; otherwise marks plus the current name.
+            // Every stage is named, done / current / pending told apart by the mark's shape:
+            // one row when it fits, otherwise two rows of two.
             ViewThatFits(in: .horizontal) {
-                stages(compact: false)
-                stages(compact: true)
+                HStack(spacing: Theme.Space.m) {
+                    ForEach(ProgressDisplay.stages.indices, id: \.self) { stageLabel($0) }
+                }
+                Grid(alignment: .leading, horizontalSpacing: Theme.Space.m, verticalSpacing: Theme.Space.xs) {
+                    GridRow { stageLabel(0); stageLabel(1) }
+                    GridRow { stageLabel(2); stageLabel(3) }
+                }
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(progress.accessibilityValue)
             HStack(spacing: Theme.Space.m) {
                 ProgressView(value: progress.fraction, total: 1)
                     .progressViewStyle(TrackProgressStyle())
@@ -432,23 +446,15 @@ private struct ProgressPanel: View {
         .glassSurface(cornerRadius: Theme.Radius.hero)
     }
 
-    private func stages(compact: Bool) -> some View {
-        HStack(spacing: Theme.Space.m) {
-            ForEach(Array(ProgressDisplay.stages.enumerated()), id: \.offset) { i, stage in
-                let mark = progress.mark(for: i)
-                HStack(spacing: Theme.Space.xs) {
-                    Image(systemName: mark.symbol).accessibilityHidden(true)
-                    if !compact || mark == .current {
-                        Text(stage).fontWeight(mark == .current ? .semibold : .regular).lineLimit(1)
-                    }
-                }
-                .font(.callout)
-                .foregroundStyle(mark == .pending ? Theme.textSecondary : Theme.textPrimary)
-                .fixedSize()
-            }
+    private func stageLabel(_ i: Int) -> some View {
+        let mark = progress.mark(for: i)
+        return HStack(spacing: Theme.Space.xs) {
+            Image(systemName: mark.symbol).accessibilityHidden(true)
+            Text(ProgressDisplay.stages[i]).fontWeight(mark == .current ? .semibold : .regular).lineLimit(1)
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(progress.accessibilityValue)
+        .font(.callout)
+        .foregroundStyle(mark == .pending ? Theme.textSecondary : Theme.textPrimary)
+        .fixedSize()
     }
 }
 
@@ -475,9 +481,7 @@ private struct ErrorBanner: View {
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-        HStack(alignment: .top, spacing: 0) {
-            Rectangle().fill(Theme.danger).frame(width: 4)
-            VStack(alignment: .leading, spacing: Theme.Space.s) {
+        VStack(alignment: .leading, spacing: Theme.Space.s) {
                 HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
                     Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(Theme.danger)
                     Text(title).font(.headline).foregroundStyle(Theme.textPrimary)
@@ -486,8 +490,20 @@ private struct ErrorBanner: View {
                         Button("Retry", action: retry).appProminentButton()
                     }
                 }
-                Text(message).font(.callout).foregroundStyle(Theme.textPrimary).fixedSize(horizontal: false, vertical: true)
-                DisclosureGroup("Show details", isExpanded: $showDetails) {
+                // No fixedSize here or in anything else in this inset: a fixed-size text is
+                // measured at its ideal width and its height pushed the window content past
+                // the window (the whole window shifted up under an error banner).
+                Text(message).font(.callout).foregroundStyle(Theme.textPrimary)
+                // A plain toggle: the details exist only while shown, so the collapsed
+                // banner is exactly as tall as its text.
+                Button {
+                    showDetails.toggle()
+                } label: {
+                    Label(showDetails ? "Hide details" : "Show details", systemImage: showDetails ? "chevron.down" : "chevron.right")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityValue(showDetails ? "Expanded" : "Collapsed")
+                if showDetails {
                     ScrollView {
                         Text(details)
                             .font(Theme.Fonts.monoCaption)
@@ -496,19 +512,22 @@ private struct ErrorBanner: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(Theme.Space.s)
                     }
-                    .frame(maxHeight: 120)
+                    .frame(height: 120)
                     .background(Theme.surface2, in: .rect(cornerRadius: Theme.Radius.control))
                 }
-                .font(.callout)
-            }
-            .padding(Theme.Space.l)
         }
+        .font(.callout)
+        .padding(Theme.Space.l)
+        .padding(.leading, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             ZStack {
                 shape.fill(Theme.surface1)
                 shape.fill(Theme.danger.opacity(0.12))
             }
         }
+        // The 4 pt leading danger bar, sized by the banner rather than sizing it.
+        .overlay(alignment: .leading) { Rectangle().fill(Theme.danger).frame(width: 4) }
         .clipShape(shape)
         .overlay(shape.strokeBorder(Theme.danger, lineWidth: 1))
         .accessibilityElement(children: .contain)
@@ -549,7 +568,7 @@ private struct NoticeView: View {
         } else {
             HStack(spacing: Theme.Space.s) {
                 Image(systemName: symbol).foregroundStyle(tint).accessibilityHidden(true)
-                Text(text).font(.callout).foregroundStyle(Theme.textPrimary).fixedSize(horizontal: false, vertical: true)
+                Text(text).font(.callout).foregroundStyle(Theme.textPrimary)
                 Spacer(minLength: Theme.Space.s)
                 if case .exported(let url) = notice {
                     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
@@ -647,3 +666,4 @@ enum ParametersCopy {
     /// Decision #10.
     static let seed = "Chooses the held-out runs and the bootstrap draws. The same seed gives the same split."
 }
+

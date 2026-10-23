@@ -16,9 +16,28 @@ import Foundation
 ///     -BCIQuitWhenDone YES                     quit after the last step
 ///     -BCIAppearance light|dark                force an appearance (screenshots)
 ///     -BCISnapshotProgress YES                 snapshot the progress panel mid-run
+///     -BCIFailingWorker YES                    use a worker that dies before it is ready, to
+///                                              show the "analysis unavailable" banner
+///     -BCIWindowSize 1100x640                  content size of the project window for snapshots
 @MainActor
 enum LaunchArguments {
     private static var done = false
+
+    /// The worker the app uses: the located one, or (Debug, `-BCIFailingWorker YES`) one
+    /// that writes to stderr and exits before announcing ready.
+    static func workerLaunch(default located: WorkerLaunch?) -> WorkerLaunch? {
+        #if DEBUG
+        guard UserDefaults.standard.bool(forKey: "BCIFailingWorker"), let located else { return located }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("bci-failing-worker", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let script = dir.appendingPathComponent("failing_worker.py")
+        try? "import sys\nsys.stderr.write('debug failing worker: exiting before ready (-BCIFailingWorker)\\n')\nsys.exit(3)\n"
+            .write(to: script, atomically: true, encoding: .utf8)
+        return WorkerLaunch(origin: located.origin, python: located.python, pythonPath: nil, workingDirectory: dir, entry: .script(script))
+        #else
+        return located
+        #endif
+    }
 
     static func applyAppearance() {
         #if DEBUG
@@ -59,7 +78,19 @@ enum LaunchArguments {
             return
         }
         guard let session = workspace.sessions[Workspace.canonical(target)] else { return }
+        // Size the project window's content (e.g. the 1100x640 minimum) before capturing.
+        if let size = defaults.string(forKey: "BCIWindowSize")?.split(separator: "x").compactMap({ Double($0) }), size.count == 2 {
+            try? await Task.sleep(for: .milliseconds(500))
+            NSApp.windows.first { $0.title == session.name }?.setContentSize(NSSize(width: size[0], height: size[1]))
+        }
         await snap("recordings")
+        if snapshots != nil {
+            session.recordingTab = .events
+            await snap("events")
+            session.recordingTab = .segments
+            await snap("segments")
+            session.recordingTab = .channels
+        }
         let evaluations = max(0, defaults.integer(forKey: "BCIAutoEvaluate"))
         for n in 0..<evaluations {
             if n == 0, defaults.bool(forKey: "BCISnapshotProgress") {
@@ -73,6 +104,10 @@ enum LaunchArguments {
                 await run.value
             } else {
                 await session.evaluateAndWait()
+            }
+            if session.banner != nil {
+                await snap("banner")
+                return
             }
         }
         if evaluations > 0, let root = session.resultTree.first {

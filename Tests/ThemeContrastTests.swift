@@ -52,14 +52,19 @@ struct ThemeContrastTests {
         for name in ["canvas", "surface1", "surface2"] { backgrounds.append((name, try Self.color(name, mode))) }
         // Translucent fills sit on surface1 (StatusChip, error banner).
         backgrounds.append(("warningFill", Self.over(try Self.color("warningFill", mode), surface1)))
-        var danger = try Self.color("danger", mode); danger.a = 0.12
-        backgrounds.append(("danger@12%", Self.over(danger, surface1)))
+        // The chip fills StatusChip uses (danger and positive 11 %, info 10 %) and the error
+        // banner's 12 % danger wash.
+        for (token, alpha, label) in [("danger", 0.11, "dangerChip"), ("positive", 0.11, "positiveChip"),
+                                      ("accentInk", 0.10, "infoChip"), ("danger", 0.12, "dangerBanner")] {
+            var fill = try Self.color(token, mode); fill.a = alpha
+            backgrounds.append((label, Self.over(fill, surface1)))
+        }
         for text in ["textPrimary", "textSecondary", "textTertiary", "accentInk"] {
             let fg = try Self.color(text, mode)
             // Chips and banners carry only primary and secondary text (textTertiary is for
             // non-essential text on plain surfaces; accentInk links never sit on a fill).
             let onFill = text == "textPrimary" || text == "textSecondary"
-            for (bgName, bg) in backgrounds where onFill || !(bgName == "warningFill" || bgName.hasPrefix("danger")) {
+            for (bgName, bg) in backgrounds where onFill || !(bgName == "warningFill" || bgName.hasSuffix("Chip") || bgName.hasSuffix("Banner")) {
                 let ratio = Self.contrast(fg, bg)
                 #expect(ratio >= 4.5, "\(text) on \(bgName) in \(mode): \(ratio)")
             }
@@ -85,6 +90,12 @@ struct ThemeContrastTests {
         }
         let chip = Self.over(try Self.color("warningFill", mode), surface1)
         #expect(Self.contrast(try Self.color("warning", mode), chip) >= 3, "warning icon on its chip in \(mode)")
+        // Each chip's symbol and border on its own fill.
+        for (token, alpha) in [("danger", 0.11), ("positive", 0.11), ("accentInk", 0.10)] {
+            var fill = try Self.color(token, mode); fill.a = alpha
+            let fg = try Self.color(token, mode)
+            #expect(Self.contrast(fg, Self.over(fill, surface1)) >= 3, "\(token) symbol on its chip in \(mode)")
+        }
     }
 
     @Test func highContrastVariantsDiffer() throws {

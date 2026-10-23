@@ -1,60 +1,72 @@
 import SwiftUI
 
-/// Recording detail (visual spec §2.3): title, the source warning as a solid chip, a
-/// compact Source card, then the channel / segment / event table. Every value is the manifest's.
+/// Recording detail (visual spec §2.3): title, the source warning as a solid chip, the
+/// Source card in full, then the channel / segment / event table at a fixed height. One
+/// scroll for the whole page; nothing is hidden behind a nested scroll.
 struct RecordingDetailView: View {
     let model: RecordingDetailModel
     let info: ExampleInfo?
+    @Binding var tab: RecordingTab
 
-    enum Tab: String, CaseIterable, Identifiable {
-        case channels = "Channels", segments = "Segments", events = "Events"
-        var id: String { rawValue }
-    }
-
-    @State private var tab: Tab = .channels
     @State private var showInfo = false
     @State private var showCitations = false
+    @State private var tableWidth: CGFloat = 0
     @State private var channelSort = [KeyPathComparator(\RecordingDetailModel.ChannelRow.id)]
     @State private var segmentSort = [KeyPathComparator(\RecordingDetailModel.SegmentRow.index)]
     @State private var eventSort: [KeyPathComparator<RecordingDetailModel.EventRow>] = []
 
+    static let tableHeight: CGFloat = 360
+    /// Below this table width the Segments and Events tables drop their low-value columns
+    /// (named under the table) rather than scroll sideways.
+    static let narrowTable: CGFloat = 580
+
     var body: some View {
-        // Sized by the offered space and never wider or taller than it (an explicit minimum
-        // here makes the split view lay the window out larger than it is). The header
-        // scrolls on its own when the window is short, so the table keeps its 240 pt.
+        // The GeometryReader pins the page to the column's width: a ScrollView alone passes
+        // its content's ideal width (the 4-column grid's) up to the split view, which then
+        // lays the window out wider than it is.
         GeometryReader { geo in
+        ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.l) {
-                ViewThatFits(in: .vertical) {
-                    header
-                    ScrollView { header }.softScrollEdge(.bottom)
+                Text(model.title).font(Theme.Fonts.title).foregroundStyle(Theme.textPrimary)
+                if let warning = model.warning {
+                    StatusChip(kind: .warning, text: warning)
                 }
-                .frame(maxHeight: max(160, geo.size.height - 2 * Theme.Space.pageMargin - 240 - 80), alignment: .top)
+                sourceCard
                 tablePicker
-                table
-                    .scrollContentBackground(.hidden)
-                    .card(padding: 0)
-                    .frame(minHeight: 240, maxHeight: .infinity)
+                VStack(alignment: .leading, spacing: Theme.Space.s) {
+                    table
+                        .scrollContentBackground(.hidden)
+                        .card(padding: 0)
+                        .frame(height: Self.tableHeight)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { tableWidth = $0 }
+                    if let hidden = hiddenColumnsNote {
+                        Text(hidden).font(.caption).foregroundStyle(Theme.textSecondary)
+                    }
+                }
             }
             .padding(Theme.Space.pageMargin)
-            .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+            .frame(width: geo.size.width, alignment: .leading)
         }
+        }
+        .frame(minWidth: 0, minHeight: 0)
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: Theme.Space.l) {
-            Text(model.title).font(Theme.Fonts.title).foregroundStyle(Theme.textPrimary)
-            if let warning = model.warning {
-                StatusChip(kind: .warning, text: warning)
-            }
-            sourceCard
+    private var narrow: Bool { tableWidth > 0 && tableWidth < Self.narrowTable }
+
+    private var hiddenColumnsNote: String? {
+        guard narrow else { return nil }
+        switch tab {
+        case .channels: return nil
+        case .segments: return "Segment, Session and End reason appear in a wider window."
+        case .events: return "Trial appears in a wider window."
         }
     }
 
     private var tablePicker: some View {
             Picker("Table", selection: $tab) {
-                Text("Channels \(model.channels.count)").tag(Tab.channels)
-                Text("Segments \(model.segments.count)").tag(Tab.segments)
-                Text("Events \(model.events.count)").tag(Tab.events)
+                Text("Channels \(model.channels.count)").tag(RecordingTab.channels)
+                Text("Segments \(model.segments.count)").tag(RecordingTab.segments)
+                Text("Events \(model.events.count)").tag(RecordingTab.events)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -127,31 +139,52 @@ struct RecordingDetailView: View {
         switch tab {
         case .channels:
             Table(model.channels.sorted(using: channelSort), sortOrder: $channelSort) {
-                TableColumn("ID", value: \.id) { Text($0.id).font(Theme.Fonts.mono) }.width(min: 48, ideal: 64)
-                TableColumn("Label", value: \.labelSortKey) { DeclaredText(value: $0.label ?? RecordingDetailModel.undeclared, declared: $0.label != nil) }.width(min: 56, ideal: 90)
-                TableColumn("Unit", value: \.unitSortKey) { DeclaredText(value: $0.unit ?? RecordingDetailModel.undeclared, declared: $0.unit != nil) }.width(min: 48, ideal: 70)
-                TableColumn("Kind", value: \.kindSortKey) { DeclaredText(value: $0.kind ?? RecordingDetailModel.undeclared, declared: $0.kind != nil) }.width(min: 48, ideal: 70)
+                TableColumn("ID", value: \.id) { Text($0.id).font(Theme.Fonts.mono) }.width(min: 40, ideal: 56)
+                TableColumn("Label", value: \.labelSortKey) { DeclaredText(value: $0.label ?? RecordingDetailModel.undeclared, declared: $0.label != nil) }.width(min: 40, ideal: 72)
+                TableColumn("Unit", value: \.unitSortKey) { DeclaredText(value: $0.unit ?? RecordingDetailModel.undeclared, declared: $0.unit != nil) }.width(min: 32, ideal: 52)
+                TableColumn("Kind", value: \.kindSortKey) { DeclaredText(value: $0.kind ?? RecordingDetailModel.undeclared, declared: $0.kind != nil) }.width(min: 32, ideal: 52)
             }
             .alternatingRowBackgrounds()
         case .segments:
-            Table(model.segments.sorted(using: segmentSort), sortOrder: $segmentSort) {
-                TableColumn("Segment", value: \.index) { Text("\($0.index)").monospacedDigit() }
-                TableColumn("Run", value: \.runID) { Text($0.runID).font(Theme.Fonts.mono) }
-                TableColumn("Session", value: \.session)
-                TableColumn("Duration", value: \.duration) { Text($0.duration).monospacedDigit() }
-                TableColumn("Samples", value: \.samples) { Text("\($0.samples)").monospacedDigit() }
-                TableColumn("Gaps", value: \.gaps) { Text("\($0.gaps)").monospacedDigit() }
-                TableColumn("End reason", value: \.endReason)
+            let rows = model.segments.sorted(using: segmentSort)
+            if narrow {
+                Table(rows, sortOrder: $segmentSort) {
+                    TableColumn("Run", value: \.runID) { Text($0.runID).font(Theme.Fonts.mono) }.width(min: 48, ideal: 76)
+                    TableColumn("Duration", value: \.duration) { Text($0.duration).monospacedDigit() }.width(min: 40, ideal: 60)
+                    TableColumn("Samples", value: \.samples) { Text("\($0.samples)").monospacedDigit() }.width(min: 40, ideal: 60)
+                    TableColumn("Gaps", value: \.gaps) { Text("\($0.gaps)").monospacedDigit() }.width(min: 28, ideal: 40)
+                }
+                .alternatingRowBackgrounds()
+            } else {
+                Table(rows, sortOrder: $segmentSort) {
+                    TableColumn("Segment", value: \.index) { Text("\($0.index)").monospacedDigit() }.width(min: 40, ideal: 56)
+                    TableColumn("Run", value: \.runID) { Text($0.runID).font(Theme.Fonts.mono) }.width(min: 48, ideal: 76)
+                    TableColumn("Session", value: \.session).width(min: 40, ideal: 60)
+                    TableColumn("Duration", value: \.duration) { Text($0.duration).monospacedDigit() }.width(min: 40, ideal: 60)
+                    TableColumn("Samples", value: \.samples) { Text("\($0.samples)").monospacedDigit() }.width(min: 40, ideal: 60)
+                    TableColumn("Gaps", value: \.gaps) { Text("\($0.gaps)").monospacedDigit() }.width(min: 28, ideal: 40)
+                    TableColumn("End reason", value: \.endReason).width(min: 48, ideal: 70)
+                }
+                .alternatingRowBackgrounds()
             }
-            .alternatingRowBackgrounds()
         case .events:
-            Table(eventSort.isEmpty ? model.events : model.events.sorted(using: eventSort), sortOrder: $eventSort) {
-                TableColumn("Label", value: \.label) { Text($0.label).font(Theme.Fonts.mono) }
-                TableColumn("Onset (s)", value: \.onsetSortKey) { Text($0.onsetText).monospacedDigit() }
-                TableColumn("Run", value: \.runID) { Text($0.runID).font(Theme.Fonts.mono) }
-                TableColumn("Trial", value: \.trial) { Text($0.trial).font(Theme.Fonts.mono) }
+            let rows = eventSort.isEmpty ? model.events : model.events.sorted(using: eventSort)
+            if narrow {
+                Table(rows, sortOrder: $eventSort) {
+                    TableColumn("Label", value: \.label) { Text($0.label).font(Theme.Fonts.mono) }.width(min: 64, ideal: 112)
+                    TableColumn("Onset (s)", value: \.onsetSortKey) { Text($0.onsetText).monospacedDigit() }.width(min: 40, ideal: 60)
+                    TableColumn("Run", value: \.runID) { Text($0.runID).font(Theme.Fonts.mono) }.width(min: 48, ideal: 64)
+                }
+                .alternatingRowBackgrounds()
+            } else {
+                Table(rows, sortOrder: $eventSort) {
+                    TableColumn("Label", value: \.label) { Text($0.label).font(Theme.Fonts.mono) }.width(min: 64, ideal: 112)
+                    TableColumn("Onset (s)", value: \.onsetSortKey) { Text($0.onsetText).monospacedDigit() }.width(min: 40, ideal: 60)
+                    TableColumn("Run", value: \.runID) { Text($0.runID).font(Theme.Fonts.mono) }.width(min: 48, ideal: 64)
+                    TableColumn("Trial", value: \.trial) { Text($0.trial).font(Theme.Fonts.mono) }.width(min: 64, ideal: 96)
+                }
+                .alternatingRowBackgrounds()
             }
-            .alternatingRowBackgrounds()
         }
     }
 }

@@ -119,6 +119,12 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
 
 // MARK: - Recording detail
 
+/// Which table the recording detail shows.
+enum RecordingTab: String, CaseIterable, Identifiable {
+    case channels = "Channels", segments = "Segments", events = "Events"
+    var id: String { rawValue }
+}
+
 /// Everything the recording detail shows, taken verbatim from the manifest. A value the
 /// manifest leaves empty shows as "undeclared": labels, units and montage are never
 /// guessed, least of all from the channel count.
@@ -300,7 +306,7 @@ struct ProgressDisplay: Equatable {
     let detail: String
     let fraction: Double
     let accessibilityValue: String
-    /// Index into `stages` of the stage under way; `stages.count` once all are done (saving).
+    /// Index into `stages` of the stage under way (0 while the worker starts).
     let currentIndex: Int
 
     func mark(for index: Int) -> Mark {
@@ -309,7 +315,7 @@ struct ProgressDisplay: Equatable {
 
     /// The worker reports loading, one event per cross-validation fold, then one per final
     /// fit + holdout scoring; "fit" and "holdout" are therefore one stage here.
-    static let stages = ["Loading", "Cross-validation", "Fit and holdout"]
+    static let stages = ["Loading", "Cross-validation", "Fit and holdout", "Saving"]
 
     init(_ p: EvaluationRunner.Progress, modelName: (String) -> String) {
         fraction = p.fraction
@@ -324,9 +330,9 @@ struct ProgressDisplay: Equatable {
         case .holdout(let model, _, _):
             stage = Self.stages[2]; detail = "\(modelName(model)) scored on the held-out runs"; position = 3
         case .storing:
-            stage = "Saving"; detail = "Storing the result in the project"; position = nil
+            stage = Self.stages[3]; detail = "Storing the result in the project"; position = 4
         }
-        currentIndex = position.map { $0 - 1 } ?? (p == .storing ? Self.stages.count : 0)
+        currentIndex = position.map { $0 - 1 } ?? 0
         let name = stage
         accessibilityValue = position.map { "\(name), \($0) of \(Self.stages.count)" } ?? name
     }

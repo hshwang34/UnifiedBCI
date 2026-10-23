@@ -255,6 +255,55 @@ final class ProjectSessionTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: project.appendingPathComponent("results").path), [])
     }
 
+    func testCloseAll_waitsForTeardownsUnderWayAndClosesConcurrently() async throws {
+        // A worker that reports one stage, then ignores everything (cancel and shutdown):
+        // each session's teardown runs into its full stop and shutdown bounds.
+        let real = try realLaunch()
+        let dir = scratch.appendingPathComponent("fake-hung", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let script = dir.appendingPathComponent("fake_worker.py")
+        try """
+        import os, sys, json, time
+        def out(o):
+            sys.stdout.write(json.dumps(o) + "\\n"); sys.stdout.flush()
+        out({"v": 1, "event": "ready", "id": None, "data": {"protocol": 1, "pid": os.getpid(), "versions": {}, "methods": []}})
+        for line in sys.stdin:
+            if not line.strip():
+                continue
+            req = json.loads(line)
+            if req["method"] == "fit_evaluate_project":
+                out({"v": 1, "event": "progress", "id": req["id"], "data": {"stage": "loading"}})
+                time.sleep(3600)
+            out({"v": 1, "id": req["id"], "ok": False, "error": {"code": "unknown_method", "message": "no"}})
+        """.write(to: script, atomically: true, encoding: .utf8)
+        workspace = Workspace(recents: InMemoryRecentDocuments(),
+                              launch: WorkerLaunch(origin: real.origin, python: real.python, pythonPath: nil, workingDirectory: dir, entry: .script(script)))
+        let second = scratch.appendingPathComponent("second.bciproj")
+        _ = try ProjectStore.importBundledExample(from: try ProjectStoreTests.tinyFixtureURL(), into: second)
+        let a = try await workspace.session(for: project)
+        let b = try await workspace.session(for: second)
+        for s in [a, b] {
+            s.evaluate()
+            await waitUntil { s.runner.state == .running(.loading) }
+        }
+        // A window already closed: its teardown is under way and no longer in `sessions`.
+        let ws = workspace!, url = project!
+        let windowClose = Task { await ws.close(url) }
+        await waitUntil(.seconds(5)) { ws.isClosingAny }
+        XCTAssertEqual(workspace.sessions.count, 1, "the closing session has left `sessions`")
+
+        let started = ContinuousClock.now
+        await workspace.closeAll()
+        let elapsed = ContinuousClock.now - started
+        XCTAssertTrue(a.isShutDown, "quit waited for the teardown already under way")
+        XCTAssertTrue(b.isShutDown)
+        XCTAssertTrue(workspace.sessions.isEmpty)
+        XCTAssertFalse(workspace.isClosingAny)
+        // Each teardown here takes its full bounds (about 8 s); one after another would be ~16 s.
+        XCTAssertLessThan(elapsed, .seconds(12), "sessions close concurrently: \(elapsed)")
+        await windowClose.value
+    }
+
     func testWindowClosedWhileOpening_closesTheSession() async throws {
         let session = try await workspace.session(forWindow: project, stillWanted: { false })
         XCTAssertNil(session)

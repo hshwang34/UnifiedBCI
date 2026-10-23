@@ -96,6 +96,7 @@ final class ProjectSession: Identifiable {
     private(set) var recipes: [EvaluationDefaults.Recipe] = []
     @ObservationIgnored private var recipesTask: Task<Void, Never>?
     var showInspector = true
+    var recordingTab: RecordingTab = .channels
     /// Results whose reruns the user folded away in the list (all start expanded).
     var collapsedResults: Set<UUID> = []
 

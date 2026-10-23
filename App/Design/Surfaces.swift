@@ -237,10 +237,11 @@ struct StatusChip: View {
             Image(systemName: symbol ?? kind.symbol)
                 .foregroundStyle(kind.color)
                 .accessibilityHidden(true)
+            // No fixedSize: chips also sit in the detail column's top inset, where a
+            // fixed-size text inflates the window layout.
             Text(text)
                 .font(.callout)
                 .foregroundStyle(Theme.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, Theme.Space.m)

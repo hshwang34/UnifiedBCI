@@ -185,6 +185,7 @@ public final class EvaluationRunner {
         cancel()
         let deadline = ContinuousClock.now + limit
         while runTask != nil, ContinuousClock.now < deadline {
+            if Task.isCancelled { break }
             try? await Task.sleep(for: .milliseconds(20))
         }
     }

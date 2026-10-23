@@ -327,13 +327,15 @@ final class ScreenModelTests: XCTestCase {
         let fit = ProgressDisplay(.fitting(model: "reference_csp_rlda", fold: 2, of: 3, step: 1, steps: 2), modelName: { _ in "CSP" })
         XCTAssertEqual(fit.stage, "Cross-validation")
         XCTAssertEqual(fit.detail, "CSP, fold 2 of 3")
-        XCTAssertEqual(fit.accessibilityValue, "Cross-validation, 2 of 3")
+        XCTAssertEqual(fit.accessibilityValue, "Cross-validation, 2 of 4")
         XCTAssertEqual(ProgressDisplay(.loading, modelName: { $0 }).stage, "Loading")
         XCTAssertEqual(ProgressDisplay(.holdout(model: "m", step: 2, steps: 2), modelName: { $0 }).stage, "Fit and holdout")
         // Marks differ by shape: done, current, pending.
-        XCTAssertEqual((0..<3).map { fit.mark(for: $0) }, [.done, .current, .pending])
+        XCTAssertEqual(ProgressDisplay.stages, ["Loading", "Cross-validation", "Fit and holdout", "Saving"])
+        XCTAssertEqual((0..<4).map { fit.mark(for: $0) }, [.done, .current, .pending, .pending])
         XCTAssertEqual(Set([ProgressDisplay.Mark.done, .current, .pending].map(\.symbol)).count, 3)
         let saving = ProgressDisplay(.storing, modelName: { $0 })
-        XCTAssertEqual((0..<3).map { saving.mark(for: $0) }, [.done, .done, .done])
+        XCTAssertEqual((0..<4).map { saving.mark(for: $0) }, [.done, .done, .done, .current])
+        XCTAssertEqual(saving.accessibilityValue, "Saving, 4 of 4")
     }
 }
