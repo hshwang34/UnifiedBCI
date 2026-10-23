@@ -32,6 +32,11 @@ settings:
   configs:
     Debug:
       BCI_WORKER_DEV_ROOT: $(SRCROOT)/worker
+      # A stable identity keeps the designated requirement constant across rebuilds, so macOS
+      # remembers the Documents-folder grant (the repo and dev venv live under ~/Documents).
+      # Ad-hoc ("-") changes the cdhash every build and re-prompts. Personal team only.
+      CODE_SIGN_IDENTITY: "Apple Development"
+      DEVELOPMENT_TEAM: V56DG94ZL5
 
 targets:
   BCIWorkspace:
@@ -39,10 +44,16 @@ targets:
     platform: macOS
     sources:
       - path: App
+        excludes: ["Resources/**"]
       - path: Sources
       # Pins the BrainFlow build the bridge was vendored against; tests compare it to the
       # version the dylib and the worker report at runtime.
       - path: native/brainflow/lib/VERSION
+        buildPhase: resources
+      # The bundled example project (brief 001): a folder reference copied verbatim into
+      # Contents/Resources, read by ProjectStore.importBundledExample and nothing else.
+      - path: App/Resources/ExampleProject/S001-motor-imagery.bciproj
+        type: folder
         buildPhase: resources
     settings:
       base:
@@ -87,13 +98,32 @@ targets:
           fi
         basedOnDependencyAnalysis: false
 
+  # Crash-injection helper for the store tests: commits chunks and _exit()s at a named
+  # commit point (CRASH_AT=<point>:<n>). Built with the store sources only; no app, no worker.
+  BCIStoreCrashHelper:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Sources/Contracts
+      - path: Sources/ProjectStore
+      - path: Tools/BCIStoreCrashHelper
+    settings:
+      base:
+        PRODUCT_NAME: BCIStoreCrashHelper
+
   BCIWorkspaceTests:
     type: bundle.unit-test
     platform: macOS
     sources:
       - path: Tests
+        excludes: ["Fixtures/**"]
+      - path: Tests/Fixtures/tiny.bciproj
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: BCIWorkspace
+      - target: BCIStoreCrashHelper
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hshwang34.BCIWorkspaceTests

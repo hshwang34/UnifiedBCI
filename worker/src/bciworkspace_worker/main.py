@@ -20,7 +20,9 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
              "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"):
     os.environ.setdefault(_var, WORKER_THREADS)
 
+import hashlib  # noqa: E402
 import io  # noqa: E402
+import json  # noqa: E402
 import platform  # noqa: E402
 import queue  # noqa: E402
 import sys  # noqa: E402
@@ -31,9 +33,10 @@ from dataclasses import dataclass  # noqa: E402
 from importlib import metadata  # noqa: E402
 from typing import Any, Callable, Iterable, TextIO  # noqa: E402
 
+import numpy as np  # noqa: E402
 import threadpoolctl  # noqa: E402
 
-from . import pipeline  # noqa: E402
+from . import pipeline, project_io  # noqa: E402
 from .protocol import (  # noqa: E402
     CONTROL_METHODS,
     PROTOCOL_VERSION,
@@ -114,8 +117,123 @@ def handle_fit_evaluate_synthetic(req: Request, ctx: Context) -> dict[str, Any]:
     return record
 
 
+def _fit_progress(ctx: Context, d: dict[str, Any]) -> None:
+    """`pipeline.fit_evaluate` reports per fold and per holdout fit; the protocol
+    labels each with its stage so the app can show `fit:<model>:fold k/n` / `holdout`."""
+    stage = "holdout" if d.get("holdout") else "fit"
+    ctx.emit("progress", {"stage": stage, **{k: v for k, v in d.items() if k != "holdout"}})
+
+
+def _config_hash(block: dict[str, Any]) -> str:
+    """SHA-256 over canonical JSON (sorted keys, compact) of what determines the fit."""
+    canonical = json.dumps(
+        {k: block[k] for k in ("configuration", "expectedChannelIDs", "expectedSampleRateHz", "dependencyVersions")},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def handle_fit_evaluate_project(req: Request, ctx: Context) -> dict[str, Any]:
+    """Evaluate the reference recipe and the baseline over one recording of a project.
+
+    params: project_dir, recording_id, window {offset_s, length_s}, labels {left, right}
+    (event labels to use as class 0 / class 1), seed, csp_components, optional
+    split_manifest (re-score a frozen split), optional fitted_arrays_path (where to
+    write the `.npz`; the caller supplies a path inside its own staging directory so
+    binary never crosses the pipe).
+
+    result: {"evaluation": <record, stored verbatim as evaluation.json>,
+             "pipeline": <PipelineRecord fields the worker determines>,
+             "fitted_arrays_file": path or null}. Timing goes to the `done` event only.
+    """
+    p = req.params
+    try:
+        project_dir = str(p["project_dir"])
+        recording_id = str(p["recording_id"])
+    except KeyError as exc:
+        raise ProtocolError("bad_request", f"missing parameter {exc}", req.id) from exc
+    window_p = p.get("window", {})
+    window = (float(window_p.get("offset_s", 0.5)), float(window_p.get("length_s", 3.5)))
+    labels_p = p.get("labels", {})
+    left, right = str(labels_p.get("left", "cue_left_fist")), str(labels_p.get("right", "cue_right_fist"))
+    seed = int(p.get("seed", 0))
+    n_components = int(p.get("csp_components", 4))
+    bandpass = pipeline.BandpassSpec()
+    holdout_fraction = float(p.get("holdout_fraction", 0.25))
+    split_manifest = p.get("split_manifest")
+    arrays_path = p.get("fitted_arrays_path")
+
+    t0 = time.monotonic()
+    ctx.emit("progress", {"stage": "loading"})
+    try:
+        rec = project_io.open_recording(project_dir, recording_id)
+        segments = project_io.load_segments(rec, {left: 0, right: 1})
+    except project_io.IntegrityError as exc:
+        raise ProtocolError("integrity", str(exc), req.id) from exc
+    except project_io.ProjectError as exc:
+        raise ProtocolError("bad_request", str(exc), req.id) from exc
+    ctx.check_cancelled()
+    t_loaded = time.monotonic()
+
+    record, fitted = pipeline.fit_evaluate(
+        segments,
+        window=window,
+        seed=seed,
+        n_components=n_components,
+        bandpass=bandpass,
+        holdout_fraction=holdout_fraction,
+        split_manifest=split_manifest,
+        progress=lambda d: _fit_progress(ctx, d),
+        check_cancelled=ctx.check_cancelled,
+        return_fitted=True,
+    )
+    record["data_source"] = project_io.data_source(rec, segments)
+    t_fit = time.monotonic()
+
+    arrays_file = None
+    if arrays_path:
+        # Reference model at the top level (the recipe the pipeline record names); the
+        # baseline's arrays prefixed `baseline__` so one file carries both fits.
+        arrays = dict(fitted["reference_csp_rlda"])
+        arrays.update({f"baseline__{k}": v for k, v in fitted["baseline_logvar_rlda"].items()})
+        with open(arrays_path, "wb") as f:
+            np.savez(f, **arrays)
+        arrays_file = str(arrays_path)
+
+    configuration = {
+        "window_offset_s": repr(window[0]),
+        "window_length_s": repr(window[1]),
+        "bandpass_low_hz": repr(bandpass.low_hz),
+        "bandpass_high_hz": repr(bandpass.high_hz),
+        "bandpass_order": str(bandpass.order),
+        "csp_components": str(n_components),
+        "holdout_fraction": repr(holdout_fraction),
+        "label_left": left,
+        "label_right": right,
+        "baseline": "logvar_rlda_v1",
+    }
+    pipeline_block: dict[str, Any] = {
+        "recipe": "csp_rlda_v1",
+        "configuration": configuration,
+        "expectedChannelIDs": rec.channel_ids,
+        "expectedSampleRateHz": rec.sfreq,
+        "preprocessingStatePolicy": "reset_on_segment_start",
+        "splitManifest": json.dumps(record["split_manifest"], sort_keys=True, separators=(",", ":")),
+        "dependencyVersions": _versions(),
+        "seed": seed,
+    }
+    pipeline_block["configHash"] = _config_hash(pipeline_block)
+
+    ctx.emit("done", {
+        "elapsed_seconds": t_fit - t0,
+        "stages": {"loading": t_loaded - t0, "fit": t_fit - t_loaded},
+    })
+    return {"evaluation": record, "pipeline": pipeline_block, "fitted_arrays_file": arrays_file}
+
+
 HANDLERS: dict[str, Handler] = {
     "fit_evaluate_synthetic": handle_fit_evaluate_synthetic,
+    "fit_evaluate_project": handle_fit_evaluate_project,
 }
 
 
@@ -260,6 +378,8 @@ class Server:
             self.write(response(req.id, result))
         except Cancelled:
             self.write(error(req.id, "cancelled", "request was cancelled"))
+        except ProtocolError as exc:
+            self.write(error(req.id, exc.code, exc.message))
         except Exception as exc:  # noqa: BLE001 - surface anything to the app, keep serving
             print(traceback.format_exc(), file=sys.stderr, flush=True)
             self.write(error(req.id, "internal", f"{type(exc).__name__}: {exc}"))

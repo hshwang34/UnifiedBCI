@@ -181,6 +181,14 @@ public actor WorkerClient {
         if proc.isRunning { proc.terminate() }
     }
 
+    /// Kills the worker without asking (SIGKILL): for one that stopped answering, where
+    /// a polite `shutdown` would itself wait on it. Pending calls then fail with
+    /// `worker_exited` once the process is reaped, as for any other death.
+    public func forceTerminate() {
+        guard let proc = process, proc.isRunning else { return }
+        kill(proc.processIdentifier, SIGKILL)
+    }
+
     // MARK: Requests
 
     /// Sends `method` and returns the raw JSON bytes of `result`, for the caller to decode.

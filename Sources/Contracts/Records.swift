@@ -159,18 +159,16 @@ public struct TimingSemantics: Codable, Sendable, Equatable {
     }
 }
 
-/// `project.json`: the root of a `.bciproj` directory and the index of its children.
+/// `project.json`: the root of a `.bciproj` directory. It carries no index of its
+/// children: the `recordings/`, `pipelines/`, `results/` directory scan is the truth, so a
+/// crash between writing a child and updating an index can never hide or invent one.
 public struct ProjectManifest: Codable, Sendable, Equatable {
     public var formatVersion: Int = ContractVersion.format
     public var name: String
     public var created: Date
-    public var recordingIDs: [UUID]
-    public var pipelineIDs: [UUID]
-    public var resultIDs: [UUID]
 
-    public init(name: String, created: Date, recordingIDs: [UUID] = [], pipelineIDs: [UUID] = [], resultIDs: [UUID] = []) {
+    public init(name: String, created: Date) {
         self.name = name; self.created = created
-        self.recordingIDs = recordingIDs; self.pipelineIDs = pipelineIDs; self.resultIDs = resultIDs
     }
 }
 
@@ -178,8 +176,11 @@ public struct RecordingManifest: Codable, Sendable, Equatable {
     public var formatVersion: Int = ContractVersion.format
     public var recordingID: UUID
     /// Grouping keys for splits: a session is one sitting (cap on, same montage); a run is
-    /// one start-to-stop acquisition inside it. Derivable from stored data, never inferred.
-    public var sessionID: String
+    /// one start-to-stop acquisition inside it. Derivable from stored data, never inferred:
+    /// `sessionID` is nil when the source does not define one (e.g. a public dataset whose
+    /// documentation does not say which runs were one sitting), and the worker then reports
+    /// `unknown-session` evidence rather than claiming `same-session`.
+    public var sessionID: String?
     public var runID: String
     public var createdAt: Date
     public var source: Source
@@ -192,7 +193,7 @@ public struct RecordingManifest: Codable, Sendable, Equatable {
     public var chunks: [ChunkEntry]
     public var segments: [StreamSegment]
 
-    public init(recordingID: UUID, sessionID: String, runID: String, createdAt: Date, source: Source,
+    public init(recordingID: UUID, sessionID: String?, runID: String, createdAt: Date, source: Source,
                 channels: [ChannelSpec], reference: String, montage: String, timing: TimingSemantics,
                 clockMapping: ClockMapping, boardConfiguration: BoardConfiguration,
                 chunks: [ChunkEntry], segments: [StreamSegment]) {
@@ -204,17 +205,52 @@ public struct RecordingManifest: Codable, Sendable, Equatable {
     }
 
     public struct Source: Codable, Sendable, Equatable {
-        public var kind: String               // "brainflow", "synthetic", "import"
-        public var boardID: Int32?
+        public var kind: String               // "brainflow", "synthetic", "public_dataset"
+        public var boardID: Int32?            // nil unless BrainFlow produced the samples
+        /// BrainFlow board name, or for `public_dataset` the original acquisition device
+        /// as the dataset documents it (e.g. "BCI2000 / g.tec (per Schalk 2004)").
         public var boardName: String
-        public var dataPath: DataPath?        // nil for synthetic/import sources
-        public var brainflowVersion: String
-        public var appVersion: String
+        public var dataPath: DataPath?        // nil for synthetic/imported sources
+        public var brainflowVersion: String   // "n/a" when BrainFlow was not involved
+        public var appVersion: String         // app, or the dev-time converter that wrote it
+        // Provenance for `public_dataset` sources; all nil for live recordings. The UI shows
+        // `warning` on the first line of the source panel and `attribution` in the info panel
+        // and in every export, so a bundled recording is never mistaken for the user's device.
+        public var dataset: String?           // "PhysioNet EEG Motor Movement/Imagery v1.0.0"
+        public var doi: String?
+        public var license: String?           // "ODC-BY 1.0"
+        public var subject: String?           // dataset subject id, e.g. "S001"
+        public var runs: [String]?            // dataset run ids in segment order
+        public var warning: String?
+        public var attribution: [Citation]?
+        /// Explicit conversions applied on import (channel crop, unit scaling, ...). Nothing
+        /// not listed here happened to the samples; resampling is never one of them.
+        public var derivations: [String]?
+        public var sourceFiles: [SourceFile]?
 
-        public init(kind: String, boardID: Int32?, boardName: String, dataPath: DataPath?, brainflowVersion: String, appVersion: String) {
+        public init(kind: String, boardID: Int32?, boardName: String, dataPath: DataPath?, brainflowVersion: String, appVersion: String,
+                    dataset: String? = nil, doi: String? = nil, license: String? = nil, subject: String? = nil, runs: [String]? = nil,
+                    warning: String? = nil, attribution: [Citation]? = nil, derivations: [String]? = nil, sourceFiles: [SourceFile]? = nil) {
             self.kind = kind; self.boardID = boardID; self.boardName = boardName
             self.dataPath = dataPath; self.brainflowVersion = brainflowVersion; self.appVersion = appVersion
+            self.dataset = dataset; self.doi = doi; self.license = license; self.subject = subject; self.runs = runs
+            self.warning = warning; self.attribution = attribution; self.derivations = derivations; self.sourceFiles = sourceFiles
         }
+    }
+
+    public struct Citation: Codable, Sendable, Equatable {
+        public var text: String               // full citation as the dataset asks it to be cited
+        public var doi: String
+
+        public init(text: String, doi: String) { self.text = text; self.doi = doi }
+    }
+
+    /// An input file the import read, with its SHA-256 so the conversion is auditable.
+    public struct SourceFile: Codable, Sendable, Equatable {
+        public var name: String
+        public var sha256: String
+
+        public init(name: String, sha256: String) { self.name = name; self.sha256 = sha256 }
     }
 
     /// What we asked the board for and what it reported back. Readback is empty when the
@@ -258,7 +294,7 @@ public struct RecordingManifest: Codable, Sendable, Equatable {
     /// across segments, and no values are interpolated into raw data.
     public struct StreamSegment: Codable, Sendable, Equatable {
         public var index: Int
-        public var sessionID: String
+        public var sessionID: String?
         public var runID: String
         public var startedAtWall: Date
         public var startedAtMonotonicNanos: Int64
@@ -266,7 +302,7 @@ public struct RecordingManifest: Codable, Sendable, Equatable {
         public var endReason: EndReason?
         public var detectedGaps: [Gap]
 
-        public init(index: Int, sessionID: String, runID: String, startedAtWall: Date, startedAtMonotonicNanos: Int64,
+        public init(index: Int, sessionID: String?, runID: String, startedAtWall: Date, startedAtMonotonicNanos: Int64,
                     endedAtMonotonicNanos: Int64?, endReason: EndReason?, detectedGaps: [Gap]) {
             self.index = index; self.sessionID = sessionID; self.runID = runID
             self.startedAtWall = startedAtWall; self.startedAtMonotonicNanos = startedAtMonotonicNanos
@@ -291,7 +327,7 @@ public struct RecordingManifest: Codable, Sendable, Equatable {
 
 public struct EventRecord: Codable, Sendable, Equatable {
     public var eventID: UUID
-    public var sessionID: String
+    public var sessionID: String?
     public var runID: String
     public var trialID: String?
     public var label: String                  // "cue_left", "cue_right", "rest", "abort", ...
@@ -303,7 +339,7 @@ public struct EventRecord: Codable, Sendable, Equatable {
     public var sampleAssociation: SampleAssociation?
     public var timingUncertaintyNanos: Int64?       // unknown → nil, never 0 by default
 
-    public init(eventID: UUID, sessionID: String, runID: String, trialID: String?, label: String, origin: String,
+    public init(eventID: UUID, sessionID: String?, runID: String, trialID: String?, label: String, origin: String,
                 intendedAtMonotonicNanos: Int64?, presentedAtMonotonicNanos: Int64?, sourceTimeNanos: Int64?,
                 wallTime: Date, sampleAssociation: SampleAssociation?, timingUncertaintyNanos: Int64?) {
         self.eventID = eventID; self.sessionID = sessionID; self.runID = runID; self.trialID = trialID
@@ -347,6 +383,37 @@ public struct PipelineRecord: Codable, Sendable, Equatable {
         self.preprocessingStatePolicy = preprocessingStatePolicy; self.trainingRecordingIDs = trainingRecordingIDs
         self.splitManifest = splitManifest; self.dependencyVersions = dependencyVersions; self.seed = seed
         self.fittedParametersFile = fittedParametersFile; self.configHash = configHash
+    }
+}
+
+/// `results/<uuid>/result.meta.json`: the context of one evaluation run. Everything that
+/// varies between two runs of the same evaluation (wall clock, durations, worker build)
+/// lives here and never in `evaluation.json`, so repeat runs can be compared byte-for-byte.
+public struct ResultMeta: Codable, Sendable, Equatable {
+    public var formatVersion: Int = ContractVersion.format
+    public var resultID: UUID
+    public var pipelineID: UUID
+    public var recordingID: UUID
+    public var createdAt: Date
+    public var seed: Int
+    public var configHash: String             // PipelineRecord.configHash, for reproduction lookup
+    public var evaluationSHA256: String       // over the stored evaluation.json bytes
+    public var durationsSeconds: [String: Double]   // "loading", "fit", "holdout", "total"
+    public var workerVersions: [String: String]
+    public var workerOrigin: String           // "bundled" | "development_venv"
+    /// The earlier result this run reproduced (same recording, config hash and seed). Set
+    /// only when the new `evaluation.json` is byte-identical to the original's; a rerun
+    /// that differs is stored on its own and names the original in `divergedFrom`.
+    public var reproductionOf: UUID?
+    public var divergedFrom: UUID?
+
+    public init(resultID: UUID, pipelineID: UUID, recordingID: UUID, createdAt: Date, seed: Int, configHash: String,
+                evaluationSHA256: String, durationsSeconds: [String: Double], workerVersions: [String: String], workerOrigin: String,
+                reproductionOf: UUID?, divergedFrom: UUID?) {
+        self.resultID = resultID; self.pipelineID = pipelineID; self.recordingID = recordingID; self.createdAt = createdAt
+        self.seed = seed; self.configHash = configHash; self.evaluationSHA256 = evaluationSHA256
+        self.durationsSeconds = durationsSeconds; self.workerVersions = workerVersions; self.workerOrigin = workerOrigin
+        self.reproductionOf = reproductionOf; self.divergedFrom = divergedFrom
     }
 }
 

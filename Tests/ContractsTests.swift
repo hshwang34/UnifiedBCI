@@ -58,7 +58,7 @@ final class ContractsTests: XCTestCase {
     }
 
     func testProjectManifestRoundTrips() throws {
-        let p = ProjectManifest(name: "Example", created: Date(timeIntervalSince1970: 5.5), recordingIDs: [UUID()], pipelineIDs: [], resultIDs: [UUID(), UUID()])
+        let p = ProjectManifest(name: "Example", created: Date(timeIntervalSince1970: 5.5))
         let back = try ContractJSON.decoder().decode(ProjectManifest.self, from: ContractJSON.encoder().encode(p))
         XCTAssertEqual(back, p)
         XCTAssertEqual(back.formatVersion, 1)
