@@ -106,12 +106,17 @@ final class Workspace {
         if let pending = opening[key] { return try await pending.value }
         if let pending = adopting[key] { return await pending.value }
         let launch = self.launch
-        let task = Task { try await ProjectSession.open(at: key, launch: launch) }
+        // The task registers the session and releases the key itself (as `close` does),
+        // so a waiter that resumes first never re-checks into a finished open still
+        // holding the key, nor into a gap with neither key nor session.
+        let task = Task {
+            defer { self.opening[key] = nil }
+            let session = try await ProjectSession.open(at: key, launch: launch)
+            self.sessions[key] = session
+            return session
+        }
         opening[key] = task
-        defer { opening[key] = nil }
-        let session = try await task.value
-        sessions[key] = session
-        return session
+        return try await task.value
     }
 
     /// The session for a project window that may close before the open finishes. If the
@@ -142,12 +147,14 @@ final class Workspace {
             break
         }
         let launch = self.launch
-        let task = Task { await ProjectSession.adopt(store, url: key, launch: launch) }
+        let task = Task {
+            defer { self.adopting[key] = nil }
+            let session = await ProjectSession.adopt(store, url: key, launch: launch)
+            self.sessions[key] = session
+            return session
+        }
         adopting[key] = task
-        defer { adopting[key] = nil }
-        let session = await task.value
-        sessions[key] = session
-        return session
+        return await task.value
     }
 
     /// Ends a project's session: stops its run (bounded) and worker, then forgets it. The
