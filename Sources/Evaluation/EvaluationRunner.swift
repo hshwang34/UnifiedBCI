@@ -87,6 +87,7 @@ public final class EvaluationRunner {
 
     private let launch: WorkerLaunch?
     private var client: WorkerClient?
+    private var clientStart: Task<WorkerClient, Error>?
     private var eventTask: Task<Void, Never>?
     private var lastRequest: Request?
     private var runTask: Task<Void, Never>?
@@ -162,6 +163,7 @@ public final class EvaluationRunner {
         watchdogTask?.cancel()
         eventTask?.cancel()
         eventTask = nil
+        clientStart = nil
         if let client { await client.shutdown() }
         client = nil
     }
@@ -328,9 +330,17 @@ public final class EvaluationRunner {
         ["worker_exited", "launch_failed", "ready_timeout", "protocol_mismatch", "bad_state", "write_failed", "timeout"].contains(code)
     }
 
+    /// The running worker, or a fresh one. Concurrent callers (a `defaults()` lookup
+    /// while Evaluate starts) share one start: the check and the replacement happen
+    /// without a suspension in between, so two callers can never each kill the other's
+    /// worker. A start that failed, or a worker that has since exited, is replaced.
     private func readyClient() async throws -> WorkerClient {
-        if let client, await client.state == .ready { return client }
-        discardClient()
+        if let task = clientStart {
+            if let ready = try? await task.value, ready === client, await ready.state == .ready { return ready }
+            // Someone else replaced it while we waited: use theirs.
+            if clientStart != task { return try await readyClient() }
+            discardClient()
+        }
         guard let launch else { throw WorkerError(code: "launch_failed", message: "no analysis worker is available (bundled worker missing and no development venv)") }
         let client = WorkerClient(launch: launch)
         self.client = client
@@ -340,15 +350,32 @@ public final class EvaluationRunner {
                 self?.handle(event)
             }
         }
-        _ = try await client.start()
-        return client
+        let task = Task<WorkerClient, Error> {
+            _ = try await client.start()
+            return client
+        }
+        clientStart = task
+        return try await task.value
     }
 
     private func discardClient() {
         eventTask?.cancel()
         eventTask = nil
+        clientStart = nil
         if let old = client { Task { await old.shutdown() } }
         client = nil
+    }
+
+    // MARK: Defaults
+
+    /// What `fit_evaluate_project` applies to parameters a request leaves out, and the two
+    /// recipes it runs, as the worker reports them (`fit_evaluate_defaults`). The UI shows
+    /// these as placeholders instead of numbers of its own. Starts the worker if needed,
+    /// which also warms it for the next Evaluate.
+    public func defaults() async throws -> EvaluationDefaults {
+        let client = try await readyClient()
+        let data = try await client.call("fit_evaluate_defaults", timeout: .seconds(15))
+        return try JSONDecoder().decode(EvaluationDefaults.self, from: data)
     }
 
     /// Internal (not private) so tests can deliver a late event directly.
@@ -417,4 +444,35 @@ public final class EvaluationRunner {
         let seed: Int
         let configHash: String
     }
+}
+
+/// The worker's `fit_evaluate_defaults` answer (worker/main.py `PROJECT_DEFAULTS`).
+public struct EvaluationDefaults: Decodable, Sendable, Equatable {
+    public struct Params: Decodable, Sendable, Equatable {
+        public struct Window: Decodable, Sendable, Equatable {
+            public var offset_s: Double
+            public var length_s: Double
+        }
+        public struct Labels: Decodable, Sendable, Equatable {
+            public var left: String
+            public var right: String
+        }
+        public var window: Window
+        public var labels: Labels
+        public var seed: Int
+        public var csp_components: Int
+        public var holdout_fraction: Double
+    }
+
+    /// One recipe the evaluation runs, described by the worker from the objects it fits.
+    public struct Recipe: Decodable, Sendable, Equatable, Identifiable {
+        public var id: String          // "csp_rlda_v1"
+        public var model: String       // key under `models` in evaluation.json
+        public var role: String        // "reference" | "baseline"
+        public var name: String
+        public var steps: [String]
+    }
+
+    public var params: Params
+    public var recipes: [Recipe]
 }
