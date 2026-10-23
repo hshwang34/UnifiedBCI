@@ -357,6 +357,67 @@ final class EvaluationRunnerTests: XCTestCase {
         guard case .done = second else { return XCTFail("retry should succeed with a fresh worker, got \(second)") }
     }
 
+    // MARK: Worker lifecycle (review round 1)
+
+    func testShutdown_preventsAWorkerFromBeingStartedAgain() async throws {
+        let runner = try makeRunner()
+        // A defaults lookup is starting the worker when the window closes.
+        let lookup = Task { try await runner.defaults() }
+        try await Task.sleep(for: .milliseconds(50))
+        await runner.shutdown()
+        do { _ = try await lookup.value; XCTFail("a lookup racing shutdown must fail") } catch {}
+        XCTAssertTrue(runner.isShutDown)
+        XCTAssertFalse(runner.hasClient, "shutdown left no worker behind")
+        do { _ = try await runner.defaults(); XCTFail("nothing starts after shutdown") } catch {}
+        let state = await runner.evaluateAndWait(.init(recordingID: recordingID, seed: 0))
+        guard case .analysisUnavailable = state else { return XCTFail("\(state)") }
+        XCTAssertFalse(runner.hasClient, "no worker was resurrected")
+    }
+
+    func testFailedStart_everyWaiterRethrows_thenAFreshStartSurvives() async throws {
+        // First launch dies before announcing ready (slowly, so both callers wait on it);
+        // later launches are the real worker.
+        let launch = try fakeLaunch("""
+        import os, sys, time, pathlib
+        marker = pathlib.Path(sys.argv[0]).with_suffix(".failed")
+        if marker.exists():
+            os.execv(sys.executable, [sys.executable, "-I", "-u", "-B", "-X", "utf8", "-m", "bciworkspace_worker"])
+        marker.write_text("1")
+        time.sleep(0.5)
+        sys.exit(1)
+        """)
+        let runner = try makeRunner(launch: launch)
+        let a = Task { try await runner.defaults() }
+        let b = Task { try await runner.defaults() }
+        for t in [a, b] {
+            do {
+                _ = try await t.value
+                XCTFail("a caller sharing a failed start must see its error")
+            } catch let error as WorkerError {
+                XCTAssertEqual(error.code, "worker_exited", error.message)
+            }
+        }
+        XCTAssertFalse(runner.hasClient)
+        // The next caller starts a fresh worker, and nothing left over kills it.
+        let defaults = try await runner.defaults()
+        XCTAssertEqual(defaults.recipes.count, 2)
+        guard case .done = await runner.evaluateAndWait(.init(recordingID: recordingID, seed: 0)) else { return XCTFail() }
+        XCTAssertTrue(runner.hasClient)
+    }
+
+    func testStopWithin_cancelsAndWaitsForTheRun() async throws {
+        let runner = try makeRunner()
+        runner.evaluate(.init(recordingID: recordingID, seed: 0))
+        await waitUntil(.seconds(60)) { runner.progressLog.contains(.loading) }
+        XCTAssertTrue(runner.isBusy)
+        await runner.stop(within: .seconds(10))
+        XCTAssertFalse(runner.isBusy, "the run has ended")
+        XCTAssertEqual(runner.state, .cancelled)
+        let results = try await store.results()
+        XCTAssertEqual(results, [])
+        XCTAssertEqual(try pipelineLeftovers(), [])
+    }
+
     // MARK: Export
 
     func testExport_layoutAndHashes() async throws {

@@ -88,6 +88,9 @@ public final class EvaluationRunner {
     private let launch: WorkerLaunch?
     private var client: WorkerClient?
     private var clientStart: Task<WorkerClient, Error>?
+    /// Set by `shutdown()`: no worker is started after it, so a defaults lookup or retry
+    /// racing a window close cannot resurrect one.
+    public private(set) var isShutDown = false
     private var eventTask: Task<Void, Never>?
     private var lastRequest: Request?
     private var runTask: Task<Void, Never>?
@@ -159,14 +162,35 @@ public final class EvaluationRunner {
         return state
     }
 
+    /// Stops the worker for good (the window is closing or the app quitting). A start in
+    /// flight is cancelled and its process shut down; nothing starts a worker afterwards.
     public func shutdown() async {
+        isShutDown = true
         watchdogTask?.cancel()
         eventTask?.cancel()
         eventTask = nil
+        clientStart?.cancel()
         clientStart = nil
-        if let client { await client.shutdown() }
+        let old = client
         client = nil
+        if let old { await old.shutdown() }
     }
+
+    /// Whether a run is in flight (from `evaluate` until its terminal state is set).
+    public var isBusy: Bool { runTask != nil }
+
+    /// Cancels the running evaluation and waits, at most `limit`, for it to end. A run
+    /// that is storing its result is not interrupted; this waits for the commit instead.
+    public func stop(within limit: Duration) async {
+        cancel()
+        let deadline = ContinuousClock.now + limit
+        while runTask != nil, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    /// Whether a worker client exists (tests).
+    var hasClient: Bool { client != nil }
 
     // MARK: Internals
 
@@ -180,7 +204,7 @@ public final class EvaluationRunner {
         do {
             client = try await readyClient()
         } catch {
-            discardClient()
+            // `readyClient` already cleaned up its own failed start.
             // A launch that fails after the user cancelled is still the user's cancel.
             finish(cancelRequested ? .cancelled : .analysisUnavailable(reason: "\(error)"))
             return
@@ -222,13 +246,13 @@ public final class EvaluationRunner {
             if cancelRequested {
                 // Whatever ended the call (the cancel itself, the watchdog, a death), the
                 // user asked to stop and nothing was stored.
-                if watchdogFired || Self.isWorkerGone(error.code) { discardClient() }
+                if watchdogFired || Self.isWorkerGone(error.code) { discardClient(client) }
                 finish(.cancelled)
             } else if watchdogFired {
-                discardClient()
+                discardClient(client)
                 finish(.analysisUnavailable(reason: "the analysis worker reported no progress for \(progressSilenceTimeout) and was stopped"))
             } else if Self.isWorkerGone(error.code) {
-                discardClient()
+                discardClient(client)
                 finish(.analysisUnavailable(reason: error.message))
             } else if error.code == "cancelled" {
                 finish(.cancelled)
@@ -333,13 +357,25 @@ public final class EvaluationRunner {
     /// The running worker, or a fresh one. Concurrent callers (a `defaults()` lookup
     /// while Evaluate starts) share one start: the check and the replacement happen
     /// without a suspension in between, so two callers can never each kill the other's
-    /// worker. A start that failed, or a worker that has since exited, is replaced.
+    /// worker. A failed start fails every caller that shared it, with its own error; a
+    /// worker that has since exited is replaced. Nothing starts after `shutdown()`.
     private func readyClient() async throws -> WorkerClient {
+        guard !isShutDown else { throw Self.shutDownError }
         if let task = clientStart {
-            if let ready = try? await task.value, ready === client, await ready.state == .ready { return ready }
-            // Someone else replaced it while we waited: use theirs.
-            if clientStart != task { return try await readyClient() }
-            discardClient()
+            let ready: WorkerClient
+            do {
+                ready = try await task.value
+            } catch {
+                // Only the start that failed is cleared; a newer one is left alone.
+                if clientStart == task { discardClient() }
+                throw error
+            }
+            guard !isShutDown else { throw Self.shutDownError }
+            let alive = await ready.state == .ready
+            // Re-checked after the suspension: someone may have replaced or discarded it.
+            if alive, ready === client, clientStart == task, !isShutDown { return ready }
+            if clientStart != task || isShutDown { return try await readyClient() }
+            discardClient(ready)
         }
         guard let launch else { throw WorkerError(code: "launch_failed", message: "no analysis worker is available (bundled worker missing and no development venv)") }
         let client = WorkerClient(launch: launch)
@@ -355,10 +391,15 @@ public final class EvaluationRunner {
             return client
         }
         clientStart = task
-        return try await task.value
+        return try await readyClient()
     }
 
-    private func discardClient() {
+    private static let shutDownError = WorkerError(code: "launch_failed", message: "the analysis worker was shut down with its project window")
+
+    /// Drops the current worker. With `expected`, only if that is still the current one:
+    /// a caller holding an old client can never discard the replacement someone else started.
+    private func discardClient(_ expected: WorkerClient? = nil) {
+        if let expected, expected !== client { return }
         eventTask?.cancel()
         eventTask = nil
         clientStart = nil
@@ -372,9 +413,11 @@ public final class EvaluationRunner {
     /// recipes it runs, as the worker reports them (`fit_evaluate_defaults`). The UI shows
     /// these as placeholders instead of numbers of its own. Starts the worker if needed,
     /// which also warms it for the next Evaluate.
-    public func defaults() async throws -> EvaluationDefaults {
+    /// `cspComponents` asks for the recipe prose with that component count.
+    public func defaults(cspComponents: Int? = nil) async throws -> EvaluationDefaults {
         let client = try await readyClient()
-        let data = try await client.call("fit_evaluate_defaults", timeout: .seconds(15))
+        let params: [String: JSONValue] = cspComponents.map { ["csp_components": .int($0)] } ?? [:]
+        let data = try await client.call("fit_evaluate_defaults", params: params, timeout: .seconds(15))
         return try JSONDecoder().decode(EvaluationDefaults.self, from: data)
     }
 
