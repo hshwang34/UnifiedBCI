@@ -133,6 +133,104 @@ def test_missing_recording_is_a_bad_request_not_internal():
     assert exc.value.code == "bad_request"
 
 
+# --- hostile manifests (same rules as Swift's RecordingHandle.validate) -----------------------
+
+
+def hostile_copy(tmp_path: Path, edit) -> Path:
+    """A copy of F1 whose recording.json has been edited by `edit(manifest, rec_dir)`."""
+    project = tmp_path / "h.bciproj"
+    shutil.copytree(TINY, project)
+    rec_dir = project / "recordings" / recording_id(project)
+    manifest = json.loads((rec_dir / "recording.json").read_text())
+    edit(manifest, rec_dir)
+    (rec_dir / "recording.json").write_text(json.dumps(manifest))
+    return project
+
+
+def expect_integrity(project: Path) -> str:
+    ctx = worker_main.Context(emit=lambda n, d: None, check_cancelled=lambda: None)
+    with pytest.raises(ProtocolError) as exc:
+        worker_main.handle_fit_evaluate_project(Request(id="h", method="fit_evaluate_project", params=params(project)), ctx)
+    assert exc.value.code == "integrity", exc.value.message
+    return exc.value.message
+
+
+def test_absolute_chunk_path_is_refused(tmp_path):
+    secret = tmp_path / "secret.f64"
+
+    def edit(m, rec_dir):
+        shutil.copy(rec_dir / "chunks" / "000000.f64", secret)
+        m["chunks"][0]["fileName"] = str(secret)
+    assert "000000" in expect_integrity(hostile_copy(tmp_path, edit))
+
+
+def test_traversal_chunk_path_is_refused(tmp_path):
+    def edit(m, rec_dir):
+        m["chunks"][0]["fileName"] = "chunks/../../../../secret.f64"
+    assert "not 'chunks/000000.f64'" in expect_integrity(hostile_copy(tmp_path, edit))
+
+
+def test_symlinked_chunk_is_refused(tmp_path):
+    outside = tmp_path / "outside.f64"
+
+    def edit(m, rec_dir):
+        chunk = rec_dir / "chunks" / "000002.f64"
+        shutil.copy(chunk, outside)
+        chunk.unlink()
+        chunk.symlink_to(outside)
+    assert "not a regular file" in expect_integrity(hostile_copy(tmp_path, edit))
+
+
+def test_fifo_in_place_of_a_chunk_is_refused_without_blocking(tmp_path):
+    def edit(m, rec_dir):
+        chunk = rec_dir / "chunks" / "000001.f64"
+        chunk.unlink()
+        os.mkfifo(chunk)
+    assert "not a regular file" in expect_integrity(hostile_copy(tmp_path, edit))
+
+
+@pytest.mark.parametrize("row", [-1, 8, 9999, True, "0"])
+def test_channel_row_outside_the_chunk_is_refused(tmp_path, row):
+    def edit(m, rec_dir):
+        m["channels"][0]["sourceRow"] = row
+    assert expect_integrity(hostile_copy(tmp_path, edit))
+
+
+@pytest.mark.parametrize("rate", [0, -160, "fast", None])
+def test_non_positive_sample_rate_is_refused(tmp_path, rate):
+    def edit(m, rec_dir):
+        m["timing"]["nominalSampleRateHz"] = rate
+    assert "sample rate" in expect_integrity(hostile_copy(tmp_path, edit))
+
+
+def test_segments_must_be_a_list_of_objects(tmp_path):
+    def edit(m, rec_dir):
+        m["segments"] = {"0": m["segments"][0]}
+    assert "segments" in expect_integrity(hostile_copy(tmp_path, edit))
+
+
+def test_size_mismatch_is_refused_before_reading(tmp_path, monkeypatch):
+    """A 16 GiB sparse file in place of a chunk: refused from `stat`, so it is never
+    read (reading it would take minutes and the memory to hold it)."""
+    def edit(m, rec_dir):
+        with open(rec_dir / "chunks" / "000004.f64", "r+b") as f:
+            f.truncate(16 << 30)
+    hashed: list[int] = []
+    real_sha256 = project_io.hashlib.sha256
+    monkeypatch.setattr(project_io.hashlib, "sha256", lambda b=b"": hashed.append(len(b)) or real_sha256(b))
+    message = expect_integrity(hostile_copy(tmp_path, edit))
+    assert "000004.f64" in message and str(16 << 30) in message
+    assert max(hashed, default=0) < 1 << 20, "the oversized chunk must not have been read"
+
+
+def test_recording_id_must_be_a_uuid(tmp_path):
+    ctx = worker_main.Context(emit=lambda n, d: None, check_cancelled=lambda: None)
+    with pytest.raises(ProtocolError) as exc:
+        worker_main.handle_fit_evaluate_project(
+            Request(id="u", method="fit_evaluate_project", params=params(TINY, recording_id="../../etc")), ctx)
+    assert exc.value.code == "bad_request"
+
+
 # --- the evaluation ---------------------------------------------------------------------------
 
 
@@ -251,3 +349,35 @@ def test_evaluate_full_example_within_budget():
     print(f"\nS001 example seed 0: reference balanced accuracy {h['balanced_accuracy']:.3f}, accuracy {h['accuracy']:.3f} "
           f"CI {h['accuracy_ci95']}, n={h['n_test_trials']}; baseline "
           f"{ev['models']['baseline_logvar_rlda']['holdout']['balanced_accuracy']:.3f}; {elapsed:.2f} s")
+
+
+# --- hostile input through the real server -------------------------------------------------------
+
+
+def test_hostile_manifest_fails_the_request_and_the_worker_keeps_serving(tmp_path):
+    """A recording.json with an out-of-range channel row must produce an error response
+    (never a dead worker), and the same process must still answer the next request."""
+    project = tmp_path / "p"
+    shutil.copytree(TINY, project)
+    manifest_path = project / "recordings" / recording_id(project) / "recording.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["channels"][0]["sourceRow"] = 9999
+    manifest_path.write_text(json.dumps(manifest))
+    proc = subprocess.Popen([sys.executable, "-m", "bciworkspace_worker"], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        assert json.loads(proc.stdout.readline())["event"] == "ready"
+
+        def call(i, method, p):
+            proc.stdin.write((json.dumps({"v": 1, "id": i, "method": method, "params": p}) + "\n").encode())
+            proc.stdin.flush()
+            while True:
+                obj = json.loads(proc.stdout.readline())
+                if obj.get("id") == i and "ok" in obj:
+                    return obj
+
+        bad = call("a", "fit_evaluate_project", params(project))
+        assert bad["ok"] is False and bad["error"]["message"]
+        assert call("b", "ping", {})["ok"] is True
+    finally:
+        proc.kill()

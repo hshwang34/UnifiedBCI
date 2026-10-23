@@ -38,7 +38,10 @@ open: chunk file names must be the canonical `chunks/NNNNNN.f64` for their index
 path is built from the index, never taken from the manifest), dimensions must be
 positive with overflow-checked byte sizes, every channel's `sourceRow` must be a row of
 every chunk, chunk paths must resolve inside `chunks/`, and the orphan sweep never
-follows symbolic links or deletes anything that resolves outside the project.
+follows symbolic links or deletes anything that resolves outside the project. The
+worker applies the same rules (`project_io.validate`) before reading a sample, also
+requires each chunk to be a regular file (no symlink, FIFO or device) whose `stat`
+size matches before it is read, and reports every violation as error code `integrity`.
 
 ### JSON coding
 
