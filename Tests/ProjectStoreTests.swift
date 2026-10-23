@@ -624,6 +624,36 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: out.appendingPathComponent("events.jsonl")), Data("{}\n".utf8))
     }
 
+    func testExport_refusesASymlinkedResultDirectoryPointingOutside() async throws {
+        let (store, _, meta) = try await twoSegmentExportFixture("dirlink.bciproj", runIDs: ("a", "b"))
+        let fm = FileManager.default
+        // Move the real result outside and leave a symlink in its place: every file in it
+        // is a regular file, so only the directory check can catch it.
+        let resultDir = store.directory.appendingPathComponent("results/\(meta.resultID.uuidString)")
+        let outside = scratch.appendingPathComponent("elsewhere", isDirectory: true)
+        try fm.moveItem(at: resultDir, to: outside)
+        try fm.createSymbolicLink(at: resultDir, withDestinationURL: outside)
+        let out = scratch.appendingPathComponent("export")
+        await expectThrows({ try await store.export(result: meta.resultID, to: out) }) { error in
+            guard case ProjectStoreError.integrity(let issues) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(issues.map(\.kind), [.outsideProject])
+        }
+        XCTAssertFalse(fm.fileExists(atPath: out.path))
+        // The same for the pipeline directory, once the result is back in place.
+        try fm.removeItem(at: resultDir)
+        try fm.moveItem(at: outside, to: resultDir)
+        let stored = try await store.result(id: meta.resultID)
+        let pipelineDir = store.directory.appendingPathComponent("pipelines/\(stored.pipeline.pipelineID.uuidString)")
+        try fm.moveItem(at: pipelineDir, to: outside)
+        try fm.createSymbolicLink(at: pipelineDir, withDestinationURL: outside)
+        await expectThrows({ try await store.export(result: meta.resultID, to: out) }) { error in
+            guard case ProjectStoreError.integrity(let issues) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(issues.map(\.kind), [.outsideProject])
+        }
+        XCTAssertFalse(fm.fileExists(atPath: out.path))
+    }
+
+    // MARK: Hostile manifests
     // MARK: Hostile manifests
 
     private func expectThrows(_ body: () async throws -> Void, file: StaticString = #filePath, line: UInt = #line,

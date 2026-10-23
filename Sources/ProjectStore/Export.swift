@@ -49,7 +49,13 @@ extension ProjectStore {
     public func export(result id: UUID, to destination: URL) throws {
         let fm = FileManager.default
         guard !fm.fileExists(atPath: destination.path) else { throw ProjectStoreError.alreadyExists(destination) }
+        // Confinement first: `O_NOFOLLOW` guards only the last component, so a hostile
+        // project could make `results/<id>` (or the pipeline or recording directory) a
+        // symlink and have a regular file from elsewhere exported as its own.
+        try confineToProject("results/\(id.uuidString)")
         let stored = try result(id: id)
+        try confineToProject("pipelines/\(stored.pipeline.pipelineID.uuidString)")
+        try confineToProject("recordings/\(stored.meta.recordingID.uuidString)/chunks")
         let handle = try recording(id: stored.meta.recordingID)
         let tmp = AtomicFile.tempURL(for: destination)
         if (try? fm.attributesOfItem(atPath: tmp.path)) != nil { try fm.removeItem(at: tmp) }
@@ -125,6 +131,27 @@ extension ProjectStore {
         try stored.evaluationJSON.write(to: out.appendingPathComponent("evaluation.json"))
         try encoder.encode(stored.meta).write(to: out.appendingPathComponent("result.meta.json"))
         try Data(Self.attribution(for: manifest).utf8).write(to: out.appendingPathComponent("ATTRIBUTION.md"))
+    }
+
+    /// Requires every component of `relativePath` below the project root to be a real
+    /// directory (lstat: no symbolic link anywhere on the way), and the resolved result to
+    /// stay under the resolved root. Symlinks above the root (`/var` → `/private/var`)
+    /// are the user's business and are allowed.
+    func confineToProject(_ relativePath: String) throws {
+        let root = directory.resolvingSymlinksInPath()
+        var url = directory
+        for component in relativePath.split(separator: "/").map(String.init) {
+            url.appendPathComponent(component)
+            var st = stat()
+            guard lstat(url.path, &st) == 0 else { throw ProjectStoreError.io("lstat \(relativePath)", errno) }
+            guard st.st_mode & S_IFMT == S_IFDIR else {
+                throw ProjectStoreError.integrity([IntegrityIssue(kind: .outsideProject, file: relativePath,
+                                                                  detail: "\(component) is a symbolic link or not a directory")])
+            }
+        }
+        guard url.resolvingSymlinksInPath().path.hasPrefix(root.path + "/") else {
+            throw ProjectStoreError.integrity([IntegrityIssue(kind: .outsideProject, file: relativePath, detail: "resolves outside the project")])
+        }
     }
 
     /// The bytes of a project file that must be a regular file. A symbolic link (which

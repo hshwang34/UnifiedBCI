@@ -136,7 +136,7 @@ public enum ProjectStoreError: Error, CustomStringConvertible, Sendable {
 /// A chunk whose bytes disagree with the manifest. Reported, never repaired: the
 /// manifest is the claim and the file is the evidence; the app does not get to pick.
 public struct IntegrityIssue: Error, Sendable, Equatable, CustomStringConvertible {
-    public enum Kind: String, Sendable { case hashMismatch, missingChunk, sizeMismatch, unlistedChunk, notRegularFile }
+    public enum Kind: String, Sendable { case hashMismatch, missingChunk, sizeMismatch, unlistedChunk, notRegularFile, outsideProject }
     public var kind: Kind
     public var file: String
     public var detail: String
