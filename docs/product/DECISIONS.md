@@ -28,3 +28,9 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #8 · 2026-10-20 · Result headline shows "Balanced accuracy X" with "Accuracy Y · 95 % CI a–b (trial-level, n)" beneath it; the trial-level interval is never labelled as a balanced-accuracy interval; a run-level BA interval shows only when ≥ 2 runs are held out, else "unavailable (one held-out run)".
 *Why:* the stored CI is Clopper-Pearson on accuracy; mislabelling it would overclaim. Decided by the lead as a safe default (designer flag); PM may reverse. Lives in docs/product/briefs/001-ui-spec.md.
+
+#9 · 2026-10-22 · Visual direction: "sterile, clean, clear" — visionOS-like glass. Liquid Glass (`glassEffect`) on macOS 26; frosted-material fallback on macOS 15, which stays the minimum. Light and dark both designed; follows the system setting and honours Reduce Transparency / Increase Contrast. Neuralink's Telepathy app is a tone reference only (no branding borrowed). Supersedes the "system components only, no custom styling" line in 001-ui-spec.md.
+*Why:* PM direction (brief 001 PR 3). Lives in docs/product/briefs/001-visual-spec.md.
+
+#10 · 2026-10-22 · Seed copy reads "Chooses the held-out runs and the bootstrap draws. The same seed gives the same split." (the UI spec's "the split stays the same" was wrong: no frozen split manifest is passed yet).
+*Why:* honest copy over spec wording; decided by the lead as a safe default, PM may reverse (alternative: ship a frozen split manifest per recording).
