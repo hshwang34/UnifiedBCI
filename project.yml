@@ -32,6 +32,11 @@ settings:
   configs:
     Debug:
       BCI_WORKER_DEV_ROOT: $(SRCROOT)/worker
+      # A stable identity keeps the designated requirement constant across rebuilds, so macOS
+      # remembers the Documents-folder grant (the repo and dev venv live under ~/Documents).
+      # Ad-hoc ("-") changes the cdhash every build and re-prompts. Personal team only.
+      CODE_SIGN_IDENTITY: "Apple Development"
+      DEVELOPMENT_TEAM: V56DG94ZL5
 
 targets:
   BCIWorkspace:
