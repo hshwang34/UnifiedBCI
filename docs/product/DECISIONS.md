@@ -34,3 +34,9 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #10 · 2026-10-22 · Seed copy reads "Chooses the held-out runs and the bootstrap draws. The same seed gives the same split." (the UI spec's "the split stays the same" was wrong: no frozen split manifest is passed yet).
 *Why:* honest copy over spec wording; decided by the lead as a safe default, PM may reverse (alternative: ship a frozen split manifest per recording).
+
+#11 · 2026-10-22 · Class names display as "Left-fist cue" / "Right-fist cue" with the stored label (`cue_left_fist`) shown beneath; channels, events and exports stay verbatim.
+*Why:* the label records the cue shown, not proof of movement or imagery. Brief 001 visual spec §3.
+
+#12 · 2026-10-22 · The accuracy range bar marks the larger-class rate with "Interval includes / lies above / lies below the larger-class rate."
+*Why:* a plain "is this better than always guessing the bigger class?" cue, derived from stored counts only. Brief 001 visual spec §2.6.
