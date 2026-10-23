@@ -1,6 +1,6 @@
 # 001 — Replay to report: reproduce a motor-imagery result with no hardware
 
-**Status:** building (PR #1 foundations merged; PR 2 data path; PR 3 screens) · **Owner:** PM · **PR:** #1 merged · **Updated:** 2026-10-20
+**Status:** building (PR #1 foundations merged; PR #2 data path merged; PR 3 screens building) · **Owner:** PM · **PR:** #1, #2 merged · **Updated:** 2026-10-22
 
 ## Problem
 A developer who wants to know "does my CSP/LDA experiment actually work?" today assembles
@@ -127,6 +127,15 @@ band-power recipe, any claim about the user's own motor imagery.
 - Same-seed rerun: we *do* re-run (that is the reproducibility evidence the PRD wants), verify
   byte-identity, and store it as a reproduction record pointing at the original.
 - "Under 15 minutes without a terminal" is PRD gate 2 (five testers); not ticked from a PR.
+
+- PR 2 (data path) gate, 2026-10-22: reviewer found one blocker (worker trusted `recording.json`:
+  path escape, FIFO hang, silent negative-row wraparound) plus eight durability/race issues; two fix
+  rounds + one security-review fix. Decisions: worker validates manifests with the same rules as Swift
+  and reports `integrity`, never `internal`; cancel means nothing saved, and is a no-op once storing
+  starts; 120 s progress-silence watchdog → "analysis unavailable"; open-sweep spares locked or
+  < 10 min old staging dirs (PR 3 also allows one window per project); export refuses any symlinked
+  path component. Debug builds signed with the personal Apple Development identity (team V56DG94ZL5)
+  so macOS keeps the Documents grant across rebuilds. No CI in the repo; gate run locally.
 
 ## Risks / what could go wrong for users
 - ~22 trials per class gives a ±15-point interval; a user could read 70 % as "it works".
