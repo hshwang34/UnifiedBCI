@@ -27,8 +27,8 @@ final class EvaluationRunnerTests: XCTestCase {
         try XCTUnwrap(WorkerLaunch.locate(), "no worker found; run scripts/bootstrap.sh")
     }
 
-    private func makeRunner(launch: WorkerLaunch? = nil) throws -> EvaluationRunner {
-        let r = EvaluationRunner(store: store, launch: try launch ?? realLaunch())
+    private func makeRunner(launch: WorkerLaunch? = nil, silence: Duration = .seconds(120)) throws -> EvaluationRunner {
+        let r = EvaluationRunner(store: store, launch: try launch ?? realLaunch(), progressSilenceTimeout: silence)
         runner = r
         return r
     }
@@ -200,6 +200,105 @@ final class EvaluationRunnerTests: XCTestCase {
         let events = try await store.events(for: recordingID)
         XCTAssertEqual(events.count, 33, "15 cues + 18 rests in the first 42 s of three runs")
         XCTAssertEqual(try handle.chunk(handle.manifest.chunks[0]).count, 8 * 160)
+    }
+
+    /// Prologue for scripted fake workers: protocol output helpers and the ready event.
+    private static let fakePrologue = """
+    import os, sys, json, time
+    def out(o):
+        sys.stdout.write(json.dumps(o) + "\\n"); sys.stdout.flush()
+    out({"v": 1, "event": "ready", "id": None, "data": {"protocol": 1, "pid": os.getpid(), "versions": {}, "methods": ["fit_evaluate_project"]}})
+
+    """
+
+    private func waitUntil(_ timeout: Duration = .seconds(10), _ condition: () -> Bool) async {
+        let deadline = ContinuousClock.now + timeout
+        while !condition(), ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(10)) }
+    }
+
+    private func pipelineLeftovers() throws -> [String] {
+        try FileManager.default.contentsOfDirectory(atPath: store.directory.appendingPathComponent("pipelines").path)
+    }
+
+    func testLateProgressAfterFailure_doesNotFlipStateBack() async throws {
+        let launch = try fakeLaunch(Self.fakePrologue + """
+        for line in sys.stdin:
+            if not line.strip():
+                continue
+            req = json.loads(line)
+            if req["method"] == "fit_evaluate_project":
+                out({"v": 1, "id": req["id"], "ok": False, "error": {"code": "integrity", "message": "chunk 3 does not match"}})
+                time.sleep(0.3)
+                out({"v": 1, "event": "progress", "id": req["id"], "data": {"stage": "loading"}})
+        """)
+        let runner = try makeRunner(launch: launch)
+        let final = await runner.evaluateAndWait(.init(recordingID: recordingID, seed: 0))
+        guard case .failed(let reason) = final else { return XCTFail("\(final)") }
+        XCTAssertTrue(reason.contains("integrity"), reason)
+        let logged = runner.progressLog
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertEqual(runner.state, final, "a progress event after the terminal state must be ignored")
+        XCTAssertEqual(runner.progressLog, logged)
+        // And delivered directly, for the request id the worker used: still ignored.
+        runner.handle(WorkerEvent(name: "progress", requestID: nil, data: Data(#"{"stage":"loading"}"#.utf8)))
+        XCTAssertEqual(runner.state, final)
+        XCTAssertEqual(try pipelineLeftovers(), [])
+    }
+
+    func testCancel_reportsCancelledStoresNothingAndRunsAgain() async throws {
+        // Reports one stage, then waits for the app's cancel and answers it the way the
+        // real worker does (the cancel reply, then `cancelled` for the original request).
+        let launch = try fakeLaunch(Self.fakePrologue + """
+        for line in sys.stdin:
+            if not line.strip():
+                continue
+            req = json.loads(line)
+            if req["method"] == "fit_evaluate_project":
+                out({"v": 1, "event": "progress", "id": req["id"], "data": {"stage": "loading"}})
+            elif req["method"] == "cancel":
+                out({"v": 1, "id": req["id"], "ok": True, "result": {"cancelled": True}})
+                out({"v": 1, "id": req["params"]["id"], "ok": False, "error": {"code": "cancelled", "message": "request was cancelled"}})
+            elif req["method"] == "shutdown":
+                out({"v": 1, "id": req["id"], "ok": True, "result": {"bye": True}})
+                break
+        """)
+        let runner = try makeRunner(launch: launch)
+        for attempt in 0..<2 {
+            if attempt == 0 { runner.evaluate(.init(recordingID: recordingID, seed: 0)) } else { runner.retry() }
+            // Generous: the first worker launch of a test run can be slow on a loaded machine.
+            await waitUntil(.seconds(60)) { runner.progressLog.contains(.loading) }
+            XCTAssertEqual(runner.state, .running(.loading), "attempt \(attempt)")
+            let final = await runner.cancelAndWait()
+            XCTAssertEqual(final, .cancelled, "attempt \(attempt)")
+            let results = try await store.results()
+            XCTAssertEqual(results, [], "a cancelled run saves nothing")
+            XCTAssertEqual(try pipelineLeftovers(), [], "nor leaves its staging directory")
+        }
+    }
+
+    func testProgressSilence_killsWorkerReportsUnavailableAndRetrySucceeds() async throws {
+        // First launch: one progress event, then hangs. Second launch: the real worker.
+        let launch = try fakeLaunch("""
+        import os, sys, pathlib
+        marker = pathlib.Path(sys.argv[0]).with_suffix(".hung")
+        if marker.exists():
+            os.execv(sys.executable, [sys.executable, "-I", "-u", "-B", "-X", "utf8", "-m", "bciworkspace_worker"])
+        marker.write_text("1")
+        """ + "\n" + Self.fakePrologue + """
+        for line in sys.stdin:
+            if line.strip() and json.loads(line)["method"] == "fit_evaluate_project":
+                out({"v": 1, "event": "progress", "id": json.loads(line)["id"], "data": {"stage": "loading"}})
+                time.sleep(3600)
+        """)
+        let runner = try makeRunner(launch: launch, silence: .seconds(1))
+        let started = ContinuousClock.now
+        let first = await runner.evaluateAndWait(.init(recordingID: recordingID, seed: 0))
+        guard case .analysisUnavailable(let reason) = first else { return XCTFail("expected analysisUnavailable, got \(first)") }
+        XCTAssertTrue(reason.contains("no progress"), reason)
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(20))
+        XCTAssertEqual(try pipelineLeftovers(), [])
+        let second = await runner.retryAndWait()
+        guard case .done = second else { return XCTFail("retry should succeed with a fresh worker, got \(second)") }
     }
 
     // MARK: Export

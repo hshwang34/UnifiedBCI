@@ -54,6 +54,9 @@ public final class EvaluationRunner {
         /// The worker ran and refused: integrity error, bad parameters, or an internal
         /// error. Retrying without changing something will fail the same way.
         case failed(reason: String)
+        /// The user cancelled. Nothing was stored (the UI says "Cancelled — nothing
+        /// saved"); `retry()` runs the same request again.
+        case cancelled
     }
 
     /// What to evaluate. `window` and `labels` default to the bundled example's imagery
@@ -77,6 +80,10 @@ public final class EvaluationRunner {
     /// Every progress value of the current (or last) run, in order; for tests and a log view.
     public private(set) var progressLog: [Progress] = []
     public let store: ProjectStore
+    /// How long the worker may go without a progress event before it is presumed hung,
+    /// killed, and the run reported as `.analysisUnavailable`. Generous by default: the
+    /// slowest stage of the bundled example reports well within a few seconds.
+    public let progressSilenceTimeout: Duration
 
     private let launch: WorkerLaunch?
     private var client: WorkerClient?
@@ -86,10 +93,15 @@ public final class EvaluationRunner {
     private var currentRequestID: String?
     private var workerTimings: [String: Double] = [:]
     private var sawDone = false
+    private var cancelRequested = false
+    private var lastHeardFrom = ContinuousClock.now
+    private var watchdogTask: Task<Void, Never>?
+    private var watchdogFired = false
 
-    public init(store: ProjectStore, launch: WorkerLaunch?) {
+    public init(store: ProjectStore, launch: WorkerLaunch?, progressSilenceTimeout: Duration = .seconds(120)) {
         self.store = store
         self.launch = launch
+        self.progressSilenceTimeout = progressSilenceTimeout
     }
 
     // MARK: Driving
@@ -98,6 +110,10 @@ public final class EvaluationRunner {
     public func evaluate(_ request: Request) {
         guard runTask == nil else { return }
         lastRequest = request
+        // Reset here, not in `run`: a `cancel()` between now and the task's first
+        // instruction must count for this run, and must not see the previous run's log.
+        progressLog = []
+        cancelRequested = false
         runTask = Task { [weak self] in
             await self?.run(request)
             self?.runTask = nil
@@ -125,7 +141,25 @@ public final class EvaluationRunner {
         return state
     }
 
+    /// Asks the worker to stop the running evaluation. The run ends as `.cancelled` with
+    /// nothing stored, even if the worker had already finished. No-op when idle, and
+    /// once the result is being stored (that commit is not interrupted halfway).
+    public func cancel() {
+        guard runTask != nil, !cancelRequested, state != .running(.storing) else { return }
+        cancelRequested = true
+        guard let client, let id = currentRequestID else { return }   // not sent yet: `run` checks the flag
+        Task { _ = try? await client.cancel(requestID: id) }
+    }
+
+    @discardableResult
+    public func cancelAndWait() async -> State {
+        cancel()
+        await runTask?.value
+        return state
+    }
+
     public func shutdown() async {
+        watchdogTask?.cancel()
         eventTask?.cancel()
         eventTask = nil
         if let client { await client.shutdown() }
@@ -135,9 +169,9 @@ public final class EvaluationRunner {
     // MARK: Internals
 
     private func run(_ request: Request) async {
-        progressLog = []
         workerTimings = [:]
         sawDone = false
+        watchdogFired = false
         set(.starting)
         let t0 = Date()
         let client: WorkerClient
@@ -145,21 +179,27 @@ public final class EvaluationRunner {
             client = try await readyClient()
         } catch {
             discardClient()
-            state = .analysisUnavailable(reason: "\(error)")
+            finish(.analysisUnavailable(reason: "\(error)"))
             return
         }
         let hello = await client.hello
         let origin = launch?.origin == .bundled ? "bundled" : "development_venv"
 
-        let requestID = "evaluate-\(UUID().uuidString)"
-        currentRequestID = requestID
         let staging: URL
         do {
             staging = try await store.stagingDirectory()
         } catch {
-            state = .failed(reason: "\(error)")
+            finish(.failed(reason: "\(error)"))
             return
         }
+        guard !cancelRequested else {
+            await store.discardStagingDirectory(staging)
+            finish(.cancelled)
+            return
+        }
+        let requestID = "evaluate-\(UUID().uuidString)"
+        currentRequestID = requestID
+        startWatchdog(client)
         let arraysPath = staging.appendingPathComponent(ProjectStore.fittedFileName)
         let params: [String: JSONValue] = [
             "project_dir": .string(store.directory.path),
@@ -175,17 +215,29 @@ public final class EvaluationRunner {
         do {
             responseData = try await client.call("fit_evaluate_project", params: params, requestID: requestID)
         } catch let error as WorkerError {
-            try? FileManager.default.removeItem(at: staging)
-            if Self.isWorkerGone(error.code) {
+            await store.discardStagingDirectory(staging)
+            if watchdogFired {
                 discardClient()
-                state = .analysisUnavailable(reason: error.message)
+                finish(.analysisUnavailable(reason: "the analysis worker reported no progress for \(progressSilenceTimeout) and was stopped"))
+            } else if Self.isWorkerGone(error.code) {
+                discardClient()
+                finish(.analysisUnavailable(reason: error.message))
+            } else if error.code == "cancelled" || cancelRequested {
+                finish(.cancelled)
             } else {
-                state = .failed(reason: error.description)
+                finish(.failed(reason: error.description))
             }
             return
         } catch {
-            try? FileManager.default.removeItem(at: staging)
-            state = .failed(reason: "\(error)")
+            await store.discardStagingDirectory(staging)
+            finish(.failed(reason: "\(error)"))
+            return
+        }
+        stopWatchdog()
+        guard !cancelRequested else {
+            // The worker finished before it saw the cancel; the user still asked for nothing.
+            await store.discardStagingDirectory(staging)
+            finish(.cancelled)
             return
         }
         await awaitDoneEvent()
@@ -219,16 +271,49 @@ public final class EvaluationRunner {
                 reproductionOf: original.flatMap { $0.evaluationSHA256 == digest ? $0.resultID : nil },
                 divergedFrom: original.flatMap { $0.evaluationSHA256 == digest ? nil : $0.resultID })
             let id = try await store.storeResult(evaluationJSON: evaluationJSON, meta: meta, pipeline: pipeline, fittedArraysFile: arraysPath)
-            state = .done(resultID: id)
+            finish(.done(resultID: id))
         } catch {
-            try? FileManager.default.removeItem(at: staging)
-            state = .failed(reason: "\(error)")
+            await store.discardStagingDirectory(staging)
+            finish(.failed(reason: "\(error)"))
         }
     }
 
     private func set(_ progress: Progress) {
         progressLog.append(progress)
         state = .running(progress)
+        lastHeardFrom = .now
+    }
+
+    /// Every terminal state goes through here: late events for the finished request are
+    /// ignored from now on, and the watchdog stops.
+    private func finish(_ terminal: State) {
+        currentRequestID = nil
+        stopWatchdog()
+        state = terminal
+    }
+
+    /// Polls for progress silence while the worker call is in flight. On expiry the
+    /// worker is killed, so the pending call fails and `run` reports it as unavailable.
+    private func startWatchdog(_ client: WorkerClient) {
+        stopWatchdog()
+        lastHeardFrom = .now
+        let timeout = progressSilenceTimeout
+        watchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: min(timeout / 4, .seconds(5)))
+                guard let self, !Task.isCancelled else { return }
+                if ContinuousClock.now - self.lastHeardFrom > timeout {
+                    self.watchdogFired = true
+                    await client.forceTerminate()
+                    return
+                }
+            }
+        }
+    }
+
+    private func stopWatchdog() {
+        watchdogTask?.cancel()
+        watchdogTask = nil
     }
 
     private static func isWorkerGone(_ code: String) -> Bool {
@@ -258,11 +343,16 @@ public final class EvaluationRunner {
         client = nil
     }
 
-    private func handle(_ event: WorkerEvent) {
-        guard event.requestID == currentRequestID else { return }
+    /// Internal (not private) so tests can deliver a late event directly.
+    func handle(_ event: WorkerEvent) {
+        guard let current = currentRequestID, event.requestID == current else { return }
         switch event.name {
         case "progress":
-            guard let p = try? JSONDecoder().decode(ProgressEvent.self, from: event.data) else { return }
+            // Only a running request may move the progress bar; a late event after a
+            // terminal state (or during `.storing`) must not flip it back to running.
+            guard case .running(let now) = state, now != .storing,
+                  let p = try? JSONDecoder().decode(ProgressEvent.self, from: event.data) else { return }
+            lastHeardFrom = .now
             switch p.stage {
             case "loading": set(.loading)
             case "fit":
@@ -274,6 +364,7 @@ public final class EvaluationRunner {
             default: break
             }
         case "done":
+            lastHeardFrom = .now
             if let d = try? JSONDecoder().decode(DoneEvent.self, from: event.data) {
                 workerTimings = d.stages ?? [:]
                 workerTimings["worker_elapsed"] = d.elapsed_seconds
