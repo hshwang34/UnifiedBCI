@@ -381,3 +381,29 @@ def test_hostile_manifest_fails_the_request_and_the_worker_keeps_serving(tmp_pat
         assert call("b", "ping", {})["ok"] is True
     finally:
         proc.kill()
+
+
+def test_defaults_method_reports_what_the_handler_applies():
+    """The app's Parameters popover shows these as placeholders (brief 001 PR 3), so a
+    request that omits every optional parameter must produce exactly this configuration."""
+    ctx = worker_main.Context(emit=lambda n, d: None, check_cancelled=lambda: None)
+    d = worker_main.handle_fit_evaluate_defaults(Request(id="d", method="fit_evaluate_defaults", params={}), ctx)
+    assert set(d["params"]) == {"window", "labels", "seed", "csp_components", "holdout_fraction"}
+    assert [r["role"] for r in d["recipes"]] == ["reference", "baseline"]
+    assert [r["model"] for r in d["recipes"]] == ["reference_csp_rlda", "baseline_logvar_rlda"]
+    assert all(r["steps"] for r in d["recipes"])
+    assert "fit_evaluate_defaults" in worker_main.hello()["methods"]
+
+    minimal = {"project_dir": str(TINY), "recording_id": recording_id(TINY)}
+    out, _ = run_in_process(minimal)
+    cfg = out["pipeline"]["configuration"]
+    p = d["params"]
+    assert float(cfg["window_offset_s"]) == p["window"]["offset_s"]
+    assert float(cfg["window_length_s"]) == p["window"]["length_s"]
+    assert (cfg["label_left"], cfg["label_right"]) == (p["labels"]["left"], p["labels"]["right"])
+    assert int(cfg["csp_components"]) == p["csp_components"]
+    assert float(cfg["holdout_fraction"]) == p["holdout_fraction"]
+    assert out["pipeline"]["seed"] == p["seed"]
+    # The test helper's explicit parameters are the defaults too, so it tests the default path.
+    explicit, _ = run_in_process(params(TINY))
+    assert explicit["pipeline"]["configHash"] == out["pipeline"]["configHash"]
