@@ -25,3 +25,6 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #7 · 2026-10-20 · First launch shows a welcome window (Open project · Explore an example · Connect hardware); nothing auto-opens.
 *Why:* keeps both entry points visible (PRD §4). Brief 001 Q4.
+
+#8 · 2026-10-20 · Result headline shows "Balanced accuracy X" with "Accuracy Y · 95 % CI a–b (trial-level, n)" beneath it; the trial-level interval is never labelled as a balanced-accuracy interval; a run-level BA interval shows only when ≥ 2 runs are held out, else "unavailable (one held-out run)".
+*Why:* the stored CI is Clopper-Pearson on accuracy; mislabelling it would overclaim. Decided by the lead as a safe default (designer flag); PM may reverse. Lives in docs/product/briefs/001-ui-spec.md.
