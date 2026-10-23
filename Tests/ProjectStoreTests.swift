@@ -239,8 +239,12 @@ final class ProjectStoreTests: XCTestCase {
         let recDir = url.appendingPathComponent("recordings/\(manifest.recordingID.uuidString)")
         try Data([1, 2, 3]).write(to: recDir.appendingPathComponent("chunks/.tmp-000001"))
         try Data("{".utf8).write(to: recDir.appendingPathComponent(".tmp-recording.json"))
-        try FileManager.default.createDirectory(at: url.appendingPathComponent("results/.tmp-\(UUID().uuidString)"), withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: url.appendingPathComponent("pipelines/.tmp-\(UUID().uuidString)"), withIntermediateDirectories: true)
+        // Temp directories from a crash an hour ago (younger ones may still be in use).
+        for child in ["results", "pipelines"] {
+            let dir = url.appendingPathComponent("\(child)/.tmp-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Self.age(dir)
+        }
 
         let reopened = try ProjectStore.open(at: url)
         let removed = await reopened.removedOrphans
@@ -250,6 +254,41 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(issues, [])
         let results = try await reopened.results()
         XCTAssertEqual(results, [])
+    }
+
+    /// Backdates `url`'s modification time past the orphan grace period.
+    static func age(_ url: URL, by seconds: TimeInterval = 3600) throws {
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-seconds)], ofItemAtPath: url.path)
+    }
+
+    func testOrphanSweep_keepsYoungUnlockedTempDirectories() async throws {
+        let url = scratch.appendingPathComponent("young.bciproj")
+        _ = try ProjectStore.create(at: url, name: "Y")
+        let fm = FileManager.default
+        // A staging directory caught before its lock file exists, a result directory
+        // `storeResult` is assembling (never locked), and the same two from long ago.
+        let youngStaging = url.appendingPathComponent("pipelines/.tmp-\(UUID().uuidString)")
+        let youngResult = url.appendingPathComponent("results/.tmp-\(UUID().uuidString)")
+        let oldStaging = url.appendingPathComponent("pipelines/.tmp-\(UUID().uuidString)")
+        let oldResult = url.appendingPathComponent("results/.tmp-\(UUID().uuidString)")
+        // A young staging directory whose lock exists and is free: a crashed run, sweepable.
+        let freeStaging = url.appendingPathComponent("pipelines/.tmp-\(UUID().uuidString)")
+        for dir in [youngStaging, youngResult, oldStaging, oldResult, freeStaging] {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data("x".utf8).write(to: dir.appendingPathComponent("evaluation.json"))
+        }
+        try Data().write(to: freeStaging.appendingPathComponent(ProjectStore.stagingLockFileName))
+        try Self.age(oldStaging, by: 11 * 60)
+        try Self.age(oldResult, by: 11 * 60)
+
+        let store = try ProjectStore.open(at: url)
+        let removed = await store.removedOrphans
+        let kept = await store.keptOrphans
+        XCTAssertEqual(Set(removed), Set([oldStaging, oldResult, freeStaging].map { "\($0.deletingLastPathComponent().lastPathComponent)/\($0.lastPathComponent)" }))
+        XCTAssertEqual(kept.count, 2, "\(kept)")
+        XCTAssertTrue(kept.allSatisfy { $0.contains("modified recently") }, "\(kept)")
+        XCTAssertTrue(fm.fileExists(atPath: youngStaging.path))
+        XCTAssertTrue(fm.fileExists(atPath: youngResult.path))
     }
 
     // MARK: Crash injection
@@ -405,6 +444,9 @@ final class ProjectStoreTests: XCTestCase {
         let partialResult = url.appendingPathComponent("results/.tmp-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: partialResult, withIntermediateDirectories: true)
         try Data("{\"half\"".utf8).write(to: partialResult.appendingPathComponent("evaluation.json"))
+        // The kill was a while ago; unlocked temp directories younger than the grace period are kept.
+        try Self.age(partialPipeline)
+        try Self.age(partialResult)
 
         let reopened = try ProjectStore.open(at: url)
         let removed = await reopened.removedOrphans
@@ -428,6 +470,7 @@ final class ProjectStoreTests: XCTestCase {
         let stuck = url.appendingPathComponent("results/.tmp-stuck")
         try FileManager.default.createDirectory(at: stuck, withIntermediateDirectories: true)
         try Data("x".utf8).write(to: stuck.appendingPathComponent("evaluation.json"))
+        try Self.age(stuck)
         XCTAssertEqual(chmod(stuck.path, 0o500), 0)
         defer { chmod(stuck.path, 0o700) }
 
@@ -541,6 +584,44 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: out.path))
         let siblings = try FileManager.default.contentsOfDirectory(atPath: scratch.path).filter { $0.hasPrefix(".tmp-") }
         XCTAssertEqual(siblings, [], "a failed export leaves no temp directory")
+    }
+
+    func testExport_refusesSymlinkedEventsOrModel_andCopiesBytesNotLinks() async throws {
+        let (store, manifest, meta) = try await twoSegmentExportFixture("link.bciproj", runIDs: ("a", "b"))
+        let fm = FileManager.default
+        let secret = scratch.appendingPathComponent("secret.txt")
+        try Data("private".utf8).write(to: secret)
+        let events = store.directory.appendingPathComponent("recordings/\(manifest.recordingID.uuidString)/events.jsonl")
+        try? fm.removeItem(at: events)
+        try fm.createSymbolicLink(at: events, withDestinationURL: secret)
+        let out = scratch.appendingPathComponent("export")
+        await expectThrows({ try await store.export(result: meta.resultID, to: out) }) { error in
+            guard case ProjectStoreError.integrity(let issues) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(issues.map(\.kind), [.notRegularFile])
+            XCTAssertTrue(issues[0].file.hasSuffix("events.jsonl"), issues[0].file)
+        }
+        XCTAssertFalse(fm.fileExists(atPath: out.path))
+
+        try fm.removeItem(at: events)
+        try Data("{}\n".utf8).write(to: events)
+        let stored = try await store.result(id: meta.resultID)
+        let model = await store.fittedArraysURL(pipelineID: stored.pipeline.pipelineID)
+        try fm.removeItem(at: model)
+        try fm.createSymbolicLink(at: model, withDestinationURL: secret)
+        await expectThrows({ try await store.export(result: meta.resultID, to: out) }) { error in
+            guard case ProjectStoreError.integrity(let issues) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(issues.first?.file.hasSuffix("fitted.npz") ?? false, "\(issues)")
+        }
+        XCTAssertFalse(fm.fileExists(atPath: out.path))
+
+        try fm.removeItem(at: model)
+        try Data("PK".utf8).write(to: model)
+        try await store.export(result: meta.resultID, to: out)
+        for name in ["events.jsonl", "model.npz"] {
+            let attrs = try fm.attributesOfItem(atPath: out.appendingPathComponent(name).path)
+            XCTAssertEqual(attrs[.type] as? FileAttributeType, .typeRegular, name)
+        }
+        XCTAssertEqual(try Data(contentsOf: out.appendingPathComponent("events.jsonl")), Data("{}\n".utf8))
     }
 
     // MARK: Hostile manifests

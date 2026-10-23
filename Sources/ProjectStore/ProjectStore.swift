@@ -347,8 +347,12 @@ public actor ProjectStore {
     ///
     /// Best-effort: an entry that cannot be removed is kept and reported, never a reason
     /// to refuse the project. A staging directory whose `.staging.lock` is held (an
-    /// evaluation in another window of this app is filling it) is kept too.
-    private static func removeOrphans(in project: URL) -> OrphanSweep {
+    /// evaluation in another window of this app is filling it) is kept too. So is any
+    /// `.tmp-*` directory modified within `orphanGracePeriod` unless its lock is provably
+    /// free: a staging directory exists briefly before its lock file does, and the
+    /// result/pipeline directories `storeResult` assembles carry no lock at all.
+    /// Older ones are swept; temp files (chunks, manifests) are swept at any age.
+    private static func removeOrphans(in project: URL, now: Date = Date()) -> OrphanSweep {
         let fm = FileManager.default
         let root = project.resolvingSymlinksInPath().path + "/"
         var result = OrphanSweep()
@@ -361,9 +365,19 @@ public actor ProjectStore {
                 let entry = dir.appendingPathComponent(name)
                 let label = dir.lastPathComponent + "/" + name
                 guard !isSymlink(entry), entry.resolvingSymlinksInPath().path.hasPrefix(root) else { continue }
-                if stagingLockIsHeld(in: entry) {
-                    result.kept.append(label + ": in use by a running evaluation")
-                    continue
+                var st = stat()
+                guard lstat(entry.path, &st) == 0 else { continue }
+                if st.st_mode & S_IFMT == S_IFDIR {
+                    let lock = stagingLockState(in: entry)
+                    if lock == .held {
+                        result.kept.append(label + ": in use by a running evaluation")
+                        continue
+                    }
+                    let modified = Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec))
+                    if lock == .absent, now.timeIntervalSince(modified) < orphanGracePeriod {
+                        result.kept.append(label + ": modified recently, may still be in use")
+                        continue
+                    }
                 }
                 do {
                     try fm.removeItem(at: entry)
@@ -388,18 +402,24 @@ public actor ProjectStore {
         return result
     }
 
-    /// True when `dir` holds a `.staging.lock` that some open file description has
-    /// `flock`ed. `flock` locks belong to the open file, so this also sees a lock held
-    /// by another `ProjectStore` in this same process.
-    private static func stagingLockIsHeld(in dir: URL) -> Bool {
+    /// How long an unlocked `.tmp-*` directory is presumed to be in use by a writer.
+    static let orphanGracePeriod: TimeInterval = 10 * 60
+
+    enum StagingLock { case held, free, absent }
+
+    /// Whether `dir` holds a `.staging.lock` and whether some open file description has
+    /// it `flock`ed. `flock` locks belong to the open file, so this also sees a lock held
+    /// by another `ProjectStore` in this same process. `.free` is the only proof that
+    /// nobody is writing; a lock file that cannot be opened counts as absent.
+    private static func stagingLockState(in dir: URL) -> StagingLock {
         let fd = Foundation.open(dir.appendingPathComponent(stagingLockFileName).path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
-        guard fd >= 0 else { return false }
+        guard fd >= 0 else { return .absent }
         defer { close(fd) }
         if flock(fd, LOCK_EX | LOCK_NB) == 0 {
             flock(fd, LOCK_UN)
-            return false
+            return .free
         }
-        return errno == EWOULDBLOCK
+        return errno == EWOULDBLOCK ? .held : .absent
     }
 
     struct OrphanSweep {

@@ -66,7 +66,6 @@ extension ProjectStore {
     }
 
     private func writeExport(_ stored: StoredResult, _ handle: RecordingHandle, into out: URL) throws {
-        let fm = FileManager.default
         let manifest = handle.manifest
         let channelRows = manifest.channels.map(\.sourceRow)
         let segments = manifest.segments.sorted(by: { $0.index < $1.index })
@@ -113,16 +112,39 @@ extension ProjectStore {
                                             montage: manifest.montage, channels: manifest.channels))
             .write(to: out.appendingPathComponent("channels.json"))
         let events = handle.directory.appendingPathComponent(Self.eventsFileName)
-        if fm.fileExists(atPath: events.path) {
-            try fm.copyItem(at: events, to: out.appendingPathComponent("events.jsonl"))
+        var st = stat()
+        if lstat(events.path, &st) == 0 {
+            try Self.regularFileBytes(events, as: "recordings/\(handle.id.uuidString)/\(Self.eventsFileName)").write(to: out.appendingPathComponent("events.jsonl"))
         } else {
             try Data().write(to: out.appendingPathComponent("events.jsonl"))
         }
         try encoder.encode(stored.pipeline).write(to: out.appendingPathComponent("pipeline.json"))
-        try fm.copyItem(at: fittedArraysURL(pipelineID: stored.pipeline.pipelineID), to: out.appendingPathComponent("model.npz"))
+        try Self.regularFileBytes(fittedArraysURL(pipelineID: stored.pipeline.pipelineID),
+                                  as: "pipelines/\(stored.pipeline.pipelineID.uuidString)/\(Self.fittedFileName)")
+            .write(to: out.appendingPathComponent("model.npz"))
         try stored.evaluationJSON.write(to: out.appendingPathComponent("evaluation.json"))
         try encoder.encode(stored.meta).write(to: out.appendingPathComponent("result.meta.json"))
         try Data(Self.attribution(for: manifest).utf8).write(to: out.appendingPathComponent("ATTRIBUTION.md"))
+    }
+
+    /// The bytes of a project file that must be a regular file. A symbolic link (which
+    /// `copyItem` would copy as a link to whatever it names), FIFO or device planted in a
+    /// hostile project is an integrity error; the export carries bytes, never links.
+    static func regularFileBytes(_ url: URL, as label: String) throws -> Data {
+        let fd = Foundation.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else {
+            let code = errno
+            if code == ELOOP {
+                throw ProjectStoreError.integrity([IntegrityIssue(kind: .notRegularFile, file: label, detail: "is a symbolic link")])
+            }
+            throw ProjectStoreError.io("open \(label)", code)
+        }
+        defer { close(fd) }
+        var st = stat()
+        guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG else {
+            throw ProjectStoreError.integrity([IntegrityIssue(kind: .notRegularFile, file: label, detail: "is not a regular file")])
+        }
+        return try FileHandle(fileDescriptor: fd, closeOnDealloc: false).readToEnd() ?? Data()
     }
 
     /// `segment-<runID>.f64` per segment, with the run id made file-safe. When two
