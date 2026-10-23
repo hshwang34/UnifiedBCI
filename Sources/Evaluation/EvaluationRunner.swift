@@ -179,7 +179,8 @@ public final class EvaluationRunner {
             client = try await readyClient()
         } catch {
             discardClient()
-            finish(.analysisUnavailable(reason: "\(error)"))
+            // A launch that fails after the user cancelled is still the user's cancel.
+            finish(cancelRequested ? .cancelled : .analysisUnavailable(reason: "\(error)"))
             return
         }
         let hello = await client.hello
@@ -216,13 +217,18 @@ public final class EvaluationRunner {
             responseData = try await client.call("fit_evaluate_project", params: params, requestID: requestID)
         } catch let error as WorkerError {
             await store.discardStagingDirectory(staging)
-            if watchdogFired {
+            if cancelRequested {
+                // Whatever ended the call (the cancel itself, the watchdog, a death), the
+                // user asked to stop and nothing was stored.
+                if watchdogFired || Self.isWorkerGone(error.code) { discardClient() }
+                finish(.cancelled)
+            } else if watchdogFired {
                 discardClient()
                 finish(.analysisUnavailable(reason: "the analysis worker reported no progress for \(progressSilenceTimeout) and was stopped"))
             } else if Self.isWorkerGone(error.code) {
                 discardClient()
                 finish(.analysisUnavailable(reason: error.message))
-            } else if error.code == "cancelled" || cancelRequested {
+            } else if error.code == "cancelled" {
                 finish(.cancelled)
             } else {
                 finish(.failed(reason: error.description))
@@ -234,13 +240,15 @@ public final class EvaluationRunner {
             return
         }
         stopWatchdog()
+        await awaitDoneEvent()
+        // Last point a cancel counts: checked with no suspension before `.storing`, after
+        // which `cancel()` is a no-op, so "Cancelled — nothing saved" is always true. A
+        // worker that finished before it saw the cancel is still discarded.
         guard !cancelRequested else {
-            // The worker finished before it saw the cancel; the user still asked for nothing.
             await store.discardStagingDirectory(staging)
             finish(.cancelled)
             return
         }
-        await awaitDoneEvent()
         set(.storing)
 
         do {

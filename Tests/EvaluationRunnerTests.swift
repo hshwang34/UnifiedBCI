@@ -276,6 +276,62 @@ final class EvaluationRunnerTests: XCTestCase {
         }
     }
 
+    func testCancelAfterWorkerAnswered_beforeStoring_savesNothing() async throws {
+        // Answers with a complete result but never sends `done`, so the runner sits in its
+        // bounded wait for that event (~1 s) between the response and storing.
+        let launch = try fakeLaunch(Self.fakePrologue + """
+        for line in sys.stdin:
+            if not line.strip():
+                continue
+            req = json.loads(line)
+            if req["method"] == "fit_evaluate_project":
+                open(req["params"]["fitted_arrays_path"], "wb").write(b"PK")
+                pipeline = {"recipe": "csp_rlda_v1", "configuration": {}, "expectedChannelIDs": ["ch00"], "expectedSampleRateHz": 160.0,
+                            "preprocessingStatePolicy": "reset_on_segment_start", "splitManifest": "{}", "dependencyVersions": {},
+                            "seed": 0, "configHash": "h"}
+                out({"v": 1, "event": "progress", "id": req["id"], "data": {"stage": "loading"}})
+                out({"v": 1, "id": req["id"], "ok": True, "result": {"evaluation": {"x": 1}, "pipeline": pipeline, "fitted_arrays_file": None}})
+        """)
+        let runner = try makeRunner(launch: launch)
+        runner.evaluate(.init(recordingID: recordingID, seed: 0))
+        await waitUntil(.seconds(60)) { runner.progressLog.contains(.loading) }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(runner.state, .running(.loading), "still waiting for `done`, not yet storing")
+        let final = await runner.cancelAndWait()
+        XCTAssertEqual(final, .cancelled)
+        XCTAssertFalse(runner.progressLog.contains(.storing))
+        let results = try await store.results()
+        XCTAssertEqual(results, [], "a cancel before storing saves nothing")
+        XCTAssertEqual(try pipelineLeftovers(), [])
+    }
+
+    func testCancelDuringLaunch_thenLaunchFails_reportsCancelled() async throws {
+        let runner = try makeRunner(launch: try fakeLaunch("import sys, time; time.sleep(1.0); sys.exit(1)"))
+        runner.evaluate(.init(recordingID: recordingID, seed: 0))
+        await waitUntil { runner.state == .running(.starting) }
+        XCTAssertEqual(runner.state, .running(.starting))
+        let final = await runner.cancelAndWait()
+        XCTAssertEqual(final, .cancelled, "the user asked to stop; the launch failure is not news")
+    }
+
+    func testCancelIgnoredByAHungWorker_watchdogStillReportsCancelled() async throws {
+        // Reports one stage, then neither answers the cancel nor progresses.
+        let launch = try fakeLaunch(Self.fakePrologue + """
+        for line in sys.stdin:
+            if line.strip() and json.loads(line)["method"] == "fit_evaluate_project":
+                out({"v": 1, "event": "progress", "id": json.loads(line)["id"], "data": {"stage": "loading"}})
+                time.sleep(3600)
+        """)
+        let runner = try makeRunner(launch: launch, silence: .seconds(1))
+        runner.evaluate(.init(recordingID: recordingID, seed: 0))
+        await waitUntil(.seconds(60)) { runner.progressLog.contains(.loading) }
+        let final = await runner.cancelAndWait()
+        XCTAssertEqual(final, .cancelled)
+        let results = try await store.results()
+        XCTAssertEqual(results, [])
+        XCTAssertEqual(try pipelineLeftovers(), [])
+    }
+
     func testProgressSilence_killsWorkerReportsUnavailableAndRetrySucceeds() async throws {
         // First launch: one progress event, then hangs. Second launch: the real worker.
         let launch = try fakeLaunch("""
