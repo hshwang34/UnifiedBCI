@@ -128,6 +128,8 @@ struct RecordingDetailModel {
     struct Field: Identifiable, Equatable {
         let label: String
         let value: String
+        /// IDs (runs, seeds) read in monospace.
+        var mono = false
         var id: String { label }
     }
 
@@ -282,10 +284,28 @@ struct ExampleInfo: Equatable {
 
 /// The determinate progress bar's label and accessibility value for one runner state.
 struct ProgressDisplay: Equatable {
+    enum Mark: Equatable {
+        case done, current, pending
+        /// Marks differ by shape, not colour.
+        var symbol: String {
+            switch self {
+            case .done: return "checkmark.circle.fill"
+            case .current: return "circle.inset.filled"
+            case .pending: return "circle"
+            }
+        }
+    }
+
     let stage: String
     let detail: String
     let fraction: Double
     let accessibilityValue: String
+    /// Index into `stages` of the stage under way; `stages.count` once all are done (saving).
+    let currentIndex: Int
+
+    func mark(for index: Int) -> Mark {
+        index < currentIndex ? .done : index == currentIndex ? .current : .pending
+    }
 
     /// The worker reports loading, one event per cross-validation fold, then one per final
     /// fit + holdout scoring; "fit" and "holdout" are therefore one stage here.
@@ -306,6 +326,7 @@ struct ProgressDisplay: Equatable {
         case .storing:
             stage = "Saving"; detail = "Storing the result in the project"; position = nil
         }
+        currentIndex = position.map { $0 - 1 } ?? (p == .storing ? Self.stages.count : 0)
         let name = stage
         accessibilityValue = position.map { "\(name), \($0) of \(Self.stages.count)" } ?? name
     }

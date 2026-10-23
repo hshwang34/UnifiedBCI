@@ -333,6 +333,26 @@ final class ProjectSessionTests: XCTestCase {
         XCTAssertTrue(session.recipes.first?.steps.joined().contains("2 components") ?? false, "\(session.recipes)")
     }
 
+    func testNotices_toastsClearOnSectionChangeAndExpire_warningsStay() async throws {
+        let session = try await workspace.session(for: project)
+        let other = scratch.appendingPathComponent("x")
+        // A toast clears when the user moves to another section.
+        await session.export(resultID: UUID(), to: other)       // no such result: a persistent warning
+        guard case .exportFailed = session.notice else { return XCTFail("\(String(describing: session.notice))") }
+        session.section = .pipelines
+        XCTAssertNotNil(session.notice, "a warning chip stays until dismissed")
+        session.dismissNotice()
+        // A toast expires on its own.
+        session.noticeLifetime = .milliseconds(50)
+        session.section = .results
+        session.showNoticeForTesting(.saved)
+        session.section = .pipelines
+        XCTAssertNil(session.notice, "a section change clears a toast")
+        session.showNoticeForTesting(.saved)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(session.notice, "a toast dismisses itself")
+    }
+
     func testRecents_noteCanonicalAndDedupe() async throws {
         workspace.noteRecent(project)
         workspace.noteRecent(URL(fileURLWithPath: project.path + "/"))

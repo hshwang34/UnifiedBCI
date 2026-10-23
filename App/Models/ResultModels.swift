@@ -137,8 +137,10 @@ enum EvidenceText {
 /// The result screen, every line built from the stored result (decision #8 wording).
 struct ResultDetailModel {
     struct Headline: Equatable {
-        /// "Balanced accuracy 0.68"
+        /// "Balanced accuracy 0.68" (VoiceOver and tests; the hero shows label and value apart).
         let balancedAccuracy: String
+        /// "0.68", the hero's display number.
+        let balancedAccuracyValue: String
         /// "Accuracy 0.70 · 95 % CI 0.51–0.84 (trial-level, n = 14)". The only interval on
         /// this line is the trial-level one, and it is labelled as accuracy's.
         let accuracy: String
@@ -150,13 +152,18 @@ struct ResultDetailModel {
         let row: Int
         let column: Int
         let count: Int
+        /// Trials whose true class is this row's: the cell reads "count of rowTotal".
+        let rowTotal: Int
         let accessibilityLabel: String
+        /// Share of the row, for the diagonal's shading.
+        var rowShare: Double { rowTotal > 0 ? Double(count) / Double(rowTotal) : 0 }
         var id: Int { row * 2 + column }
         var isCorrect: Bool { row == column }
     }
 
     struct CountRow: Identifiable, Equatable {
         let className: String
+        let displayName: String
         let train: Int
         let holdout: Int
         var id: String { className }
@@ -177,9 +184,32 @@ struct ResultDetailModel {
         let originalCreatedAt: Date?
     }
 
+    /// The accuracy bar's reference: the larger class's share of the held-out trials,
+    /// from stored counts only (decision #12).
+    struct LargerClass: Equatable {
+        let rate: Double
+        let sentence: String
+        let symbol: String
+    }
+
     let report: EvaluationReport
     let meta: ResultMeta
+    /// Stored class labels (`label_left`, `label_right`), never replaced.
     let classNames: [String]
+    /// "Left-fist cue" / "Right-fist cue" (decision #11), shown with the stored label.
+    let classDisplayNames: [String]
+    let accuracyValue: Double
+    let accuracyInterval: ClosedRange<Double>?
+    let balancedAccuracy: Double
+    /// Run-level bootstrap interval for balanced accuracy; nil with fewer than two held-out runs.
+    let balancedAccuracyInterval: ClosedRange<Double>?
+    let balancedAccuracyBarLabel: String?
+    let largerClass: LargerClass?
+    let heroAccessibilityLabel: String
+    let referenceBalancedAccuracy: Double
+    let baselineBalancedAccuracy: Double
+    let paired: EvaluationReport.Comparison.Paired
+    let differenceUnavailable: Bool
     let referenceName: String
     let baselineName: String
     let headline: Headline
@@ -208,6 +238,7 @@ struct ResultDetailModel {
         meta = stored.meta
         let config = stored.pipeline.configuration
         classNames = [config["label_left"] ?? "class 0", config["label_right"] ?? "class 1"]
+        classDisplayNames = classNames.map(ClassDisplay.name)
         referenceName = modelName(r.comparison.reference)
         baselineName = modelName(r.comparison.baseline)
         guard let ref = r.models[r.comparison.reference], let base = r.models[r.comparison.baseline] else {
@@ -215,6 +246,18 @@ struct ResultDetailModel {
         }
         let h = ref.holdout
         headline = Self.headline(h)
+        accuracyValue = h.accuracy
+        accuracyInterval = Self.range(h.accuracyCi95)
+        balancedAccuracy = h.balancedAccuracy
+        balancedAccuracyInterval = h.nTestRuns >= 2 ? h.balancedAccuracyRunBootstrapCi95.flatMap(Self.range) : nil
+        balancedAccuracyBarLabel = balancedAccuracyInterval == nil ? nil : "Run-level bootstrap, \(h.nTestRuns) held-out runs"
+        largerClass = Self.largerClass(holdoutCounts: r.classCounts.holdout, interval: accuracyInterval)
+        referenceBalancedAccuracy = h.balancedAccuracy
+        baselineBalancedAccuracy = base.holdout.balancedAccuracy
+        paired = r.comparison.pairedTrials
+        differenceUnavailable = r.comparison.differenceRunBootstrapCi95 == nil
+        let ci = accuracyInterval.map { "95 percent confidence interval \(Fmt.fixed($0.lowerBound)) to \(Fmt.fixed($0.upperBound))" } ?? "no confidence interval"
+        heroAccessibilityLabel = "Balanced accuracy \(Fmt.fixed(h.balancedAccuracy)). Accuracy \(Fmt.fixed(h.accuracy)), \(ci), trial-level, \(h.nTestTrials) trials. \(headline.balancedAccuracyInterval)"
         trialsLine = "n = \(h.nTestTrials) held-out trials in \(h.nTestRuns) run\(h.nTestRuns == 1 ? "" : "s") · \(EvidenceText.short(r.splitPolicy.evidence))"
         warning = r.dataSource?.warning
         evidence = EvidenceText.describe(r.splitPolicy.evidence)
@@ -225,12 +268,14 @@ struct ResultDetailModel {
                          originalCreatedAt: allResults.first { $0.resultID == id }?.createdAt)
         }
 
-        let names = classNames
+        let raw = classNames
+        let names = raw.map(ClassDisplay.inline)
         var cells: [Cell] = []
         for (i, row) in h.confusionMatrix.enumerated() where i < 2 {
+            let total = row.prefix(2).reduce(0, +)
             for (j, count) in row.enumerated() where j < 2 {
-                cells.append(Cell(row: i, column: j, count: count,
-                                  accessibilityLabel: "True \(names[i]), predicted \(names[j]): \(count) trial\(count == 1 ? "" : "s")"))
+                cells.append(Cell(row: i, column: j, count: count, rowTotal: total,
+                                  accessibilityLabel: "True \(names[i]), predicted \(names[j]): \(count) of \(total) trial\(total == 1 ? "" : "s")\(i == j ? ", correct" : ", wrong")"))
             }
         }
         self.cells = cells
@@ -238,12 +283,12 @@ struct ResultDetailModel {
         let perClass = (0..<2).map { i -> String in
             let total = cells.filter { $0.row == i }.map(\.count).reduce(0, +)
             let right = cells.first { $0.row == i && $0.column == i }?.count ?? 0
-            return "\(right) of \(total) \(names[i])"
+            return "\(right) of \(total) \(ClassDisplay.name(raw[i]))"
         }
         confusionSummary = "Of \(h.nTestTrials) held-out trials, \(correct) were classified correctly: \(perClass.joined(separator: " and "))."
 
         classCounts = (0..<2).map { i in
-            CountRow(className: names[i], train: r.classCounts.train[safe: i] ?? 0, holdout: r.classCounts.holdout[safe: i] ?? 0)
+            CountRow(className: raw[i], displayName: ClassDisplay.name(raw[i]), train: r.classCounts.train[safe: i] ?? 0, holdout: r.classCounts.holdout[safe: i] ?? 0)
         }
         let baseRuns = Dictionary(base.holdout.perRun.map { ($0.runId, $0) }, uniquingKeysWith: { a, _ in a })
         perRun = h.perRun.map { run in
@@ -267,10 +312,10 @@ struct ResultDetailModel {
             .init(label: "Unit", value: sp.unit),
             .init(label: "Grouping", value: "by \(sp.grouping)"),
             .init(label: "Holdout", value: sp.holdout),
-            .init(label: "Held-out runs", value: r.splitManifest.holdoutRuns.joined(separator: ", ")),
-            .init(label: "Training runs", value: r.splitManifest.trainingRuns.joined(separator: ", ")),
+            .init(label: "Held-out runs", value: r.splitManifest.holdoutRuns.joined(separator: ", "), mono: true),
+            .init(label: "Training runs", value: r.splitManifest.trainingRuns.joined(separator: ", "), mono: true),
             .init(label: "Folds", value: "\(r.splitManifest.folds.count) (\(sp.cv))"),
-            .init(label: "Seed", value: "\(sp.seed)"),
+            .init(label: "Seed", value: "\(sp.seed)", mono: true),
             .init(label: "Evidence", value: sp.evidence),
         ]
         exclusions = r.exclusions.map { e in
@@ -281,6 +326,7 @@ struct ResultDetailModel {
     /// Decision #8. Never puts the trial-level interval on the balanced-accuracy line.
     static func headline(_ h: EvaluationReport.Holdout) -> Headline {
         let accCI = Fmt.interval(h.accuracyCi95) ?? "unavailable"
+        let value = Fmt.fixed(h.balancedAccuracy)
         let interval: String
         if let ci = h.balancedAccuracyRunBootstrapCi95.flatMap({ Fmt.interval($0) }), h.nTestRuns >= 2 {
             interval = "Balanced-accuracy interval \(ci) (run-level bootstrap, \(h.nTestRuns) held-out runs)"
@@ -289,7 +335,7 @@ struct ResultDetailModel {
         } else {
             interval = "Balanced-accuracy interval: unavailable"
         }
-        return Headline(balancedAccuracy: "Balanced accuracy \(Fmt.fixed(h.balancedAccuracy))",
+        return Headline(balancedAccuracy: "Balanced accuracy \(value)", balancedAccuracyValue: value,
                         accuracy: "Accuracy \(Fmt.fixed(h.accuracy)) · 95 % CI \(accCI) (trial-level, n = \(h.nTestTrials))",
                         balancedAccuracyInterval: interval)
     }
@@ -410,4 +456,25 @@ struct EvaluateInspectorModel {
 
 extension Array {
     subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
+}
+
+extension ResultDetailModel {
+    static func range(_ ci: [Double]) -> ClosedRange<Double>? {
+        guard ci.count == 2, ci[0] <= ci[1] else { return nil }
+        return ci[0]...ci[1]
+    }
+
+    /// Decision #12: is the accuracy interval around, above or below the larger class's
+    /// share of the held-out trials (what always guessing that class would score)?
+    static func largerClass(holdoutCounts: [Int], interval: ClosedRange<Double>?) -> LargerClass? {
+        let total = holdoutCounts.reduce(0, +)
+        guard total > 0, let biggest = holdoutCounts.max(), let interval else { return nil }
+        let rate = Double(biggest) / Double(total)
+        if interval.contains(rate) {
+            return LargerClass(rate: rate, sentence: "Interval includes the larger-class rate.", symbol: "info.circle")
+        }
+        return interval.lowerBound > rate
+            ? LargerClass(rate: rate, sentence: "Interval lies entirely above the larger-class rate.", symbol: "arrow.up.circle")
+            : LargerClass(rate: rate, sentence: "Interval lies entirely below the larger-class rate.", symbol: "arrow.down.circle")
+    }
 }

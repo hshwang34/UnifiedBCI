@@ -22,7 +22,20 @@ final class ProjectSession: Identifiable {
         case cancelled
         case exported(URL)
         case exportFailed(String)
+
+        /// Persistent notices are solid warning chips that stay until dismissed; the rest
+        /// are toasts that dismiss themselves and clear on a section change (§2.5).
+        var isPersistent: Bool {
+            switch self {
+            case .diverged, .exportFailed: return true
+            default: return false
+            }
+        }
     }
+
+    /// How long a toast stays up.
+    @ObservationIgnored var noticeLifetime: Duration = .seconds(6)
+    @ObservationIgnored private var noticeTimer: Task<Void, Never>?
 
     /// Banner for a run that ended badly. Distinct from `Notice`: it stays until a retry
     /// or a new run, and the recording stays browsable underneath it.
@@ -52,13 +65,26 @@ final class ProjectSession: Identifiable {
     private(set) var results: [ResultMeta] = []
     private(set) var loadError: String?
     private(set) var defaults: DefaultsState = .loading
-    private(set) var notice: Notice?
+    private(set) var notice: Notice? {
+        didSet {
+            noticeTimer?.cancel()
+            guard let notice, !notice.isPersistent else { return }
+            let lifetime = noticeLifetime
+            noticeTimer = Task { [weak self] in
+                try? await Task.sleep(for: lifetime)
+                guard !Task.isCancelled, let self, self.notice == notice else { return }
+                self.notice = nil
+            }
+        }
+    }
     private(set) var selectedResult: StoredResult?
     private(set) var selectedResultError: String?
     /// Parsed reports of the latest result per recording, for the inspector's bullets.
     private(set) var latestReport: [UUID: EvaluationReport] = [:]
 
-    var section: SidebarSection = .recordings
+    var section: SidebarSection = .recordings {
+        didSet { if section != oldValue, let n = notice, !n.isPersistent { notice = nil } }
+    }
     var selectedRecordingID: UUID?
     var selectedResultID: UUID? {
         didSet { if selectedResultID != oldValue { loadSelectedResult() } }
@@ -225,6 +251,9 @@ final class ProjectSession: Identifiable {
     }
 
     func dismissNotice() { notice = nil }
+
+    /// Shows a notice directly (tests).
+    func showNoticeForTesting(_ n: Notice) { notice = n }
 
     // MARK: Evaluate
 

@@ -15,8 +15,11 @@ struct BCIWorkspaceApp: App {
         Window("Welcome", id: "welcome") {
             WelcomeView()
                 .environment(appDelegate.workspace)
+                .containerBackground(.ultraThinMaterial, for: .window)
+                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         }
         .windowStyle(.hiddenTitleBar)
+        .windowBackgroundDragBehavior(.enabled)
         .windowResizability(.contentSize)
         .defaultPosition(.center)
         .keyboardShortcut("0", modifiers: [.command, .shift])
@@ -55,6 +58,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     init(workspace: Workspace) {
         self.workspace = workspace
         super.init()
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        LaunchArguments.applyAppearance()
     }
 
     /// Closing the last project window leaves the app running; Welcome stays reachable.

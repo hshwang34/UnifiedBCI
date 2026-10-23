@@ -64,40 +64,56 @@ struct ProjectWindow: View {
                 .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 260)
         } content: {
             ContentColumn(session: session)
-                .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 360)
+                .navigationSplitViewColumnWidth(min: 250, ideal: 250, max: 360)
         } detail: {
             DetailColumn(session: session)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background {
+                    // Under the Result hero the glow continues beneath sidebar and inspector (26).
+                    if session.section == .results { AmbientBackdrop().extendedBackground() } else { AmbientBackdrop() }
+                }
                 .safeAreaInset(edge: .top, spacing: 0) { StatusArea(session: session) }
         }
-        .inspector(isPresented: $session.showInspector) {
+        // The Evaluate inspector belongs to Recordings only; the preference is kept.
+        .inspector(isPresented: Binding(get: { session.showInspector && session.section == .recordings },
+                                        set: { session.showInspector = $0 })) {
             EvaluateInspector(session: session)
                 .inspectorColumnWidth(min: 250, ideal: 280, max: 400)
         }
         .navigationTitle(session.name)
         .navigationSubtitle(subtitle)
         .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
+            ToolbarItem(placement: .primaryAction) {
                 if session.isRunning {
                     Button { session.cancel() } label: { Label("Cancel", systemImage: "stop.fill") }
+                        .labelStyle(.titleAndIcon)
                         .help("Cancel the evaluation (⌘.)")
                 } else {
                     Button { session.evaluate() } label: { Label("Evaluate", systemImage: "play.fill") }
+                        .labelStyle(.titleAndIcon)
+                        .buttonStyle(.borderedProminent)
                         .disabled(!session.canEvaluate)
                         .help("Evaluate the selected recording (⌘R)")
                 }
+            }
+            FixedToolbarSpacer()
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button("Parameters…") { showParameters.toggle() }
                     .help("Evaluation parameters")
                     .popover(isPresented: $showParameters, arrowEdge: .bottom) { ParametersPopover(session: session) }
                 Button { workspace.exportPanel(for: session) } label: { Label("Export…", systemImage: "square.and.arrow.up") }
-                    .disabled(session.selectedResultID == nil)
+                    .disabled(session.selectedResultID == nil || session.section != .results)
                     .help("Export the selected result (⇧⌘X)")
+            }
+            FixedToolbarSpacer()
+            ToolbarItem(placement: .primaryAction) {
                 Button { session.showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.trailing") }
+                    .disabled(session.section != .recordings)
                     .help(session.showInspector ? "Hide Inspector (⌥⌘I)" : "Show Inspector (⌥⌘I)")
             }
         }
         .focusedSceneValue(\.projectSession, session)
-        .frame(minWidth: 1000, minHeight: 620)
+        .frame(minWidth: 1100, minHeight: 640)
     }
 
     private var subtitle: String {
@@ -123,6 +139,7 @@ private struct ProjectSidebar: View {
             Section("Project") {
                 ForEach(SidebarSection.allCases) { section in
                     Label(section.title, systemImage: section.symbol)
+                        .symbolRenderingMode(.hierarchical)
                         .badge(count(section))
                         .tag(section)
                 }
@@ -130,12 +147,23 @@ private struct ProjectSidebar: View {
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) {
-            Label(SidebarSection.statusLine, systemImage: "cable.connector.slash")
+            // Plain text on the sidebar: no glass on glass.
+            HStack(alignment: .top, spacing: Theme.Space.s) {
+                Image(systemName: "cable.connector.slash")
+                    .font(.callout)
+                    .foregroundStyle(Theme.textSecondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("No hardware connected")
+                    Text("Replay mode")
+                }
                 .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .foregroundStyle(Theme.textSecondary)
+            }
+            .padding(Theme.Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(SidebarSection.statusLine)
         }
     }
 
@@ -157,13 +185,16 @@ private struct ContentColumn: View {
         switch session.section {
         case .recordings:
             if session.recordings.isEmpty {
-                ContentUnavailableView("No Recordings", systemImage: "waveform",
-                                       description: Text(session.loadError ?? "Recording from hardware arrives in phase 2."))
+                ContentUnavailableView {
+                    Label("No Recordings", systemImage: "waveform")
+                } description: {
+                    Text(session.loadError ?? "Recording from hardware arrives in phase 2.").foregroundStyle(Theme.textSecondary)
+                }
             } else {
                 List(session.recordings, id: \.id, selection: $session.selectedRecordingID) { handle in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(RecordingDetailModel.title(for: handle.manifest))
-                        Text(RecordingDetailModel.summary(for: handle.manifest)).font(.caption).foregroundStyle(.secondary)
+                        Text(RecordingDetailModel.summary(for: handle.manifest)).font(.caption).foregroundStyle(Theme.textSecondary)
                     }
                     .padding(.vertical, 2)
                     .tag(handle.id)
@@ -174,14 +205,17 @@ private struct ContentColumn: View {
                 }
             }
         case .protocols, .liveTest:
-            ContentUnavailableView(session.section.title, systemImage: session.section.symbol,
-                                   description: Text(session.section.placeholder ?? ""))
+            // The placeholder lives in the detail column; this column stays empty.
+            Color.clear
         case .pipelines:
             PipelinesList(session: session)
         case .results:
             if session.results.isEmpty {
-                ContentUnavailableView("No Results", systemImage: SidebarSection.results.symbol,
-                                       description: Text("Select a recording and choose Evaluate (⌘R)."))
+                ContentUnavailableView {
+                    Label("No Results", systemImage: SidebarSection.results.symbol)
+                } description: {
+                    Text("Select a recording and choose Evaluate (⌘R).").foregroundStyle(Theme.textSecondary)
+                }
             } else {
                 // Originals with their reruns as children, expanded unless the user folds
                 // them, so a new reproduction is visible as soon as it is selected.
@@ -218,18 +252,27 @@ private struct ResultRow: View {
         let time = ProjectSession.time(node.meta.createdAt)
         HStack(spacing: 6) {
             if node.isReproduction {
-                Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.secondary)
-                Text("Reproduction of \(originalTime)")
+                Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(Theme.textSecondary)
+                Text("Reproduction").lineLimit(1)
             } else if node.diverged {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text("Differs from \(originalTime)")
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning)
+                Text("Differs").lineLimit(1)
             } else {
-                Text("Seed \(node.meta.seed)")
+                Text("Seed \(node.meta.seed)").lineLimit(1)
             }
-            Spacer()
-            Text(time).foregroundStyle(.secondary).monospacedDigit()
+            Spacer(minLength: 4)
+            Text(time).foregroundStyle(Theme.textSecondary).monospacedDigit()
         }
-        .accessibilityElement(children: .combine)
+        .help(fullDescription)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(fullDescription)
+    }
+
+    private var fullDescription: String {
+        let time = ProjectSession.time(node.meta.createdAt)
+        if node.isReproduction { return "Reproduction of \(originalTime), run at \(time)" }
+        if node.diverged { return "Differs from the \(originalTime) original, run at \(time)" }
+        return "Seed \(node.meta.seed), \(time)"
     }
 
     private var originalTime: String {
@@ -247,22 +290,31 @@ private struct PipelinesList: View {
         case .loading:
             ProgressView("Asking the analysis worker…").frame(maxWidth: .infinity, maxHeight: .infinity)
         case .unavailable(let why):
-            ContentUnavailableView("Pipelines unavailable", systemImage: "exclamationmark.octagon",
-                                   description: Text("The analysis worker did not describe its recipes. \(why)"))
+            ContentUnavailableView {
+                Label("Pipelines unavailable", systemImage: "exclamationmark.octagon")
+            } description: {
+                Text("The analysis worker did not describe its recipes. \(why)").foregroundStyle(Theme.textSecondary)
+            }
         case .loaded:
             List(session.recipes) { recipe in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(recipe.name).font(.headline)
-                        Spacer()
-                        Text(recipe.role).font(.caption).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: Theme.Space.s) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(recipe.name).font(Theme.Fonts.sectionHeader)
+                        HStack(spacing: Theme.Space.s) {
+                            Text(recipe.id).font(Theme.Fonts.monoCaption)
+                            Text(recipe.role).font(.caption)
+                        }
+                        .foregroundStyle(Theme.textSecondary)
                     }
-                    Text(recipe.id).font(.caption.monospaced()).foregroundStyle(.secondary)
                     ForEach(recipe.steps, id: \.self) { step in
-                        Text("• " + step).font(.callout).fixedSize(horizontal: false, vertical: true)
+                        Label {
+                            Text(step).font(.callout).fixedSize(horizontal: false, vertical: true)
+                        } icon: {
+                            Image(systemName: "circle.fill").font(.system(size: 5)).foregroundStyle(Theme.textSecondary)
+                        }
                     }
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, Theme.Space.s)
                 .accessibilityElement(children: .combine)
             }
         }
@@ -282,113 +334,197 @@ private struct DetailColumn: View {
                                     info: ExampleInfo(manifest: handle.manifest))
                     .id(handle.id)
             } else {
-                ContentUnavailableView("No Recording Selected", systemImage: "waveform")
+                Placeholder(title: "No Recording Selected", symbol: "waveform", text: nil)
             }
         case .results:
             if let stored = session.selectedResult {
                 ResultDetailView(session: session, stored: stored).id(stored.meta.resultID)
             } else if let error = session.selectedResultError {
-                ContentUnavailableView("Result unreadable", systemImage: "exclamationmark.triangle", description: Text(error))
+                Placeholder(title: "Result unreadable", symbol: "exclamationmark.triangle", text: error)
             } else if session.selectedResultID != nil {
                 ProgressView()
             } else {
-                ContentUnavailableView("No Result Selected", systemImage: SidebarSection.results.symbol)
+                Placeholder(title: "No Result Selected", symbol: SidebarSection.results.symbol, text: nil)
             }
         case .pipelines:
-            ContentUnavailableView("Read-only in phase 1", systemImage: SidebarSection.pipelines.symbol,
-                                   description: Text("These recipes run as shipped. Parameters… changes the window, CSP components and seed of one evaluation; the values are stored with its result."))
+            Placeholder(title: "Read-only in phase 1", symbol: SidebarSection.pipelines.symbol,
+                        text: "These recipes run as shipped. Parameters… changes the window, CSP components and seed of one evaluation; the values are stored with its result.")
         case .protocols, .liveTest:
-            Color.clear
+            Placeholder(title: session.section.title, symbol: session.section.symbol, text: session.section.placeholder)
         }
     }
 }
 
-// MARK: Status: progress, banners, notices
+/// `ContentUnavailableView` with full-opacity secondary text (finding 11).
+private struct Placeholder: View {
+    let title: String
+    let symbol: String
+    let text: String?
+
+    var body: some View {
+        ContentUnavailableView {
+            Label(title, systemImage: symbol).foregroundStyle(Theme.textSecondary)
+        } description: {
+            if let text { Text(text).foregroundStyle(Theme.textSecondary) }
+        }
+    }
+}
+
+// MARK: Status: error banner > progress > notice
 
 private struct StatusArea: View {
     let session: ProjectSession
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: 0) {
-            if let p = session.progress {
-                ProgressStrip(progress: p) { session.cancel() }
-            }
+        Group {
             if let banner = session.banner {
-                BannerView(banner: banner, retry: { session.retry() })
-            }
-            if let notice = session.notice {
+                ErrorBanner(banner: banner, retry: { session.retry() })
+            } else if let p = session.progress {
+                ProgressPanel(progress: p) { session.cancel() }
+                    .transition(.opacity.combined(with: .offset(y: -8)))
+            } else if let notice = session.notice {
                 NoticeView(notice: notice, text: session.noticeText(notice), dismiss: session.dismissNotice)
+                    .transition(.opacity.combined(with: .offset(y: -8)))
             }
         }
+        // Zero ideal width: the panel takes the width it is offered (up to 680) and never
+        // asks the split view for more, which would push the window's columns out of it.
+        .frame(minWidth: 0, idealWidth: 0, maxWidth: 680)
+        .padding(.horizontal, Theme.Space.l)
+        .padding(.top, Theme.Space.m)
+        .animation(Theme.motion(reduceMotion: reduceMotion), value: session.progress == nil)
+        .animation(Theme.motion(reduceMotion: reduceMotion), value: session.notice)
     }
 }
 
-private struct ProgressStrip: View {
+private struct ProgressPanel: View {
     let progress: ProgressDisplay
     let cancel: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    ForEach(Array(ProgressDisplay.stages.enumerated()), id: \.offset) { i, stage in
-                        if i > 0 { Text("·").foregroundStyle(.tertiary) }
-                        Text(stage)
-                            .fontWeight(stage == progress.stage ? .semibold : .regular)
-                            .foregroundStyle(stage == progress.stage ? .primary : .secondary)
+        VStack(alignment: .leading, spacing: Theme.Space.s) {
+            // Every stage named when there is room; otherwise marks plus the current name.
+            ViewThatFits(in: .horizontal) {
+                stages(compact: false)
+                stages(compact: true)
+            }
+            HStack(spacing: Theme.Space.m) {
+                ProgressView(value: progress.fraction, total: 1)
+                    .progressViewStyle(TrackProgressStyle())
+                    .accessibilityLabel("Evaluation progress")
+                    .accessibilityValue(progress.accessibilityValue)
+                Button("Cancel", action: cancel)
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(".", modifiers: .command)
+            }
+            Text(progress.detail)
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+                .id(progress.detail)
+                .transition(.opacity)
+                .animation(Theme.motion(reduceMotion: reduceMotion), value: progress.detail)
+        }
+        .padding(.horizontal, Theme.Space.xl)
+        .padding(.vertical, Theme.Space.l)
+        .glassSurface(cornerRadius: Theme.Radius.hero)
+    }
+
+    private func stages(compact: Bool) -> some View {
+        HStack(spacing: Theme.Space.m) {
+            ForEach(Array(ProgressDisplay.stages.enumerated()), id: \.offset) { i, stage in
+                let mark = progress.mark(for: i)
+                HStack(spacing: Theme.Space.xs) {
+                    Image(systemName: mark.symbol).accessibilityHidden(true)
+                    if !compact || mark == .current {
+                        Text(stage).fontWeight(mark == .current ? .semibold : .regular).lineLimit(1)
                     }
                 }
                 .font(.callout)
-                ProgressView(value: progress.fraction, total: 1)
-                    .accessibilityLabel("Evaluation progress")
-                    .accessibilityValue(progress.accessibilityValue)
-                Text(progress.detail).font(.caption).foregroundStyle(.secondary)
+                .foregroundStyle(mark == .pending ? Theme.textSecondary : Theme.textPrimary)
+                .fixedSize()
             }
-            Button("Cancel", action: cancel).keyboardShortcut(".", modifiers: .command)
         }
-        .padding(12)
-        .background(.bar)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(progress.accessibilityValue)
     }
 }
 
-private struct BannerView: View {
+/// A 6 pt determinate track in accentInk (§2.5): the system linear style has a fixed
+/// thickness and animates toward each value, so a fast run read as nearly empty.
+private struct TrackProgressStyle: ProgressViewStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.surface2)
+                Capsule().fill(Theme.accentInk)
+                    .frame(width: geo.size.width * CGFloat(min(max(configuration.fractionCompleted ?? 0, 0), 1)))
+            }
+        }
+        .frame(height: 6)
+    }
+}
+
+/// Solid, never glass, never auto-dismissed (§2.5).
+private struct ErrorBanner: View {
     let banner: ProjectSession.Banner
     let retry: () -> Void
     @State private var showDetails = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Image(systemName: "exclamationmark.octagon").foregroundStyle(.red).font(.title3)
-                Text(title).fixedSize(horizontal: false, vertical: true)
-                Spacer()
-                if case .analysisUnavailable = banner {
-                    Button("Retry", action: retry).buttonStyle(.borderedProminent)
+        let shape = RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+        HStack(alignment: .top, spacing: 0) {
+            Rectangle().fill(Theme.danger).frame(width: 4)
+            VStack(alignment: .leading, spacing: Theme.Space.s) {
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
+                    Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(Theme.danger)
+                    Text(title).font(.headline).foregroundStyle(Theme.textPrimary)
+                    Spacer()
+                    if case .analysisUnavailable = banner {
+                        Button("Retry", action: retry).appProminentButton()
+                    }
                 }
-            }
-            DisclosureGroup("Show details", isExpanded: $showDetails) {
-                ScrollView {
-                    Text(details)
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                Text(message).font(.callout).foregroundStyle(Theme.textPrimary).fixedSize(horizontal: false, vertical: true)
+                DisclosureGroup("Show details", isExpanded: $showDetails) {
+                    ScrollView {
+                        Text(details)
+                            .font(Theme.Fonts.monoCaption)
+                            .foregroundStyle(Theme.textPrimary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(Theme.Space.s)
+                    }
+                    .frame(maxHeight: 120)
+                    .background(Theme.surface2, in: .rect(cornerRadius: Theme.Radius.control))
                 }
-                .frame(maxHeight: 120)
+                .font(.callout)
             }
-            .font(.callout)
+            .padding(Theme.Space.l)
         }
-        .padding(12)
-        .background(.red.opacity(0.08))
-        .overlay(alignment: .bottom) { Divider() }
+        .background {
+            ZStack {
+                shape.fill(Theme.surface1)
+                shape.fill(Theme.danger.opacity(0.12))
+            }
+        }
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(Theme.danger, lineWidth: 1))
         .accessibilityElement(children: .contain)
     }
 
     private var title: String {
         switch banner {
-        case .analysisUnavailable:
-            return "Analysis unavailable. The analysis worker stopped. Your recording is unchanged."
-        case .failed:
-            return "Evaluation failed. The analysis worker refused this request; nothing was saved. Retrying without a change will fail the same way."
+        case .analysisUnavailable: return "Analysis unavailable"
+        case .failed: return "Evaluation failed"
+        }
+    }
+
+    private var message: String {
+        switch banner {
+        case .analysisUnavailable: return "The analysis worker stopped. Your recording is unchanged."
+        case .failed: return "The analysis worker refused this request; nothing was saved. Retrying without a change will fail the same way."
         }
     }
 
@@ -405,22 +541,32 @@ private struct NoticeView: View {
     let dismiss: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: symbol).foregroundStyle(tint)
-            Text(text).fixedSize(horizontal: false, vertical: true)
-            Spacer()
-            if case .exported(let url) = notice {
-                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        if notice.isPersistent {
+            HStack(spacing: Theme.Space.s) {
+                StatusChip(kind: .warning, text: text)
+                dismissButton
             }
-            Button { dismiss() } label: { Image(systemName: "xmark") }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Dismiss")
+        } else {
+            HStack(spacing: Theme.Space.s) {
+                Image(systemName: symbol).foregroundStyle(tint).accessibilityHidden(true)
+                Text(text).font(.callout).foregroundStyle(Theme.textPrimary).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: Theme.Space.s)
+                if case .exported(let url) = notice {
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                        .buttonStyle(.bordered)
+                }
+                dismissButton
+            }
+            .padding(.horizontal, Theme.Space.l)
+            .padding(.vertical, Theme.Space.m)
+            .glassSurface(cornerRadius: Theme.Radius.hero)
         }
-        .font(.callout)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
-        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private var dismissButton: some View {
+        Button { dismiss() } label: { Image(systemName: "xmark") }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Dismiss")
     }
 
     private var symbol: String {
@@ -434,60 +580,70 @@ private struct NoticeView: View {
 
     private var tint: Color {
         switch notice {
-        case .diverged, .exportFailed: return .orange
-        case .cancelled: return .secondary
-        default: return .green
+        case .cancelled: return Theme.textSecondary
+        case .diverged, .exportFailed: return Theme.warning
+        default: return Theme.positive
         }
     }
 }
 
 // MARK: Parameters
 
-/// Overrides for one evaluation. Empty fields use the worker's defaults, shown as
-/// placeholders; none of these numbers originate in the app.
+/// Overrides for one evaluation. Empty fields use the worker's defaults, shown beside each
+/// field; none of these numbers originate in the app. Values are live (no Apply).
 struct ParametersPopover: View {
     @Bindable var session: ProjectSession
 
     var body: some View {
-        Form {
+        let d = session.workerDefaults?.params
+        VStack(alignment: .leading, spacing: Theme.Space.l) {
             switch session.defaults {
             case .loading:
-                Label("Loading defaults from the analysis worker…", systemImage: "hourglass").foregroundStyle(.secondary)
+                StatusChip(kind: .info, text: "Loading defaults from the analysis worker…")
             case .unavailable:
-                Label("The analysis worker is not running, so its defaults are unknown. The values an evaluation uses are always stored with its result.", systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.secondary)
+                StatusChip(kind: .warning, text: "The analysis worker is not running, so its defaults are unknown. The values an evaluation uses are always stored with its result.")
             case .loaded: EmptyView()
             }
-            let d = session.workerDefaults?.params
-            Section {
+            field("Seed", help: ParametersCopy.seed, default: d.map { "\($0.seed)" }) {
                 TextField("Seed", value: $session.parameters.seed, format: .number.grouping(.never), prompt: Text(d.map { "\($0.seed)" } ?? ""))
-                Text(ParametersCopy.seed).font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            }
+            field("CSP components", help: "More components capture more variance patterns but overfit sooner on few trials.", default: d.map { "\($0.csp_components)" }) {
                 TextField("CSP components", value: $session.parameters.cspComponents, format: .number.grouping(.never), prompt: Text(d.map { "\($0.csp_components)" } ?? ""))
-                Text("More components capture more variance patterns but overfit sooner on few trials.").font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                TextField("Window offset (s)", value: $session.parameters.windowOffsetSeconds, format: .number, prompt: Text(d.map { "\($0.window.offset_s)" } ?? ""))
-                Text("When after the cue the analysis window starts. Earlier risks cue-onset artefacts.").font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                TextField("Window length (s)", value: $session.parameters.windowLengthSeconds, format: .number, prompt: Text(d.map { "\($0.window.length_s)" } ?? ""))
-                Text("Longer windows average more noise out but dilute short-lived changes.").font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            }
+            field("Window offset (s)", help: "When after the cue the analysis window starts. Earlier risks cue-onset artefacts.", default: d.map { "\($0.window.offset_s)" }) {
+                TextField("Window offset", value: $session.parameters.windowOffsetSeconds, format: .number, prompt: Text(d.map { "\($0.window.offset_s)" } ?? ""))
+            }
+            field("Window length (s)", help: "Longer windows average more noise out but dilute short-lived changes.", default: d.map { "\($0.window.length_s)" }) {
+                TextField("Window length", value: $session.parameters.windowLengthSeconds, format: .number, prompt: Text(d.map { "\($0.window.length_s)" } ?? ""))
             }
             HStack {
                 Spacer()
                 Button("Reset") { session.parameters = .init() }
+                    .buttonStyle(.bordered)
                     .disabled(session.parameters == .init())
             }
         }
-        .formStyle(.grouped)
-        .frame(width: 360)
+        .padding(Theme.Space.cardPadding)
+        .frame(width: 380)
+    }
+
+    private func field<F: View>(_ label: String, help: String, default value: String?, @ViewBuilder input: () -> F) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Space.xs) {
+            Text(label).font(.callout.weight(.semibold))
+            HStack(spacing: Theme.Space.s) {
+                input().textFieldStyle(.roundedBorder).labelsHidden()
+                Text(value.map { "Default \($0)" } ?? "Default unknown")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                    .monospacedDigit()
+                    .fixedSize()
+            }
+            Text(help).font(.caption).foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
 enum ParametersCopy {
-    /// The spec's "Changes the bootstrap draws. The split stays the same." holds only when
-    /// a frozen split manifest is supplied. The app never supplies one, so the worker draws
-    /// the held-out runs from the seed (pipeline.draw_split_manifest): the copy says so.
+    /// Decision #10.
     static let seed = "Chooses the held-out runs and the bootstrap draws. The same seed gives the same split."
 }
-

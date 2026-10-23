@@ -14,9 +14,21 @@ import Foundation
 ///                                              (the app draws its own windows, so no
 ///                                              Screen Recording permission is needed)
 ///     -BCIQuitWhenDone YES                     quit after the last step
+///     -BCIAppearance light|dark                force an appearance (screenshots)
+///     -BCISnapshotProgress YES                 snapshot the progress panel mid-run
 @MainActor
 enum LaunchArguments {
     private static var done = false
+
+    static func applyAppearance() {
+        #if DEBUG
+        switch UserDefaults.standard.string(forKey: "BCIAppearance") {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: break
+        }
+        #endif
+    }
 
     static func runOnce(_ workspace: Workspace) async {
         #if DEBUG
@@ -24,9 +36,9 @@ enum LaunchArguments {
         done = true
         let defaults = UserDefaults.standard
         let snapshots = defaults.string(forKey: "BCISnapshotDir").map { URL(fileURLWithPath: $0, isDirectory: true) }
-        func snap(_ name: String) async {
+        func snap(_ name: String, settle: Duration = .seconds(1.5)) async {
             guard let snapshots else { return }
-            try? await Task.sleep(for: .seconds(1.5))
+            try? await Task.sleep(for: settle)
             snapshotWindows(into: snapshots, name: name)
         }
         defer {
@@ -49,13 +61,31 @@ enum LaunchArguments {
         guard let session = workspace.sessions[Workspace.canonical(target)] else { return }
         await snap("recordings")
         let evaluations = max(0, defaults.integer(forKey: "BCIAutoEvaluate"))
-        for _ in 0..<evaluations {
-            await session.evaluateAndWait()
+        for n in 0..<evaluations {
+            if n == 0, defaults.bool(forKey: "BCISnapshotProgress") {
+                let run = Task { await session.evaluateAndWait() }
+                // Catch the panel in the cross-validation stage.
+                while session.isRunning || session.runner.state == .idle {
+                    if case .running(.fitting) = session.runner.state { break }
+                    try? await Task.sleep(for: .milliseconds(5))
+                }
+                await snap("progress", settle: .milliseconds(30))
+                await run.value
+            } else {
+                await session.evaluateAndWait()
+            }
         }
         if evaluations > 0, let root = session.resultTree.first {
             session.section = .results
             session.selectedResultID = root.id
             await snap("result")
+            // A tall capture of the whole result page (the cards below the hero).
+            if snapshots != nil, let window = NSApp.windows.first(where: { $0.title == session.name }) {
+                let frame = window.frame
+                window.setFrame(NSRect(x: frame.minX, y: frame.maxY - 1700, width: 1280, height: 1700), display: true)
+                await snap("result-full")
+                window.setFrame(frame, display: true)
+            }
             if let child = root.children?.first {
                 session.selectedResultID = child.id
                 await snap("reproduction")

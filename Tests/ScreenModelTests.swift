@@ -188,6 +188,10 @@ final class ScreenModelTests: XCTestCase {
     func testHeadline_oneHeldOutRun_baIntervalUnavailable() throws {
         let m = try ResultDetailModel(stored: try stored(holdoutRuns: ["S001R12"], baCI: nil, diffCI: nil))
         XCTAssertEqual(m.headline.balancedAccuracy, "Balanced accuracy 0.68")
+        XCTAssertEqual(m.headline.balancedAccuracyValue, "0.68")
+        XCTAssertNil(m.balancedAccuracyInterval, "one held-out run: the BA bar is dashed")
+        XCTAssertEqual(m.accuracyInterval, 0.5123...0.8456)
+        XCTAssertTrue(m.heroAccessibilityLabel.hasPrefix("Balanced accuracy 0.68. Accuracy 0.70, 95 percent confidence interval 0.51 to 0.85, trial-level, 14 trials."), m.heroAccessibilityLabel)
         XCTAssertEqual(m.headline.accuracy, "Accuracy 0.70 · 95 % CI 0.51–0.85 (trial-level, n = 14)")
         XCTAssertEqual(m.headline.balancedAccuracyInterval, "Balanced-accuracy interval: unavailable (one held-out run)")
         XCTAssertEqual(m.differenceInterval, "Difference interval: unavailable (one held-out run)")
@@ -217,15 +221,19 @@ final class ScreenModelTests: XCTestCase {
         let m = try ResultDetailModel(stored: try stored(holdoutRuns: ["R1"], baCI: nil, diffCI: nil, exclusions: exclusions))
         XCTAssertEqual(m.classNames, ["cue_left_fist", "cue_right_fist"], "class names come from the pipeline configuration")
         XCTAssertEqual(m.cells.map(\.count), [5, 2, 2, 5])
-        XCTAssertEqual(m.cells[1].accessibilityLabel, "True cue_left_fist, predicted cue_right_fist: 2 trials")
+        XCTAssertEqual(m.cells[1].accessibilityLabel,
+                       "True Left-fist cue (cue_left_fist), predicted Right-fist cue (cue_right_fist): 2 of 7 trials, wrong")
+        XCTAssertEqual(m.cells.map(\.rowTotal), [7, 7, 7, 7])
         XCTAssertEqual(Set(m.cells.map(\.accessibilityLabel)).count, 4, "every cell has its own label")
-        XCTAssertEqual(m.confusionSummary, "Of 14 held-out trials, 10 were classified correctly: 5 of 7 cue_left_fist and 5 of 7 cue_right_fist.")
+        XCTAssertEqual(m.confusionSummary, "Of 14 held-out trials, 10 were classified correctly: 5 of 7 Left-fist cue and 5 of 7 Right-fist cue.")
+        XCTAssertEqual(m.classDisplayNames, ["Left-fist cue", "Right-fist cue"])
+        XCTAssertEqual(m.classCounts.map(\.className), ["cue_left_fist", "cue_right_fist"], "the stored label is kept beside the display name")
         XCTAssertEqual(m.classCounts.map(\.train), [16, 14])
         XCTAssertEqual(m.evidence.symbol, "questionmark.circle")
         XCTAssertEqual(m.evidence.text, "Session unknown — this is not evidence of cross-session transfer.")
         XCTAssertEqual(m.splitFields.first { $0.label == "Seed" }?.value, "3")
         XCTAssertEqual(m.splitFields.first { $0.label == "Grouping" }?.value, "by run")
-        XCTAssertEqual(m.exclusions, ["Trial S001R04-t00 (S001R04, cue_right_fist): window starts before filter warm-up"])
+        XCTAssertEqual(m.exclusions, ["Trial S001R04-t00 (S001R04, Right-fist cue (cue_right_fist)): window starts before filter warm-up"])
         XCTAssertEqual(m.warning, "Public dataset, not your device")
     }
 
@@ -244,6 +252,51 @@ final class ScreenModelTests: XCTestCase {
         XCTAssertEqual(tree[0].children?.map(\.id), [a1.resultID, a2.resultID])
         XCTAssertNil(tree[1].children)
         XCTAssertTrue(tree[0].children![1].diverged)
+    }
+
+    // MARK: Decision #12 — larger-class reference; decision #11 — class display
+
+    func testLargerClassRate_fromStoredCountsOnly() {
+        // 7 + 8 held out: the larger class is 8/15.
+        let around = ResultDetailModel.largerClass(holdoutCounts: [7, 8], interval: 0.32...0.84)
+        XCTAssertEqual(around?.rate ?? 0, 8.0 / 15, accuracy: 1e-12)
+        XCTAssertEqual(around?.sentence, "Interval includes the larger-class rate.")
+        XCTAssertEqual(ResultDetailModel.largerClass(holdoutCounts: [7, 8], interval: 0.60...0.90)?.sentence,
+                       "Interval lies entirely above the larger-class rate.")
+        XCTAssertEqual(ResultDetailModel.largerClass(holdoutCounts: [10, 2], interval: 0.40...0.80)?.sentence,
+                       "Interval lies entirely below the larger-class rate.")
+        // Boundaries count as included.
+        XCTAssertEqual(ResultDetailModel.largerClass(holdoutCounts: [1, 1], interval: 0.5...0.9)?.sentence,
+                       "Interval includes the larger-class rate.")
+        XCTAssertNil(ResultDetailModel.largerClass(holdoutCounts: [0, 0], interval: 0.1...0.2), "no trials, no reference")
+        XCTAssertNil(ResultDetailModel.largerClass(holdoutCounts: [3, 4], interval: nil), "no interval, nothing to compare")
+    }
+
+    func testLargerClassRate_inTheResultModel() throws {
+        let m = try ResultDetailModel(stored: try stored(holdoutRuns: ["R1"], baCI: nil, diffCI: nil))
+        // class_counts.holdout = [7, 7]: 0.5, inside 0.51–0.85? No: below the interval.
+        XCTAssertEqual(m.largerClass?.rate, 0.5)
+        XCTAssertEqual(m.largerClass?.sentence, "Interval lies entirely above the larger-class rate.")
+    }
+
+    func testClassDisplay_namesCuesAndKeepsAnythingElse() {
+        XCTAssertEqual(ClassDisplay.name("cue_left_fist"), "Left-fist cue")
+        XCTAssertEqual(ClassDisplay.name("cue_right_fist"), "Right-fist cue")
+        XCTAssertEqual(ClassDisplay.name("cue_both_feet"), "Both feet cue")
+        XCTAssertEqual(ClassDisplay.name("rest"), "rest")
+        XCTAssertEqual(ClassDisplay.name("Cue_left_fist"), "Cue_left_fist", "no case folding; anything else verbatim")
+        XCTAssertEqual(ClassDisplay.name("cue_left_fist_x"), "Left fist x cue")
+        XCTAssertEqual(ClassDisplay.spoken("cue_left_fist"), "Left-fist cue, stored label cue_left_fist")
+        XCTAssertEqual(ClassDisplay.spoken("rest"), "rest")
+    }
+
+    func testEventsAndChannels_neverUseClassDisplayNames() async throws {
+        let (m, events) = try await tinyRecording()
+        let model = RecordingDetailModel(manifest: m, events: events)
+        XCTAssertTrue(model.events.contains { $0.label == "cue_left_fist" })
+        XCTAssertFalse(model.events.contains { $0.label.contains("Left-fist") })
+        let inspector = EvaluateInspectorModel(manifest: m, events: events, latest: nil, defaults: nil, modelName: { $0 })
+        XCTAssertTrue(inspector.misleading[0].text.contains("“cue_left_fist”"), "the inspector quotes the raw label")
     }
 
     // MARK: Inspector and progress
@@ -277,5 +330,10 @@ final class ScreenModelTests: XCTestCase {
         XCTAssertEqual(fit.accessibilityValue, "Cross-validation, 2 of 3")
         XCTAssertEqual(ProgressDisplay(.loading, modelName: { $0 }).stage, "Loading")
         XCTAssertEqual(ProgressDisplay(.holdout(model: "m", step: 2, steps: 2), modelName: { $0 }).stage, "Fit and holdout")
+        // Marks differ by shape: done, current, pending.
+        XCTAssertEqual((0..<3).map { fit.mark(for: $0) }, [.done, .current, .pending])
+        XCTAssertEqual(Set([ProgressDisplay.Mark.done, .current, .pending].map(\.symbol)).count, 3)
+        let saving = ProgressDisplay(.storing, modelName: { $0 })
+        XCTAssertEqual((0..<3).map { saving.mark(for: $0) }, [.done, .done, .done])
     }
 }
