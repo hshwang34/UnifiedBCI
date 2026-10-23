@@ -59,6 +59,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hshwang34.BCIWorkspace
         PRODUCT_NAME: BCIWorkspace
+        # App/Assets.xcassets: colour tokens (visual spec §1.1) and the rendered icon set.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SWIFT_INCLUDE_PATHS: $(SRCROOT)/native/brainflow/include
         LIBRARY_SEARCH_PATHS: $(SRCROOT)/native/brainflow/lib
         LD_RUNPATH_SEARCH_PATHS:
