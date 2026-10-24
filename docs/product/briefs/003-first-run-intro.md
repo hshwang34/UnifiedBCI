@@ -1,6 +1,6 @@
 # 003 — First-run intro with motion
 
-**Status:** approved · **Owner:** PM · **PR:** — · **Updated:** 2026-10-22
+**Status:** approved · **Owner:** PM · **PR:** — · **Updated:** 2026-10-23
 
 ## Problem
 A first-time user opens a plain welcome window with three buttons. Nothing there tells them:
@@ -43,6 +43,16 @@ A Mac-using student or independent BCI developer on the very first launch, befor
 - [ ] The intro adds ≤ 2 MB to the app. It is built in SwiftUI (Canvas / TimelineView / phase and keyframe animators / Metal shaders), with no video files and no network.
 - [ ] Nothing in the intro claims performance. The uncertainty step uses the same wording rules as decision #8 and shows a range, not a promise.
 
+### Live montage view (decisions #16–#18, added 2026-10-23)
+- [ ] The Recording screen shows a stylized 3D head above the channel table. Each declared electrode sits at its standard 10-10 (or 10-20) position and carries its label; the reference is marked.
+- [ ] Positions come only from a declared named montage plus a matching standard label. A recording whose montage is "unspecified", or a label with no standard position, shows "Positions undeclared" (listing the unplaced labels) — never a guess from channel count.
+- [ ] Hovering or selecting a channel in the table highlights its electrode, and vice versa.
+- [ ] Drag orbits the head; Top / Left / Right / Front / Reset buttons do the same from the keyboard and VoiceOver. Reduce Motion snaps to the chosen view instead of animating.
+- [ ] VoiceOver reads the view as "Montage: N of M channels placed, <montage name>", and each electrode button reads its label.
+- [ ] No per-channel colour or value is shown (decision #17).
+- [ ] The intro's scalp map uses the same head and positions, so the two visibly match.
+- [ ] The head is built from code (no model files); the intro + head together still add ≤ 2 MB.
+
 ## Out of scope
 - Account creation, telemetry or analytics of tour completion.
 - Hardware setup flows (phase 2).
@@ -61,7 +71,12 @@ A Mac-using student or independent BCI developer on the very first launch, befor
    → *Answer:* Include it: four steps.
 
 ## Engineering decisions (filled in by the lead while building)
-- …
+- 3D: RealityKit `RealityView` with procedurally generated meshes (macOS 15+). SceneKit is in maintenance mode (WWDC25 288); USDZ assets would break the 2 MB budget.
+- Intro particles/trace: `TimelineView` + `Canvas` with value-type state, paused under Reduce Motion, when occluded, and reduced in Low Power Mode. Step panels morph via `glassEffectID` inside one `GlassEffectContainer` (macOS 26), cross-fade on 15.
+- Electrode coordinates: a committed table of standard 10-10 positions keyed by label (a published standard, not inference).
+- Intro is a mode inside the Welcome window at its fixed 760×460 size, so `.contentSize` doesn't jump.
+- Help ▸ Show Welcome Tour via `CommandGroup`; first-run flag in `@AppStorage`. Esc via `.keyboardShortcut(.cancelAction)` on Skip.
+- Frame-time signposts added before shaders, to check the 60 fps criterion.
 
 ## Risks / what could go wrong for users
 - **Distraction.** Expressive motion can feel like marketing in a scientific tool. Mitigations: ≤ 4 steps, Skip is always visible, and the intro never replays uninvited.
