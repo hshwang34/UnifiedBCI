@@ -133,6 +133,48 @@ def _config_hash(block: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# What `fit_evaluate_project` uses for any parameter the request leaves out. One table, so
+# the handler and `fit_evaluate_defaults` (which the app's Parameters popover shows as
+# placeholders, brief 001 PR 3) cannot disagree.
+PROJECT_DEFAULTS: dict[str, Any] = {
+    "window": {"offset_s": 0.5, "length_s": 3.5},
+    "labels": {"left": "cue_left_fist", "right": "cue_right_fist"},
+    "seed": 0,
+    "csp_components": 4,
+    "holdout_fraction": 0.25,
+}
+
+
+def handle_fit_evaluate_defaults(req: Request, ctx: Context) -> dict[str, Any]:
+    """The defaults `fit_evaluate_project` applies, and a plain description of the two
+    recipes it runs, built from the same objects the fit uses. No data is read.
+    Optional param `csp_components` describes the recipe with that count instead of the
+    default, so the prose matches what an evaluation with an override would fit."""
+    bandpass = pipeline.BandpassSpec()
+    n_components = int(req.params.get("csp_components", PROJECT_DEFAULTS["csp_components"]))
+    ref = pipeline.reference_pipeline(n_components)
+    csp = ref.named_steps["csp"]
+    lda = ref.named_steps["lda"]
+    filt = (f"causal band-pass {bandpass.low_hz:g}-{bandpass.high_hz:g} Hz, order {bandpass.order}, "
+            "filter state reset at each segment start")
+    lda_text = f"linear discriminant ({lda.solver} solver, shrinkage {lda.shrinkage})"
+    return {
+        "params": json.loads(json.dumps(PROJECT_DEFAULTS)),
+        "recipes": [
+            {
+                "id": "csp_rlda_v1", "model": "reference_csp_rlda", "role": "reference",
+                "name": "CSP + shrinkage LDA",
+                "steps": [filt, f"CSP, {csp.n_components} components, {csp.shrinkage.replace('_', '-')} shrinkage, log-power features", lda_text],
+            },
+            {
+                "id": "logvar_rlda_v1", "model": "baseline_logvar_rlda", "role": "baseline",
+                "name": "Log-variance baseline",
+                "steps": [filt, "per-channel log-variance features", lda_text],
+            },
+        ],
+    }
+
+
 def handle_fit_evaluate_project(req: Request, ctx: Context) -> dict[str, Any]:
     """Evaluate the reference recipe and the baseline over one recording of a project.
 
@@ -152,14 +194,15 @@ def handle_fit_evaluate_project(req: Request, ctx: Context) -> dict[str, Any]:
         recording_id = str(p["recording_id"])
     except KeyError as exc:
         raise ProtocolError("bad_request", f"missing parameter {exc}", req.id) from exc
+    d = PROJECT_DEFAULTS
     window_p = p.get("window", {})
-    window = (float(window_p.get("offset_s", 0.5)), float(window_p.get("length_s", 3.5)))
+    window = (float(window_p.get("offset_s", d["window"]["offset_s"])), float(window_p.get("length_s", d["window"]["length_s"])))
     labels_p = p.get("labels", {})
-    left, right = str(labels_p.get("left", "cue_left_fist")), str(labels_p.get("right", "cue_right_fist"))
-    seed = int(p.get("seed", 0))
-    n_components = int(p.get("csp_components", 4))
+    left, right = str(labels_p.get("left", d["labels"]["left"])), str(labels_p.get("right", d["labels"]["right"]))
+    seed = int(p.get("seed", d["seed"]))
+    n_components = int(p.get("csp_components", d["csp_components"]))
     bandpass = pipeline.BandpassSpec()
-    holdout_fraction = float(p.get("holdout_fraction", 0.25))
+    holdout_fraction = float(p.get("holdout_fraction", d["holdout_fraction"]))
     split_manifest = p.get("split_manifest")
     arrays_path = p.get("fitted_arrays_path")
 
@@ -234,6 +277,7 @@ def handle_fit_evaluate_project(req: Request, ctx: Context) -> dict[str, Any]:
 HANDLERS: dict[str, Handler] = {
     "fit_evaluate_synthetic": handle_fit_evaluate_synthetic,
     "fit_evaluate_project": handle_fit_evaluate_project,
+    "fit_evaluate_defaults": handle_fit_evaluate_defaults,
 }
 
 

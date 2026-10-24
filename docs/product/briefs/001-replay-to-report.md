@@ -1,6 +1,6 @@
 # 001 — Replay to report: reproduce a motor-imagery result with no hardware
 
-**Status:** building (PR #1 foundations merged; PR 2 data path; PR 3 screens) · **Owner:** PM · **PR:** #1 merged · **Updated:** 2026-10-20
+**Status:** shipped (PR #1 foundations, PR #2 data path, PR #3 screens merged) · **Owner:** PM · **PR:** #1, #2, #3 merged · **Updated:** 2026-10-23
 
 ## Problem
 A developer who wants to know "does my CSP/LDA experiment actually work?" today assembles
@@ -25,31 +25,31 @@ recordings.
   was split, and what would make the number misleading.
 
 ## Acceptance criteria
-- [ ] Welcome window offers **Open project**, **Explore an example**, **Connect hardware**
+- [x] Welcome window offers **Open project**, **Explore an example**, **Connect hardware**
       (the last is present but disabled with an explanation until phase 2).
-- [ ] "Explore an example" creates a project on disk from the bundled recording and opens it;
+- [x] "Explore an example" creates a project on disk from the bundled recording and opens it;
       creation reads only from the app bundle (no network code on that path), no terminal, no hardware.
-- [ ] Project window: sidebar with Recordings · Protocols · Pipelines · Results · Live Test
+- [x] Project window: sidebar with Recordings · Protocols · Pipelines · Results · Live Test
       (Protocols/Live Test present but empty with "coming in phase 2/3" copy).
-- [ ] Recording detail shows source (dataset, subject, runs, license/citation), channel map
+- [x] Recording detail shows source (dataset, subject, runs, license/citation), channel map
       with declared labels and units, sample rate, segment list (one per run), and the event
       table (cue label, onset, run). Labels and units are displayed exactly as stored; a recording
       without declared labels shows "undeclared", never a 10-20 guess.
-- [ ] "Evaluate" runs the reference CSP+rLDA and the log-variance baseline in the worker with a
+- [x] "Evaluate" runs the reference CSP+rLDA and the log-variance baseline in the worker with a
       determinate progress indicator updated at least once per stage (fit, CV, holdout); the result view shows balanced accuracy, accuracy with a 95 % trial-level
       interval, confusion matrix, class counts per split, grouped-by-run split policy, seed,
       exclusions, evidence type (same-session), and the dataset warning.
-- [ ] Re-running with the same recording, pipeline config and seed produces a byte-identical
+- [x] Re-running with the same recording, pipeline config and seed produces a byte-identical
       `evaluation.json` (same machine, same bundled worker) and is stored as a *reproduction*
       linked to the original; changing the seed creates a new result record. All remain listed.
-- [ ] Export writes a folder with samples (documented binary), `events.jsonl`, channel map,
+- [x] Export writes a folder with samples (documented binary), `events.jsonl`, channel map,
       pipeline config, model arrays (`.npz`), and `evaluation.json`; a Python one-liner in the
       docs reads it without the app.
-- [ ] Project directory survives force-quit mid-evaluation: reopening shows the recording and
+- [x] Project directory survives force-quit mid-evaluation: reopening shows the recording and
       any completed results; nothing corrupted.
-- [ ] Worker death during evaluation shows an explicit "analysis unavailable" state with a
+- [x] Worker death during evaluation shows an explicit "analysis unavailable" state with a
       retry; the recording stays usable.
-- [ ] Attribution for the bundled dataset (PhysioNet / Schalk 2004 / Goldberger 2000, ODC-BY)
+- [x] Attribution for the bundled dataset (PhysioNet / Schalk 2004 / Goldberger 2000, ODC-BY)
       is shown in the example's info panel and in the export.
 
 ## Out of scope
@@ -128,6 +128,24 @@ band-power recipe, any claim about the user's own motor imagery.
   byte-identity, and store it as a reproduction record pointing at the original.
 - "Under 15 minutes without a terminal" is PRD gate 2 (five testers); not ticked from a PR.
 
+- PR 2 (data path) gate, 2026-10-22: reviewer found one blocker (worker trusted `recording.json`:
+  path escape, FIFO hang, silent negative-row wraparound) plus eight durability/race issues; two fix
+  rounds + one security-review fix. Decisions: worker validates manifests with the same rules as Swift
+  and reports `integrity`, never `internal`; cancel means nothing saved, and is a no-op once storing
+  starts; 120 s progress-silence watchdog → "analysis unavailable"; open-sweep spares locked or
+  < 10 min old staging dirs (PR 3 also allows one window per project); export refuses any symlinked
+  path component. Debug builds signed with the personal Apple Development identity (team V56DG94ZL5)
+  so macOS keeps the Documents grant across rebuilds. No CI in the repo; gate run locally.
+- PR 3 (screens + glass restyle) gate, 2026-10-23: two fix rounds. Round 1: seven window/session
+  lifecycle fixes and the glass restyle per `001-visual-spec.md`. Round 2: single-scroll recording
+  detail, no clipped columns at the 1100x640 minimum, quit waits for every in-flight save
+  (`Workspace.closeAll`), named progress stages; final re-review found one should-fix (a rare
+  main-thread hang when an open fails while the same project is adopted), fixed by letting the open
+  task register its session and release its key itself. pytest 70 / XCTest 112 green, 0 warnings,
+  Release builds; screenshots light + dark checked. Follow-up (not blocking): numbers are rounded
+  half-to-even, so a balanced accuracy of 0.625 shows as 0.62 next to a correct "+0.09" difference;
+  consider half-up rounding for display.
+
 ## Risks / what could go wrong for users
 - ~22 trials per class gives a ±15-point interval; a user could read 70 % as "it works".
   Mitigation: interval shown beside every accuracy, "evidence: same-session, one subject"
@@ -152,3 +170,16 @@ band-power recipe, any claim about the user's own motor imagery.
   `.failed(reason)` state exists beside `analysisUnavailable`; reproduction stores `reproductionOf` or
   `divergedFrom`; `fitted.npz` holds both models.
 - Out of scope until the PM picks them up: signing/notarization, clean-machine launch, live Cyton+Daisy smoke.
+
+## Resume 2026-10-23
+- **PR #1 and #2 merged.** PR 3 (screens + glass restyle) is on `feature-replay-screens`, worktree
+  `.claude/worktrees/feature-replay-screens`; was not pushed (gh account had switched).
+- Round 1 (glass restyle per `001-visual-spec.md`, 7 lifecycle fixes) passed the gate: pytest 70 / XCTest 111 green.
+  Tester and re-review found no blockers but asked for round 2.
+- **Round 2 (last allowed) was paused mid-way**, committed as "WIP PR 3 round 2 … (unverified)". It covers
+  single-scroll recording detail (Source card clipped at 1100x640), no clipped table columns at 1100 pt, the
+  Held-out runs ghost row, `Workspace.closeAll()` so quit awaits every in-flight save, nits, and named pending stages.
+- **Single next step:** finish round 2 — build + full gate, screenshots `pr3v3-*` (recording at 1100x640 incl. Events tab,
+  red "analysis unavailable" banner, result, progress; light + dark), check nothing is clipped, then open PR 3 and merge.
+- Then brief 003 (first-run intro, approved) in a new worktree from main.
+- Needs the PM by hand, not blocking merge: VoiceOver, Reduce Transparency, Increase Contrast, Wi-Fi-off run, macOS 15.

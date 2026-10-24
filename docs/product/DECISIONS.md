@@ -28,3 +28,24 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #8 · 2026-10-20 · Result headline shows "Balanced accuracy X" with "Accuracy Y · 95 % CI a–b (trial-level, n)" beneath it; the trial-level interval is never labelled as a balanced-accuracy interval; a run-level BA interval shows only when ≥ 2 runs are held out, else "unavailable (one held-out run)".
 *Why:* the stored CI is Clopper-Pearson on accuracy; mislabelling it would overclaim. Decided by the lead as a safe default (designer flag); PM may reverse. Lives in docs/product/briefs/001-ui-spec.md.
+
+#9 · 2026-10-22 · Visual direction: "sterile, clean, clear" — visionOS-like glass. Liquid Glass (`glassEffect`) on macOS 26; frosted-material fallback on macOS 15, which stays the minimum. Light and dark both designed; follows the system setting and honours Reduce Transparency / Increase Contrast. Neuralink's Telepathy app is a tone reference only (no branding borrowed). Supersedes the "system components only, no custom styling" line in 001-ui-spec.md.
+*Why:* PM direction (brief 001 PR 3). Lives in docs/product/briefs/001-visual-spec.md.
+
+#10 · 2026-10-22 · Seed copy reads "Chooses the held-out runs and the bootstrap draws. The same seed gives the same split." (the UI spec's "the split stays the same" was wrong: no frozen split manifest is passed yet).
+*Why:* honest copy over spec wording; decided by the lead as a safe default, PM may reverse (alternative: ship a frozen split manifest per recording).
+
+#11 · 2026-10-22 · Class names display as "Left-fist cue" / "Right-fist cue" with the stored label (`cue_left_fist`) shown beneath; channels, events and exports stay verbatim.
+*Why:* the label records the cue shown, not proof of movement or imagery. Brief 001 visual spec §3.
+
+#12 · 2026-10-22 · The accuracy range bar marks the larger-class rate with "Interval includes / lies above / lies below the larger-class rate."
+*Why:* a plain "is this better than always guessing the bigger class?" cue, derived from stored counts only. Brief 001 visual spec §2.6.
+
+#13 · 2026-10-22 · Onboarding = animated first-run intro (4 steps: what it does · honest uncertainty · try the example · hardware in phase 2) in the welcome window, first launch only, skippable, replayable from Help. Decision #7 still holds (no project auto-opens).
+*Why:* PM choice. Brief 003.
+
+#14 · 2026-10-22 · Intro motion is an expressive showpiece (neural field, electrode map, self-drawing trace, glass morphs) — still 60 fps, Reduce Motion gives still frames, own imagery only.
+*Why:* PM choice over the calmer recommendation. Brief 003.
+
+#15 · 2026-10-22 · Brief 003 ships as its own PR after PR 3 merges.
+*Why:* keeps PR 3 reviewable. Brief 003.

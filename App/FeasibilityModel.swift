@@ -1,3 +1,5 @@
+#if DEBUG
+// Phase-0 feasibility checks: developer tooling, compiled into Debug builds only.
 import Foundation
 import Observation
 
@@ -143,3 +145,4 @@ final class FeasibilityModel {
         Task { await w?.shutdown() }
     }
 }
+#endif

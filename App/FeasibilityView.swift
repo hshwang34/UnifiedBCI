@@ -1,3 +1,5 @@
+#if DEBUG
+// Phase-0 feasibility checks: developer tooling, compiled into Debug builds only.
 import SwiftUI
 
 struct FeasibilityView: View {
@@ -89,3 +91,4 @@ private struct CheckRow: View {
         }
     }
 }
+#endif
