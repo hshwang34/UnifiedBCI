@@ -1,6 +1,6 @@
 # 003 — First-run intro with motion
 
-**Status:** approved · **Owner:** PM · **PR:** — · **Updated:** 2026-10-23
+**Status:** building · **Owner:** PM · **PR:** — · **Updated:** 2026-10-29
 
 ## Problem
 A first-time user opens a plain welcome window with three buttons. Nothing there tells them:
