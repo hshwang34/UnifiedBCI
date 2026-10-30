@@ -61,3 +61,6 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #19 · 2026-10-23 · Neuralink Telepathy stays a tone reference only (decision #9); its visuals aren't publicly verifiable, so design proceeds on the verified task structure (one focal object, short bounded steps, one headline number with its unit) plus the glass spec.
 *Why:* PM choice; researcher could not verify Telepathy UI. Brief 003.
+
+#20 · 2026-10-30 · Montage head look = "glass over a ghost head" (study A4): a thick-glass scalp dome with the faint 10-10 grid, cup electrodes and leader-line labels, over a faint glowing outline of a head for orientation. No sculpted or shaded face. The intro's scalp map uses the same look. Supersedes the placeholder primitives (sphere/cone/cylinder).
+*Why:* PM choice after two rounds of live sketches (docs/product/briefs/003-head-styles.html, 003-glass-studies.html); the mannequin head was rejected and the plain dome lacked orientation. Brief 003.

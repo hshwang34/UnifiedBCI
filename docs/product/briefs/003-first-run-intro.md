@@ -52,6 +52,7 @@ A Mac-using student or independent BCI developer on the very first launch, befor
 - [ ] No per-channel colour or value is shown (decision #17).
 - [ ] The intro's scalp map uses the same head and positions, so the two visibly match.
 - [ ] The head is built from code (no model files); the intro + head together still add ≤ 2 MB.
+- [ ] The head looks like study A4 in `003-glass-studies.html` (decision #20): thick-glass dome with a faint 10-10 grid and polished rim, cup electrodes, labels on leader lines that don't overlap, a faint glowing head outline beneath. Reduce Transparency makes the dome frosted-solid; Increase Contrast strengthens the outline and grid.
 
 ## Out of scope
 - Account creation, telemetry or analytics of tour completion.
