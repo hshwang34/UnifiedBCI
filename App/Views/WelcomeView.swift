@@ -5,9 +5,59 @@ import SwiftUI
 struct WelcomeView: View {
     @Environment(Workspace.self) private var workspace
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @State private var selection: URL?
+    @FocusState private var focus: WelcomeFlow.Focus?
+    @AccessibilityFocusState private var voiceOverFocus: WelcomeFlow.Focus?
+
+    /// Checked once per app run: closing and reopening the window never restarts the intro.
+    private static var checkedFirstRun = false
 
     var body: some View {
+        // Brief 003: the intro is a mode of this fixed-size window, so `.contentSize` never jumps.
+        ZStack {
+            if workspace.welcomeFlow.isIntro {
+                IntroView().transition(.opacity)
+            } else {
+                welcome.transition(.opacity)
+            }
+        }
+        .frame(width: 760, height: 460)
+        .animation(LaunchArguments.reduceMotion(system: systemReduceMotion) ? nil : .smooth(duration: 0.45), value: workspace.welcomeFlow.isIntro)
+        .onAppear {
+            if workspace.openWindow == nil { workspace.openWindow = openWindow }
+            workspace.refreshRecents()
+            presentIntroIfFirstRun()
+        }
+        .task { await LaunchArguments.runOnce(workspace) }
+    }
+
+    /// Lead default 6: the flag is set the moment the intro is first presented.
+    private func presentIntroIfFirstRun() {
+        guard !Self.checkedFirstRun else { return }
+        Self.checkedFirstRun = true
+        let firstRun = FirstRun(defaults: .standard)
+        if let step = LaunchArguments.introStep {
+            workspace.welcomeFlow.start(at: step)
+        } else if firstRun.shouldPresent(reset: LaunchArguments.resetFirstRun) {
+            workspace.welcomeFlow.start(at: 0)
+        } else {
+            return
+        }
+        firstRun.markPresented()
+    }
+
+    /// After the intro: "Explore an example" takes keyboard and VoiceOver focus.
+    private func takeFocusAfterIntro() {
+        guard workspace.welcomeFlow.focus == .exploreExample else { return }
+        workspace.welcomeFlow.consumeFocus()
+        Task { @MainActor in
+            focus = .exploreExample
+            voiceOverFocus = .exploreExample
+        }
+    }
+
+    private var welcome: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xl) {
             HStack(spacing: Theme.Space.l) {
                 // From the asset catalog: the Dock's cached icon can lag behind a rebuilt bundle.
@@ -26,7 +76,15 @@ struct WelcomeView: View {
                 GlassGroup(spacing: 12) {
                     VStack(spacing: Theme.Space.m) {
                         ForEach(WelcomeModel.actions) { action in
-                            WelcomeActionCard(action: action) { perform(action.kind) }
+                            if action.kind == .example {
+                                WelcomeActionCard(action: action) { perform(action.kind) }
+                                    .focusable()
+                                    .focused($focus, equals: .exploreExample)
+                                    .accessibilityFocused($voiceOverFocus, equals: .exploreExample)
+                                    .onKeyPress(keys: [.return, .space]) { _ in perform(action.kind); return .handled }
+                            } else {
+                                WelcomeActionCard(action: action) { perform(action.kind) }
+                            }
                         }
                     }
                 }
@@ -40,11 +98,7 @@ struct WelcomeView: View {
         .padding(.bottom, Theme.Space.xl)
         .frame(width: 760, height: 460)
         .background { AmbientBackdrop() }
-        .onAppear {
-            if workspace.openWindow == nil { workspace.openWindow = openWindow }
-            workspace.refreshRecents()
-        }
-        .task { await LaunchArguments.runOnce(workspace) }
+        .onAppear { takeFocusAfterIntro() }
     }
 
     private var recentList: some View {

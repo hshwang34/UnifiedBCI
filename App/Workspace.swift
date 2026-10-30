@@ -57,6 +57,8 @@ final class Workspace {
     private(set) var sessions: [URL: ProjectSession] = [:]
     private(set) var recents: [RecentProject] = []
     let launch: WorkerLaunch?
+    /// The Welcome window's mode: the first-run intro or the welcome screen (brief 003).
+    var welcomeFlow = WelcomeFlow()
 
     /// Installed by the first view that has `openWindow` in its environment.
     @ObservationIgnored var openWindow: OpenWindowAction?
@@ -319,6 +321,14 @@ final class Workspace {
                 Self.alert("The project could not be created.", info: "\(error)")
             }
         }
+    }
+
+    /// Help ▸ Show Welcome Tour (brief 003): restarts the intro at step 0 in the Welcome
+    /// window, opening it if needed. Never touches the first-run flag (lead default 6) and
+    /// never opens or closes a project.
+    func showWelcomeTour() {
+        welcomeFlow.start(at: 0)
+        openWindow?(id: "welcome")
     }
 
     func exploreExamplePanel() {

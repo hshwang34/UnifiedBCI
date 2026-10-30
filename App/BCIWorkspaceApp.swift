@@ -147,6 +147,10 @@ struct WorkspaceCommands: Commands {
                 .keyboardShortcut(".")
                 .disabled(!(session?.isRunning ?? false))
         }
+        // Brief 003: the app has no help book, so the Help item is the tour.
+        CommandGroup(replacing: .help) {
+            Button("Show Welcome Tour") { workspace.showWelcomeTour() }
+        }
         #if DEBUG
         CommandMenu("Debug") {
             Button("Phase 0 Feasibility Checks") { openWindow(id: "feasibility") }
