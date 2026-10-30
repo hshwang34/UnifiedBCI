@@ -14,6 +14,9 @@ struct RecordingDetailView: View {
     @State private var channelSort = [KeyPathComparator(\RecordingDetailModel.ChannelRow.id)]
     @State private var segmentSort = [KeyPathComparator(\RecordingDetailModel.SegmentRow.index)]
     @State private var eventSort: [KeyPathComparator<RecordingDetailModel.EventRow>] = []
+    /// Brief 003 cross-highlight: shared by the montage head and the channel table, by channel id.
+    @State private var selectedChannel: String?
+    @State private var hoveredChannel: String?
 
     static let tableHeight: CGFloat = 360
     /// Below this table width the Segments and Events tables drop their low-value columns
@@ -32,6 +35,10 @@ struct RecordingDetailView: View {
                     StatusChip(kind: .warning, text: warning)
                 }
                 sourceCard
+                // Decision #16: the montage head sits above the channel table.
+                MontageView(layout: MontageLayout(model), selected: $selectedChannel, hovered: $hoveredChannel) {
+                    tab = .channels
+                }
                 tablePicker
                 VStack(alignment: .leading, spacing: Theme.Space.s) {
                     table
@@ -135,14 +142,26 @@ struct RecordingDetailView: View {
             .frame(maxWidth: wrap ? .infinity : nil, alignment: .leading)
     }
 
+    /// One channel cell: hovering it highlights the electrode; hovering the electrode
+    /// (`hoveredChannel`) emphasises the row's text. Selection is the table's own.
+    private func channelCell<C: View>(_ row: RecordingDetailModel.ChannelRow, @ViewBuilder _ content: () -> C) -> some View {
+        content()
+            .fontWeight(hoveredChannel == row.id ? .bold : nil)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { hoveredChannel = row.id } else if hoveredChannel == row.id { hoveredChannel = nil }
+            }
+    }
+
     @ViewBuilder private var table: some View {
         switch tab {
         case .channels:
-            Table(model.channels.sorted(using: channelSort), sortOrder: $channelSort) {
-                TableColumn("ID", value: \.id) { Text($0.id).font(Theme.Fonts.mono) }.width(min: 40, ideal: 56)
-                TableColumn("Label", value: \.labelSortKey) { DeclaredText(value: $0.label ?? RecordingDetailModel.undeclared, declared: $0.label != nil) }.width(min: 40, ideal: 72)
-                TableColumn("Unit", value: \.unitSortKey) { DeclaredText(value: $0.unit ?? RecordingDetailModel.undeclared, declared: $0.unit != nil) }.width(min: 32, ideal: 52)
-                TableColumn("Kind", value: \.kindSortKey) { DeclaredText(value: $0.kind ?? RecordingDetailModel.undeclared, declared: $0.kind != nil) }.width(min: 32, ideal: 52)
+            Table(model.channels.sorted(using: channelSort), selection: $selectedChannel, sortOrder: $channelSort) {
+                TableColumn("ID", value: \.id) { row in channelCell(row) { Text(row.id).font(Theme.Fonts.mono) } }.width(min: 40, ideal: 56)
+                TableColumn("Label", value: \.labelSortKey) { row in channelCell(row) { DeclaredText(value: row.label ?? RecordingDetailModel.undeclared, declared: row.label != nil) } }.width(min: 40, ideal: 72)
+                TableColumn("Unit", value: \.unitSortKey) { row in channelCell(row) { DeclaredText(value: row.unit ?? RecordingDetailModel.undeclared, declared: row.unit != nil) } }.width(min: 32, ideal: 52)
+                TableColumn("Kind", value: \.kindSortKey) { row in channelCell(row) { DeclaredText(value: row.kind ?? RecordingDetailModel.undeclared, declared: row.kind != nil) } }.width(min: 32, ideal: 52)
             }
             .alternatingRowBackgrounds()
         case .segments:
