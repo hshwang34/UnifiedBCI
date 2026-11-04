@@ -223,8 +223,24 @@ final class MontageTests: XCTestCase {
         XCTAssertEqual(l.eegCount, 2)
         XCTAssertEqual(l.placedCount, 2)
         XCTAssertEqual(l.excluded.map(\.id), ["ch10", "ch11"])
-        XCTAssertTrue(l.caption.contains("2 non-EEG channels not counted (EOG, Cz)"), l.caption)
+        XCTAssertTrue(l.caption.contains("1 non-EEG channel not counted (EOG)"), l.caption)
+        XCTAssertTrue(l.caption.contains("1 channel of undeclared kind not counted (Cz)"), l.caption)
+        XCTAssertFalse(l.caption.contains("nothing to place"))
         XCTAssertFalse(layout("10-10", ["C3"]).caption.contains("non-EEG"))
+    }
+
+    func testEveryKindUndeclared_saysWhyNothingIsPlaced() {
+        let channels = ["C3", "C4", "Cz"].enumerated().map { i, l in
+            RecordingDetailModel.ChannelRow(id: "ch0\(i)", label: l, unit: "uV", kind: nil)
+        }
+        let l = MontageLayout(montage: "10-10", reference: "", channels: channels)
+        XCTAssertEqual(l.accessibilityLabel, "Montage: 0 of 0 channels placed, international 10-10 system")
+        let lines = l.caption.components(separatedBy: "\n")
+        XCTAssertEqual(lines, [
+            "0 of 0 EEG channels placed · international 10-10 system",
+            "No channel is declared as EEG, so there is nothing to place.",
+            "3 channels of undeclared kind not counted (C3, C4, Cz)",
+        ])
     }
 
     // MARK: Reference (lead default 5)

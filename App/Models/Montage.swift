@@ -166,12 +166,25 @@ struct MontageLayout: Equatable {
         "Montage: \(placedCount) of \(eegCount) channel\(eegCount == 1 ? "" : "s") placed, \(montageName)"
     }
 
-    /// The caption under the head.
+    /// Excluded channels that declare some other kind (EOG, ECG…).
+    var excludedOtherKind: [RecordingDetailModel.ChannelRow] { excluded.filter { $0.kind != nil } }
+    /// Excluded channels whose kind the manifest leaves undeclared.
+    var excludedUndeclaredKind: [RecordingDetailModel.ChannelRow] { excluded.filter { $0.kind == nil } }
+
+    /// The caption under the head: the count, then why channels were left out of it.
     var caption: String {
         var parts = ["\(placedCount) of \(eegCount) EEG channel\(eegCount == 1 ? "" : "s") placed · \(standard?.displayName ?? "no named standard montage declared")"]
-        if !excluded.isEmpty {
-            let names = excluded.map { $0.label ?? $0.id }.joined(separator: ", ")
-            parts.append("\(excluded.count) non-EEG channel\(excluded.count == 1 ? "" : "s") not counted (\(names))")
+        // "0 of 0" alone would read as an empty recording; say why nothing counts.
+        if eegCount == 0 && !excluded.isEmpty {
+            parts.append("No channel is declared as EEG, so there is nothing to place.")
+        }
+        let names = { (rows: [RecordingDetailModel.ChannelRow]) in rows.map { $0.label ?? $0.id }.joined(separator: ", ") }
+        let other = excludedOtherKind, undeclared = excludedUndeclaredKind
+        if !other.isEmpty {
+            parts.append("\(other.count) non-EEG channel\(other.count == 1 ? "" : "s") not counted (\(names(other)))")
+        }
+        if !undeclared.isEmpty {
+            parts.append("\(undeclared.count) channel\(undeclared.count == 1 ? "" : "s") of undeclared kind not counted (\(names(undeclared)))")
         }
         return parts.joined(separator: "\n")
     }
