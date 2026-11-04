@@ -23,8 +23,11 @@ import Foundation
 ///     -BCIIntroStep N                          start the intro at step N (0-based; implies the intro)
 ///     -BCIIntroTour YES                        with -BCISnapshotDir: snapshot every intro step
 ///     -BCIReduceMotion YES                     force the Reduce Motion policy (intro, montage)
+///     -BCIReduceTransparency YES               force the frosted, solid head dome
 ///     -BCIMontageView top|left|right|front     the montage head's initial view
 ///     -BCIFrameLog /path/file.txt              append intro frame-interval stats there
+///     -BCIOffscreenSnapshotDir /path/dir       render intro steps and montage presets with
+///                                              ImageRenderer (works with the display asleep)
 @MainActor
 enum LaunchArguments {
     private static var done = false
@@ -35,6 +38,16 @@ enum LaunchArguments {
     static func reduceMotion(system: Bool) -> Bool {
         #if DEBUG
         return system || UserDefaults.standard.bool(forKey: "BCIReduceMotion")
+        #else
+        return system
+        #endif
+    }
+
+    /// Reduce Transparency as the head applies it (Debug `-BCIReduceTransparency YES`; the
+    /// system key is read-only, so snapshots need this to show the frosted dome).
+    static func reduceTransparency(system: Bool) -> Bool {
+        #if DEBUG
+        return system || UserDefaults.standard.bool(forKey: "BCIReduceTransparency")
         #else
         return system
         #endif
@@ -113,6 +126,10 @@ enum LaunchArguments {
             // From a run-loop perform, not a main-queue block: `.terminateLater` spins a nested
             // run loop, and a busy (serial) main queue would starve the shutdown Task.
             if defaults.bool(forKey: "BCIQuitWhenDone") { NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0) }
+        }
+        if let dir = defaults.string(forKey: "BCIOffscreenSnapshotDir") {
+            OffscreenSnapshots.run(into: URL(fileURLWithPath: dir, isDirectory: true))
+            return
         }
         // Brief 003: every intro step, through the same commands the keys send, then the
         // welcome screen it lands on ("Explore an example" focused).
