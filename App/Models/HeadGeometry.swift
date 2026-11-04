@@ -216,8 +216,8 @@ enum LabelLayout {
         let lineEnd: CGPoint
     }
 
-    static let distances: [Double] = [20, 30, 42, 56, 72, 90]
-    static let angles: [Double] = [0, 0.26, -0.26, 0.52, -0.52]
+    static let distances: [Double] = [20, 30, 42, 56, 72, 90, 110]
+    static let angles: [Double] = [0, 0.26, -0.26, 0.52, -0.52, 0.8, -0.8]
     static let gap: CGFloat = 2
 
     /// `bounds`, when given, keeps every box inside it (inset 4 pt), so labels never clip at

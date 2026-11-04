@@ -323,14 +323,9 @@ final class MontageTests: XCTestCase {
         for width in [520.0, 700.0] {
             let size = CGSize(width: width, height: 340)
             for preset in Orbit.Preset.allCases {
-                let camera = HeadCamera(orbit: preset.orbit)
-                let centre = camera.project(HeadGeometry.labelCentre, in: size)!
-                let items = l.placed.map { e -> LabelLayout.Item in
-                    let p = HeadGeometry.surfacePoint(e.site)
-                    return LabelLayout.Item(id: e.channelID, anchor: camera.project(p, in: size)!,
-                                            size: LabelMetrics.size(e.label, strong: false), dim: !camera.faces(p))
-                }
-                let placed = LabelLayout.place(items, centre: centre)
+                // The montage view's own framing and label placement.
+                let camera = HeadCamera(orbit: preset.orbit, target: MontageView.target, distance: MontageView.distance)
+                let placed = MontageLabels.place(layout: l, camera: camera, size: size, selected: "ch05")
                 XCTAssertEqual(placed.count, 16)
                 XCTAssertEqual(LabelLayout.overlaps(placed), 0, "\(preset) at \(width)")
             }

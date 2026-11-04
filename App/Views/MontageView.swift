@@ -17,6 +17,9 @@ struct MontageView: View {
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
 
     static let stageHeight: CGFloat = 340
+    /// Framed on the dome, not the study's neck-inclusive framing, so labels have room.
+    static let target = SIMD3<Double>(0, -6, 6)
+    static let distance = 820.0
 
     init(layout: MontageLayout, selected: Binding<String?>, hovered: Binding<String?>, initialOrbit: Orbit? = nil, onChoose: @escaping () -> Void = {}) {
         self.layout = layout
@@ -86,8 +89,7 @@ struct MontageView: View {
     }
 
     private var stage: some View {
-        // Framed on the dome (not the A4 sketch's neck-inclusive framing) so labels have room.
-        HeadStage(orbit: orbit, target: SIMD3(0, -6, 6), distance: 820) { camera, size in
+        HeadStage(orbit: orbit, target: Self.target, distance: Self.distance) { camera, size in
             ZStack {
                 MontageMarks(layout: layout, camera: camera, size: size, selected: selected, hovered: hovered)
                 ElectrodeButtons(layout: layout, camera: camera, size: size, selected: $selected, hovered: $hovered, onChoose: onChoose)
@@ -150,9 +152,15 @@ private struct MontageMarks: View {
         .accessibilityHidden(true)
     }
 
-    /// One label per placed electrode, pushed out from the head centre; back-facing ones dim
-    /// (hidden entirely when the dome is frosted).
     static func labels(layout: MontageLayout, camera: HeadCamera, size: CGSize, selected: String?) -> [LabelLayout.Placed] {
+        MontageLabels.place(layout: layout, camera: camera, size: size, selected: selected)
+    }
+}
+
+/// One label per placed electrode, pushed out from the head centre; back-facing ones dim.
+@MainActor
+enum MontageLabels {
+    static func place(layout: MontageLayout, camera: HeadCamera, size: CGSize, selected: String?) -> [LabelLayout.Placed] {
         let centre = camera.project(HeadGeometry.labelCentre, in: size) ?? CGPoint(x: size.width / 2, y: size.height / 2)
         let items = layout.placed.compactMap { e -> LabelLayout.Item? in
             let p = HeadGeometry.surfacePoint(e.site)
