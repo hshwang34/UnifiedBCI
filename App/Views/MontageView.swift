@@ -12,11 +12,19 @@ struct MontageView: View {
     /// Called when an electrode is chosen, so the page can show the channel table.
     var onChoose: () -> Void = {}
 
-    @State private var orbit = LaunchArguments.montagePreset?.orbit ?? .default
+    @State private var orbit: Orbit
     @State private var dragBase: Orbit?
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
 
-    static let stageHeight: CGFloat = 300
+    static let stageHeight: CGFloat = 340
+
+    init(layout: MontageLayout, selected: Binding<String?>, hovered: Binding<String?>, initialOrbit: Orbit? = nil, onChoose: @escaping () -> Void = {}) {
+        self.layout = layout
+        _selected = selected
+        _hovered = hovered
+        self.onChoose = onChoose
+        _orbit = State(initialValue: initialOrbit ?? LaunchArguments.montagePreset?.orbit ?? .default)
+    }
 
     private var reduceMotion: Bool { LaunchArguments.reduceMotion(system: systemReduceMotion) }
 
@@ -56,12 +64,10 @@ struct MontageView: View {
     private var presetButtons: some View {
         HStack(spacing: Theme.Space.xs) {
             ForEach(Orbit.Preset.allCases) { preset in
-                Button {
+                Button(preset.title) {
                     withAnimation(reduceMotion ? nil : .smooth(duration: Orbit.transitionDuration(reduceMotion: false))) {
                         orbit = orbit.nearest(preset.orbit)
                     }
-                } label: {
-                    if preset == .reset { Label(preset.title, systemImage: preset.symbol).labelStyle(.iconOnly) } else { Text(preset.title) }
                 }
                 .help(preset.accessibilityLabel)
                 .accessibilityLabel(preset.accessibilityLabel)
@@ -72,8 +78,12 @@ struct MontageView: View {
     }
 
     private var stage: some View {
-        HeadStage(orbit: orbit) { camera, size in
-            ElectrodeOverlay(layout: layout, camera: camera, size: size, selected: $selected, hovered: $hovered, onChoose: onChoose)
+        // Framed on the dome (not the A4 sketch's neck-inclusive framing) so labels have room.
+        HeadStage(orbit: orbit, target: SIMD3(0, -6, 6), distance: 820) { camera, size in
+            ZStack {
+                MontageMarks(layout: layout, camera: camera, size: size, selected: selected, hovered: hovered)
+                ElectrodeButtons(layout: layout, camera: camera, size: size, selected: $selected, hovered: $hovered, onChoose: onChoose)
+            }
         }
         .frame(height: Self.stageHeight)
         .frame(maxWidth: .infinity)
@@ -92,9 +102,65 @@ struct MontageView: View {
     }
 }
 
-/// The electrode buttons on the head. Sorted back to front; a back-facing electrode is a
-/// faint dot without a label (still a VoiceOver button, so every electrode stays reachable).
-private struct ElectrodeOverlay: View {
+/// Study A4's marks: grid, notch, unused sites as tiny rings, the recording's electrodes as
+/// cups, and their labels on leader lines. Drawn back to front; decorative to VoiceOver
+/// (the buttons carry the electrodes).
+private struct MontageMarks: View {
+    let layout: MontageLayout
+    let camera: HeadCamera
+    let size: CGSize
+    let selected: String?
+    let hovered: String?
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        let style = HeadStyle(scheme: scheme, contrast: contrast, reduceTransparency: reduceTransparency)
+        let placedSites = Set(layout.placed.map(\.site.label))
+        let labels = Self.labels(layout: layout, camera: camera, size: size, selected: selected)
+        let texts = Dictionary(uniqueKeysWithValues: layout.placed.map { ($0.channelID, $0.label) })
+        Canvas { gc, size in
+            HeadDrawing.grid(&gc, camera: camera, size: size, style: style)
+            HeadDrawing.notch(&gc, camera: camera, size: size, style: style)
+            enum Mark { case site(SIMD3<Double>), cup(MontageLayout.Electrode, SIMD3<Double>) }
+            var marks: [(Double, Mark)] = StandardPositions.tenTen.filter { !placedSites.contains($0.label) }.map {
+                let p = HeadGeometry.surfacePoint($0); return (camera.depth(p), .site(p))
+            }
+            marks += layout.placed.map { e in let p = HeadGeometry.surfacePoint(e.site); return (camera.depth(p), .cup(e, p)) }
+            for (_, mark) in marks.sorted(by: { $0.0 > $1.0 }) {
+                switch mark {
+                case .site(let p): HeadDrawing.site(&gc, at: p, camera: camera, size: size, style: style)
+                case .cup(let e, let p):
+                    HeadDrawing.cup(&gc, at: p, camera: camera, size: size, style: style,
+                                    selected: selected == e.channelID, hovered: hovered == e.channelID, reference: e.isReference)
+                }
+            }
+            HeadDrawing.labels(&gc, labels, texts: texts, style: style)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    /// One label per placed electrode, pushed out from the head centre; back-facing ones dim
+    /// (hidden entirely when the dome is frosted).
+    static func labels(layout: MontageLayout, camera: HeadCamera, size: CGSize, selected: String?) -> [LabelLayout.Placed] {
+        let centre = camera.project(HeadGeometry.labelCentre, in: size) ?? CGPoint(x: size.width / 2, y: size.height / 2)
+        let items = layout.placed.compactMap { e -> LabelLayout.Item? in
+            let p = HeadGeometry.surfacePoint(e.site)
+            guard let q = camera.project(p + HeadGeometry.normal(at: p) * 1.2, in: size) else { return nil }
+            let strong = selected == e.channelID
+            return LabelLayout.Item(id: e.channelID, anchor: q, size: LabelMetrics.size(e.label, strong: strong),
+                                    strong: strong, dim: !camera.faces(p))
+        }
+        return LabelLayout.place(items, centre: centre, bounds: CGRect(origin: .zero, size: size))
+    }
+}
+
+/// One invisible button per placed electrode, on its projected point: the accessible,
+/// hoverable and clickable layer (the Canvas only draws). A back-facing electrode stays a
+/// VoiceOver button but takes no clicks.
+private struct ElectrodeButtons: View {
     let layout: MontageLayout
     let camera: HeadCamera
     let size: CGSize
@@ -103,82 +169,40 @@ private struct ElectrodeOverlay: View {
     let onChoose: () -> Void
 
     var body: some View {
-        let marks = layout.placed.compactMap { e -> (MontageLayout.Electrode, CGPoint, Double)? in
-            let p = HeadGeometry.surfacePoint(e.site)
-            guard let pt = camera.project(p, in: size) else { return nil }
-            return (e, pt, camera.facing(p))
-        }.sorted { $0.2 < $1.2 }
         ZStack {
-            ForEach(marks, id: \.0.id) { e, pt, facing in
-                ElectrodeButton(electrode: e, facing: facing,
-                                highlighted: selected == e.channelID || hovered == e.channelID,
-                                selected: selected == e.channelID) {
-                    selected = e.channelID
-                    onChoose()
-                } hover: { inside in
-                    if inside { hovered = e.channelID } else if hovered == e.channelID { hovered = nil }
+            ForEach(layout.placed) { e in
+                let p = HeadGeometry.surfacePoint(e.site)
+                if let pt = camera.project(p, in: size) {
+                    let front = camera.faces(p)
+                    Button {
+                        selected = e.channelID
+                        onChoose()
+                    } label: {
+                        Color.clear.frame(width: 20, height: 20).contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .allowsHitTesting(front)
+                    .onHover { inside in
+                        if inside { hovered = e.channelID } else if hovered == e.channelID { hovered = nil }
+                    }
+                    .help(e.isReference ? "\(e.label) (reference)" : e.label)
+                    .accessibilityLabel(e.label)
+                    .accessibilityValue(e.isReference ? "reference" : "")
+                    .accessibilityAddTraits(selected == e.channelID ? [.isSelected] : [])
+                    .accessibilityHint("Selects its row in the channel table")
+                    .position(pt)
                 }
-                .position(pt)
             }
         }
         .frame(width: size.width, height: size.height)
     }
 }
 
-private struct ElectrodeButton: View {
-    let electrode: MontageLayout.Electrode
-    let facing: Double
-    let highlighted: Bool
-    let selected: Bool
-    let action: () -> Void
-    let hover: (Bool) -> Void
-
-    var body: some View {
-        let front = facing > 0.12
-        Button(action: action) {
-            VStack(spacing: 1) {
-                ZStack {
-                    if electrode.isReference {
-                        ReferenceGlyph().frame(width: highlighted ? 22 : 18, height: highlighted ? 22 : 18)
-                    }
-                    Circle()
-                        .fill(highlighted ? Theme.accentFill : Theme.accentInk)
-                        .overlay(Circle().strokeBorder(Theme.surface1, lineWidth: 1.5))
-                        .frame(width: highlighted ? 14 : 10, height: highlighted ? 14 : 10)
-                }
-                .frame(width: 22, height: 22)
-                Text(electrode.label)
-                    .font(.system(size: 10, weight: highlighted ? .bold : .medium, design: .monospaced))
-                    .foregroundStyle(highlighted ? Theme.textPrimary : Theme.textSecondary)
-                    .padding(.horizontal, 3)
-                    .background(highlighted ? Theme.surface1 : .clear, in: Capsule())
-                    .fixedSize()
-                    .opacity(front ? 1 : 0)
-            }
-            // The tap target covers the dot and its label; the layout puts the dot at the point.
-            .offset(y: 7)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .opacity(front ? 0.4 + 0.6 * min(1, facing * 2) : 0.18)
-        .allowsHitTesting(front)
-        .onHover(perform: hover)
-        .help(electrode.isReference ? "\(electrode.label) (reference)" : electrode.label)
-        .accessibilityLabel(electrode.label)
-        .accessibilityValue(electrode.isReference ? "reference" : "")
-        .accessibilityAddTraits(selected ? [.isSelected] : [])
-        .accessibilityHint("Selects its row in the channel table")
-    }
-}
-
-/// The reference mark: a ring with a cross-hair, a shape and not a colour (decision #17).
+/// The reference mark in the caption: the same dashed ring the head draws around it.
 struct ReferenceGlyph: View {
     var body: some View {
-        ZStack {
-            Circle().strokeBorder(Theme.textPrimary, lineWidth: 1.5)
-            Rectangle().fill(Theme.textPrimary).frame(width: 1.5)
-            Rectangle().fill(Theme.textPrimary).frame(height: 1.5)
-        }
-        .accessibilityHidden(true)
+        Circle()
+            .strokeBorder(Theme.textPrimary, style: StrokeStyle(lineWidth: 1.4, dash: [3, 2.5]))
+            .accessibilityHidden(true)
     }
 }

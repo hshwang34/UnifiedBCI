@@ -74,11 +74,14 @@ enum IntroModel {
     static func orbit(for kind: IntroStep.Kind) -> Orbit {
         switch kind {
         case .whatItDoes: return Orbit.default
-        case .honestUncertainty: return Orbit(yaw: -120, pitch: 28)
+        case .honestUncertainty: return Orbit(yaw: -72, pitch: 16)
         case .tryExample: return Orbit.Preset.top.orbit
-        case .hardwarePhase2: return Orbit(yaw: 150, pitch: 20)
+        case .hardwarePhase2: return Orbit(yaw: 32, pitch: 8)
         }
     }
+
+    /// The example step labels its 16 sites, as the Recording screen does.
+    static func showsLabels(_ kind: IntroStep.Kind) -> Bool { kind == .tryExample }
 }
 
 // MARK: - Navigation

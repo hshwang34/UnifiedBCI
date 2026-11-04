@@ -74,7 +74,8 @@ struct IntroView: View {
 
     private var stage: some View {
         VStack(spacing: 0) {
-            HeadStage(orbit: IntroModel.orbit(for: kind)) { camera, size in
+            HeadStage(orbit: IntroModel.orbit(for: kind), distance: 820) { camera, size in
+                IntroMarks(camera: camera, size: size, lit: IntroModel.litLabels(for: kind), labelled: IntroModel.showsLabels(kind))
                 NeuralFieldLayer(camera: camera, size: size, lit: IntroModel.litLabels(for: kind),
                                  policy: policy, start: start, clock: clock)
             }
@@ -94,9 +95,11 @@ struct IntroView: View {
             HStack {
                 StepDots(count: IntroModel.steps.count, current: step)
                 Spacer()
-                Button("Skip") { perform(.skip) }
+                Button { perform(.skip) } label: {
+                    Text("Skip").font(.body).foregroundStyle(Theme.textSecondary).padding(.horizontal, 6).padding(.vertical, 3).contentShape(Rectangle())
+                }
                     .keyboardShortcut(.cancelAction)
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.plain)
                     .help("Skip the tour (Esc)")
                     .accessibilitySortPriority(3)
                     .accessibilityHint("Goes to the welcome screen")

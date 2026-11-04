@@ -3,11 +3,54 @@ import os
 import simd
 import SwiftUI
 
-/// The intro's "neural field" (brief 003, decision #14), drawn over the shared head: every
-/// 10-10 site as a faint dot, the step's sites lighting up in a wave from the vertex, and
-/// particles drifting between lit sites. One `TimelineView` + `Canvas`; every frame is a pure
-/// function of time (`NeuralField`), so a still frame (Reduce Motion) is one fixed time and
-/// the timeline is paused. Decorative: hidden from accessibility.
+/// The intro's still marks in the A4 look (decision #20), the same as the Recording
+/// screen's: grid, notch, unused sites as rings, and on the example step the recording's 16
+/// sites as cups with their labels. Redrawn only when the camera moves.
+struct IntroMarks: View {
+    let camera: HeadCamera
+    let size: CGSize
+    /// nil lights every site (drawn by the animated layer); otherwise these are cups.
+    let lit: Set<String>?
+    let labelled: Bool
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        let style = HeadStyle(scheme: scheme, contrast: contrast, reduceTransparency: reduceTransparency)
+        let cups = lit ?? []
+        let labels: [LabelLayout.Placed] = labelled ? {
+            let centre = camera.project(HeadGeometry.labelCentre, in: size) ?? CGPoint(x: size.width / 2, y: size.height / 2)
+            let items = StandardPositions.tenTen.filter { cups.contains($0.label) }.compactMap { site -> LabelLayout.Item? in
+                let p = HeadGeometry.surfacePoint(site)
+                guard let q = camera.project(p, in: size) else { return nil }
+                return LabelLayout.Item(id: site.label, anchor: q, size: LabelMetrics.size(site.label, strong: false), dim: !camera.faces(p))
+            }
+            return LabelLayout.place(items, centre: centre, bounds: CGRect(origin: .zero, size: size))
+        }() : []
+        Canvas { gc, size in
+            HeadDrawing.grid(&gc, camera: camera, size: size, style: style)
+            HeadDrawing.notch(&gc, camera: camera, size: size, style: style)
+            let sites = StandardPositions.tenTen.map { (label: $0.label, p: HeadGeometry.surfacePoint($0)) }
+                .sorted { camera.depth($0.p) > camera.depth($1.p) }
+            for s in sites {
+                if cups.contains(s.label) {
+                    HeadDrawing.cup(&gc, at: s.p, camera: camera, size: size, style: style)
+                } else {
+                    HeadDrawing.site(&gc, at: s.p, camera: camera, size: size, style: style)
+                }
+            }
+            HeadDrawing.labels(&gc, labels, texts: [:], style: style)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The intro's "neural field" (brief 003, decision #14), over `IntroMarks`: the step's sites
+/// glow in a wave from the vertex and particles drift between them. One `TimelineView` +
+/// `Canvas`; every frame is a pure function of time (`NeuralField`), so a still frame (Reduce
+/// Motion) is one fixed time and the timeline is paused. Decorative: hidden from accessibility.
 struct NeuralFieldLayer: View {
     let camera: HeadCamera
     let size: CGSize
@@ -36,33 +79,27 @@ struct NeuralFieldLayer: View {
     private func draw(_ gc: inout GraphicsContext, size: CGSize, t: Double) {
         let state = FrameClock.signposter.beginInterval("IntroDraw")
         defer { FrameClock.signposter.endInterval("IntroDraw", state) }
-        var points: [CGPoint?] = []
-        var facing: [Double] = []
-        points.reserveCapacity(Self.sites.count)
-        for s in Self.sites {
-            let f = camera.facing(s.point)
-            facing.append(f)
-            points.append(f > 0.05 ? camera.project(s.point, in: size) : nil)
-        }
-        // Faint grid of every site.
-        for (i, p) in points.enumerated() {
-            guard let p else { continue }
-            let r = 1.8
-            gc.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)),
-                    with: .color(Theme.textTertiary.opacity(0.55 * facing[i])))
-        }
         let litIndices = Self.sites.indices.filter { lit?.contains(Self.sites[$0].label) ?? true }
-        // Lit sites: a halo that swells with the wave, and a solid core.
+        guard !litIndices.isEmpty else { return }
+        var points: [Int: CGPoint] = [:]
+        for i in litIndices where camera.faces(Self.sites[i].point) {
+            points[i] = camera.project(Self.sites[i].point, in: size)
+        }
+        // Lit sites: a halo that swells with the wave; when every site is lit, an accent core
+        // too (the still layer draws cups only for a named set).
         for i in litIndices {
             guard let p = points[i] else { continue }
-            let g = NeuralField.glow(distance: simd_distance(Self.sites[i].point, Self.vertex), at: t)
-            let halo = 3 + 9 * g
+            let f = camera.facing(Self.sites[i].point)
+            let g = NeuralField.glow(distance: simd_distance(Self.sites[i].point, Self.vertex) / 1000, at: t)
+            let halo = 4 + 9 * g
             gc.fill(Path(ellipseIn: CGRect(x: p.x - halo, y: p.y - halo, width: 2 * halo, height: 2 * halo)),
-                    with: .radialGradient(Gradient(colors: [Theme.aurora.opacity(0.55 * g * facing[i]), Theme.aurora.opacity(0)]),
+                    with: .radialGradient(Gradient(colors: [Theme.aurora.opacity(0.6 * g * f), Theme.aurora.opacity(0)]),
                                           center: p, startRadius: 0, endRadius: halo))
-            let r = 2.6 + 0.8 * g
-            gc.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)),
-                    with: .color(Theme.accentInk.opacity(0.5 + 0.5 * facing[i])))
+            if lit == nil {
+                let r = 1.8 + 1.2 * g
+                gc.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)),
+                        with: .color(Theme.accentInk.opacity(0.45 + 0.55 * f)))
+            }
         }
         // Particles between lit sites; a trip is drawn only while both ends face the camera.
         for particle in NeuralField.particles(at: t, count: policy.particleCount, nodes: litIndices.count) {

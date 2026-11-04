@@ -49,20 +49,28 @@ final class MontageTests: XCTestCase {
         XCTAssertGreaterThan(p("Fpz").y, p("Oz").y)
     }
 
-    func testGeometry_sitesSitOnTheSkullAndFaceOutward() {
+    func testGeometry_sitesSitOnTheDomeAndFaceOutward() {
         for site in StandardPositions.tenTen {
             let s = HeadGeometry.surfacePoint(site)
-            let a = HeadGeometry.sceneRadii
-            XCTAssertEqual(simd_length_squared(s / a), 1, accuracy: 1e-9, site.label)
-            // Moving onto the fitted surface shifts a site by under 6 mm (the fit's residual).
-            XCTAssertLessThan(simd_distance(s, HeadGeometry.scene(site.position)), 0.0065, site.label)
-            XCTAssertGreaterThan(simd_dot(HeadGeometry.normal(at: s), s), 0, site.label)
+            XCTAssertEqual(simd_length_squared((s - HeadGeometry.centre) / HeadGeometry.radii), 1, accuracy: 1e-9, site.label)
+            // Moving onto the fitted surface shifts a site by under 6.5 mm (the fit's residual).
+            XCTAssertLessThan(simd_distance(s, site.position), 6.5, site.label)
+            XCTAssertGreaterThan(simd_dot(HeadGeometry.normal(at: s), s - HeadGeometry.centre), 0, site.label)
         }
-        // The scene frame keeps handedness: subject's right stays +x, nose is −z, up is +y.
-        let cz = HeadGeometry.surfacePoint(StandardPositions.byLabel["Cz"]!)
-        XCTAssertGreaterThan(cz.y, 0.09)
-        XCTAssertLessThan(HeadGeometry.scene(StandardPositions.byLabel["Fpz"]!.position).z, 0)
-        XCTAssertGreaterThan(HeadGeometry.scene(StandardPositions.byLabel["C4"]!.position).x, 0)
+    }
+
+    func testGeometry_gridAndNotch() {
+        // 10 rows (Fp…I with FT/T/TP folded in) and the z + numbered columns; every point on the dome.
+        XCTAssertGreaterThanOrEqual(HeadGeometry.gridLines.count, 20)
+        for line in HeadGeometry.gridLines {
+            XCTAssertGreaterThan(line.count, 8)
+            for p in line {
+                XCTAssertEqual(simd_length_squared((p - HeadGeometry.centre) / HeadGeometry.radii), 1, accuracy: 1e-9)
+            }
+        }
+        // The notch is at the front (+y), on the midline.
+        XCTAssertGreaterThan(HeadGeometry.notchBase.y, 80)
+        XCTAssertEqual(HeadGeometry.notchTip.x, 0.8, accuracy: 1)
     }
 
     // MARK: Recognizer (B1)
@@ -259,21 +267,23 @@ final class MontageTests: XCTestCase {
     // MARK: Orbit and camera (criterion 17)
 
     func testPresets() {
+        // The study's conventions (003-glass-studies.html PRESETS).
         XCTAssertEqual(Orbit.Preset.allCases.map(\.title), ["Top", "Left", "Right", "Front", "Reset"])
-        XCTAssertEqual(Orbit.Preset.top.orbit, Orbit(yaw: 0, pitch: 90))
-        XCTAssertEqual(Orbit.Preset.front.orbit, Orbit(yaw: 180, pitch: 0))
-        XCTAssertEqual(Orbit.Preset.reset.orbit, Orbit.default)
+        XCTAssertEqual(Orbit.Preset.top.orbit, Orbit(yaw: 180, pitch: 89))
+        XCTAssertEqual(Orbit.Preset.left.orbit, Orbit(yaw: -90, pitch: 6))
+        XCTAssertEqual(Orbit.Preset.right.orbit, Orbit(yaw: 90, pitch: 6))
+        XCTAssertEqual(Orbit.Preset.front.orbit, Orbit(yaw: 0, pitch: 6))
+        XCTAssertEqual(Orbit.Preset.reset.orbit, Orbit(yaw: -38, pitch: 26))
+        XCTAssertEqual(Orbit.default, Orbit.Preset.reset.orbit)
         XCTAssertTrue(Orbit.Preset.allCases.allSatisfy { !$0.accessibilityLabel.isEmpty })
         XCTAssertEqual(Orbit.transitionDuration(reduceMotion: true), 0)
         XCTAssertGreaterThan(Orbit.transitionDuration(reduceMotion: false), 0)
     }
 
     func testDrag_wrapsYawAndClampsPitch() {
-        let o = Orbit(yaw: 170, pitch: 80)
-        let dragged = o.dragged(by: CGSize(width: -100, height: 100))
-        XCTAssertEqual(dragged.pitch, 90)
-        XCTAssertTrue((-180...180).contains(dragged.yaw))
-        XCTAssertEqual(dragged.yaw, Orbit.wrap(170 + 45), accuracy: 1e-9)
+        let dragged = Orbit(yaw: 170, pitch: 80).dragged(by: CGSize(width: -100, height: 100))
+        XCTAssertEqual(dragged.pitch, 89)
+        XCTAssertEqual(dragged.yaw, -145, accuracy: 1e-9)
         XCTAssertEqual(Orbit(yaw: 0, pitch: -10).dragged(by: CGSize(width: 0, height: -500)).pitch, Orbit.pitchRange.lowerBound)
         XCTAssertEqual(Orbit.wrap(540), 180)
         XCTAssertEqual(Orbit.wrap(-180), 180)
@@ -303,5 +313,43 @@ final class MontageTests: XCTestCase {
         let left = HeadCamera(orbit: Orbit.Preset.left.orbit)
         XCTAssertTrue(left.faces(site("T7")))
         XCTAssertFalse(left.faces(site("T8")))
+    }
+
+    // MARK: Labels (decision #20: leader lines that don't overlap)
+
+    /// The example's 16 labels, laid out in every preset at the Recording stage's size.
+    func testLabels_exampleNeverOverlapsInAnyPreset() {
+        let l = layout(Self.exampleMontage, Self.exampleLabels)
+        for width in [520.0, 700.0] {
+            let size = CGSize(width: width, height: 340)
+            for preset in Orbit.Preset.allCases {
+                let camera = HeadCamera(orbit: preset.orbit)
+                let centre = camera.project(HeadGeometry.labelCentre, in: size)!
+                let items = l.placed.map { e -> LabelLayout.Item in
+                    let p = HeadGeometry.surfacePoint(e.site)
+                    return LabelLayout.Item(id: e.channelID, anchor: camera.project(p, in: size)!,
+                                            size: LabelMetrics.size(e.label, strong: false), dim: !camera.faces(p))
+                }
+                let placed = LabelLayout.place(items, centre: centre)
+                XCTAssertEqual(placed.count, 16)
+                XCTAssertEqual(LabelLayout.overlaps(placed), 0, "\(preset) at \(width)")
+            }
+        }
+    }
+
+    func testLabels_pushedOutwardFromCentre() {
+        let centre = CGPoint(x: 100, y: 100)
+        let placed = LabelLayout.place([LabelLayout.Item(id: "a", anchor: CGPoint(x: 150, y: 100), size: CGSize(width: 30, height: 17))], centre: centre)
+        XCTAssertGreaterThan(placed[0].frame.midX, 150)
+        XCTAssertEqual(placed[0].frame.midY, 100, accuracy: 0.5)
+    }
+
+    func testDisc_projectsAPolygonOnTheDome() throws {
+        let camera = HeadCamera(orbit: .default)
+        let cz = HeadGeometry.surfacePoint(StandardPositions.byLabel["Cz"]!)
+        let disc = try XCTUnwrap(camera.disc(at: cz, radius: 5.8, in: CGSize(width: 600, height: 340)))
+        XCTAssertEqual(disc.count, 22)
+        let centre = try XCTUnwrap(camera.project(cz, in: CGSize(width: 600, height: 340)))
+        for p in disc { XCTAssertLessThan(hypot(p.x - centre.x, p.y - centre.y), 20) }
     }
 }
