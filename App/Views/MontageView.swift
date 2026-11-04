@@ -30,10 +30,18 @@ struct MontageView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
-            HStack {
-                Text("Montage").font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
-                Spacer()
-                presetButtons
+            // The view buttons sit beside the title when they fit, below it otherwise (a
+            // narrow detail column truncated "Reset").
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text("Montage").font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
+                    Spacer(minLength: Theme.Space.m)
+                    presetButtons.fixedSize()
+                }
+                VStack(alignment: .leading, spacing: Theme.Space.s) {
+                    Text("Montage").font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
+                    presetButtons.fixedSize()
+                }
             }
             stage
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
