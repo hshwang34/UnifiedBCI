@@ -90,6 +90,7 @@ private struct HeadGlassView: View {
                 .float3(Float(r.x), Float(r.y), Float(r.z)),
                 .float3(Float(u.x), Float(u.y), Float(u.z)),
                 .float(Float(camera.focal)),
+                // Glow = accent, as in study A4 (only the point-field study A3 glowed aurora).
                 .color(style.ink), .color(style.accent), .color(style.accent), .color(style.cap),
                 .float(style.solid ? 1 : 0), .float(style.increasedContrast ? 1 : 0)))
             .frame(width: size.width, height: size.height)
