@@ -15,11 +15,15 @@ struct WelcomeView: View {
 
     var body: some View {
         // Brief 003: the intro is a mode of this fixed-size window, so `.contentSize` never jumps.
+        // The welcome screen stays built underneath the intro (hidden, disabled), so ending the
+        // intro is only a fade: building the list and cards mid-transition cost a dropped frame.
         ZStack {
+            welcome
+                .opacity(workspace.welcomeFlow.isIntro ? 0 : 1)
+                .disabled(workspace.welcomeFlow.isIntro)
+                .accessibilityHidden(workspace.welcomeFlow.isIntro)
             if workspace.welcomeFlow.isIntro {
                 IntroView().transition(.opacity)
-            } else {
-                welcome.transition(.opacity)
             }
         }
         .frame(width: 760, height: 460)
@@ -29,6 +33,7 @@ struct WelcomeView: View {
             workspace.refreshRecents()
             presentIntroIfFirstRun()
         }
+        .onChange(of: workspace.welcomeFlow.isIntro) { _, isIntro in if !isIntro { takeFocusAfterIntro() } }
         .task { await LaunchArguments.runOnce(workspace) }
     }
 
@@ -98,7 +103,6 @@ struct WelcomeView: View {
         .padding(.bottom, Theme.Space.xl)
         .frame(width: 760, height: 460)
         .background { AmbientBackdrop() }
-        .onAppear { takeFocusAfterIntro() }
     }
 
     private var recentList: some View {

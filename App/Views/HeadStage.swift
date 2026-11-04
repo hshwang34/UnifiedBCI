@@ -209,3 +209,17 @@ enum LabelMetrics {
         return s
     }
 }
+
+/// Compiles the head shader and measures the example's label plates at launch, before the
+/// Welcome window's first frame, so the intro's first frames and the step-3 labels don't
+/// stall on first use (brief 003, 60 fps criterion).
+@MainActor
+enum HeadGlassWarmUp {
+    static func start() {
+        for label in IntroModel.exampleLabels { _ = LabelMetrics.size(label, strong: false); _ = LabelMetrics.size(label, strong: true) }
+        _ = HeadGeometry.gridLines
+        let shader = ShaderLibrary.headGlass(.float2(1, 1), .float3(0, 0, 1), .float3(0, 0, -1), .float3(1, 0, 0), .float3(0, 1, 0),
+                                             .float(1), .color(.white), .color(.white), .color(.white), .color(.white), .float(0), .float(0))
+        Task { try? await shader.compile(as: .colorEffect) }
+    }
+}

@@ -62,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         LaunchArguments.applyAppearance()
+        HeadGlassWarmUp.start()
     }
 
     /// Closing the last project window leaves the app running; Welcome stays reachable.

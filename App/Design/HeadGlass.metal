@@ -126,13 +126,20 @@ float4 frostedDome(float3 ro, float3 rd, Cam cam, float3 ink, float3 accent, flo
 
 // Only the rim glow of the blended head, fading out below the neck and under the dome's cut.
 float4 ghost(float3 ro, float3 rd, float3 ink, float contrast) {
-    float t = max(0.0, length(ro - float3(0.0, -10.0, -60.0)) - 330.0);
+    // March only inside a bounding sphere round the head (everything visible fades out
+    // below z = -240, well inside it): background rays return at once instead of marching
+    // to t = 1700, which kept transitions (the camera moving every frame) under budget.
+    float3 oc = ro - float3(0.0, -10.0, -60.0);
+    float bb = dot(oc, rd), cc = dot(oc, oc) - 300.0 * 300.0, hh = bb * bb - cc;
+    if (hh < 0.0) return float4(0.0);
+    hh = sqrt(hh);
+    float t = max(0.0, -bb - hh), tEnd = -bb + hh;
     bool hit = false;
     for (int i = 0; i < 200; i++) {
         float d = headSDF(ro + rd * t);
         if (d < 0.25) { hit = true; break; }
         t += d * 0.85;
-        if (t > 1700.0) break;
+        if (t > tEnd) break;
     }
     if (!hit) return float4(0.0);
     float3 p = ro + rd * t, n = headN(p);
