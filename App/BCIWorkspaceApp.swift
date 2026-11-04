@@ -150,7 +150,7 @@ struct WorkspaceCommands: Commands {
         }
         // Brief 003: the app has no help book, so the Help item is the tour.
         CommandGroup(replacing: .help) {
-            Button("Show Welcome Tour") { workspace.showWelcomeTour() }
+            Button("Show Welcome Tour") { workspace.showWelcomeTour(open: openWindow) }
         }
         #if DEBUG
         CommandMenu("Debug") {

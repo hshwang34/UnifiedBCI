@@ -36,14 +36,46 @@ final class IntroTests: XCTestCase {
         XCTAssertTrue(FirstRun(defaults: defaults).shouldPresent())
     }
 
-    func testReplay_neverTouchesTheFlagOrProjects() {
+    func testPresentIfNeeded_setsTheFlagOnPresentationAndNeverTwice() {
         let firstRun = FirstRun(defaults: defaults)
-        firstRun.markPresented()
+        var flow = WelcomeFlow()
+        XCTAssertTrue(firstRun.presentIfNeeded(flow: &flow))
+        XCTAssertEqual(flow.mode, .intro(step: 0))
+        XCTAssertTrue(defaults.bool(forKey: FirstRun.key), "set the moment it is presented, not when it ends")
+        // A later launch (a fresh flow) does not present again.
+        var next = WelcomeFlow()
+        XCTAssertFalse(FirstRun(defaults: defaults).presentIfNeeded(flow: &next))
+        XCTAssertEqual(next.mode, .welcome)
+        // Debug: a step or a reset forces it.
+        XCTAssertTrue(firstRun.presentIfNeeded(flow: &next, introStep: 2))
+        XCTAssertEqual(next.mode, .intro(step: 2))
+        var reset = WelcomeFlow()
+        XCTAssertTrue(firstRun.presentIfNeeded(flow: &reset, reset: true))
+    }
+
+    func testWorkspaceGate_decidesOncePerLaunch() {
         let workspace = Workspace(recents: InMemoryRecentDocuments(), launch: nil)
+        XCTAssertTrue(workspace.presentIntroIfFirstRun(FirstRun(defaults: defaults)))
+        workspace.welcomeFlow.apply(.skip)
+        // The Welcome window reopening asks again: no second intro, even with a reset.
+        XCTAssertFalse(workspace.presentIntroIfFirstRun(FirstRun(defaults: defaults), reset: true))
+        XCTAssertEqual(workspace.welcomeFlow.mode, .welcome)
+    }
+
+    func testReplay_restartsAtStepZeroAndKeepsTheFlag() {
+        let workspace = Workspace(recents: InMemoryRecentDocuments(), launch: nil)
+        workspace.presentIntroIfFirstRun(FirstRun(defaults: defaults))
+        workspace.welcomeFlow.apply(.next); workspace.welcomeFlow.apply(.next)
+        let generation = workspace.welcomeFlow.generation
+        // Help > Show Welcome Tour, mid-intro (E4) and after it (E5).
         workspace.showWelcomeTour()
         XCTAssertEqual(workspace.welcomeFlow.mode, .intro(step: 0))
-        XCTAssertTrue(workspace.sessions.isEmpty)
-        XCTAssertTrue(defaults.bool(forKey: FirstRun.key), "E5: replay never clears the flag")
+        XCTAssertEqual(workspace.welcomeFlow.generation, generation + 1)
+        workspace.welcomeFlow.apply(.skip)
+        workspace.showWelcomeTour()
+        XCTAssertEqual(workspace.welcomeFlow.mode, .intro(step: 0))
+        XCTAssertTrue(workspace.sessions.isEmpty, "a replay opens no project")
+        XCTAssertFalse(FirstRun(defaults: defaults).shouldPresent(), "a replay never clears the flag")
     }
 
     // MARK: Criterion 2 — four steps
@@ -86,11 +118,22 @@ final class IntroTests: XCTestCase {
 
     // MARK: Criteria 3, 4 — navigation and keys
 
-    func testKeys() {
-        XCTAssertEqual(WelcomeFlow.command(for: .leftArrow), .back)
-        XCTAssertEqual(WelcomeFlow.command(for: .rightArrow), .next)
-        XCTAssertEqual(WelcomeFlow.command(for: .returnKey), .next)
-        XCTAssertEqual(WelcomeFlow.command(for: .escape), .skip)
+    /// What the views actually wire: the intro's onKeyPress keys, Skip's command (Esc), the
+    /// welcome card's activation keys, and first-press-only phases for all of them.
+    func testKeys_asWired() {
+        XCTAssertEqual(IntroKeys.introKeys.map(IntroKeys.command(for:)), [.back, .next, .next])
+        XCTAssertEqual(IntroKeys.skipCommand, .skip)
+        XCTAssertNil(IntroKeys.command(for: .space), "space is not an intro key")
+        XCTAssertEqual(IntroKeys.activateKeys, [.return, .space])
+        // A held key never repeats: no running past the last step, and a held Return on
+        // "Get Started" can't then open the Explore panel.
+        XCTAssertEqual(IntroKeys.phases, .down)
+        XCTAssertFalse(IntroKeys.phases.contains(.repeat))
+        var flow = WelcomeFlow()
+        flow.start(at: 3)
+        flow.apply(IntroKeys.command(for: .return)!)
+        XCTAssertEqual(flow.mode, .welcome)
+        XCTAssertEqual(flow.focus, .exploreExample)
     }
 
     func testNext_fourTimesEndsOnWelcomeWithExploreFocused() {

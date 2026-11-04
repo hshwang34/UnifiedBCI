@@ -10,9 +10,6 @@ struct WelcomeView: View {
     @FocusState private var focus: WelcomeFlow.Focus?
     @AccessibilityFocusState private var voiceOverFocus: WelcomeFlow.Focus?
 
-    /// Checked once per app run: closing and reopening the window never restarts the intro.
-    private static var checkedFirstRun = false
-
     var body: some View {
         // Brief 003: the intro is a mode of this fixed-size window, so `.contentSize` never jumps.
         // The welcome screen stays built underneath the intro (hidden, disabled), so ending the
@@ -37,19 +34,11 @@ struct WelcomeView: View {
         .task { await LaunchArguments.runOnce(workspace) }
     }
 
-    /// Lead default 6: the flag is set the moment the intro is first presented.
+    /// Lead default 6: the flag is set the moment the intro is first presented (Workspace
+    /// makes the decision once per launch).
     private func presentIntroIfFirstRun() {
-        guard !Self.checkedFirstRun else { return }
-        Self.checkedFirstRun = true
-        let firstRun = FirstRun(defaults: .standard)
-        if let step = LaunchArguments.introStep {
-            workspace.welcomeFlow.start(at: step)
-        } else if firstRun.shouldPresent(reset: LaunchArguments.resetFirstRun) {
-            workspace.welcomeFlow.start(at: 0)
-        } else {
-            return
-        }
-        firstRun.markPresented()
+        workspace.presentIntroIfFirstRun(FirstRun(defaults: .standard), reset: LaunchArguments.resetFirstRun,
+                                         introStep: LaunchArguments.introStep)
     }
 
     /// After the intro: "Explore an example" takes keyboard and VoiceOver focus.
@@ -86,7 +75,7 @@ struct WelcomeView: View {
                                     .focusable()
                                     .focused($focus, equals: .exploreExample)
                                     .accessibilityFocused($voiceOverFocus, equals: .exploreExample)
-                                    .onKeyPress(keys: [.return, .space]) { _ in perform(action.kind); return .handled }
+                                    .onKeyPress(keys: Set(IntroKeys.activateKeys), phases: IntroKeys.phases) { _ in perform(action.kind); return .handled }
                             } else {
                                 WelcomeActionCard(action: action) { perform(action.kind) }
                             }

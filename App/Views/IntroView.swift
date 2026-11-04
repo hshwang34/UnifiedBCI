@@ -43,16 +43,17 @@ struct IntroView: View {
         .focusable()
         .focused($focused)
         .focusEffectDisabled()
-        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
-            perform(WelcomeFlow.command(for: press.key == .leftArrow ? .leftArrow : .rightArrow))
+        // First presses only (IntroKeys.phases): a held key never repeats a step.
+        .onKeyPress(keys: Set(IntroKeys.introKeys), phases: IntroKeys.phases) { press in
+            guard let command = IntroKeys.command(for: press.key) else { return .ignored }
+            perform(command)
             return .handled
         }
-        .onAppear {
-            focused = true
-            announce()
-        }
+        .onAppear { focused = true }
         .onChange(of: workspace.welcomeFlow.generation) { start = Date() }
-        .onChange(of: step) { announce() }
+        // One announcement path for VoiceOver: each (replay, step) is announced once,
+        // including the first. The panel itself is not focused programmatically.
+        .onChange(of: workspace.welcomeFlow.generation * 100 + step, initial: true) { announce() }
         .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
             lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
         }
@@ -95,7 +96,7 @@ struct IntroView: View {
             HStack {
                 StepDots(count: IntroModel.steps.count, current: step)
                 Spacer()
-                Button { perform(.skip) } label: {
+                Button { perform(IntroKeys.skipCommand) } label: {
                     Text("Skip").font(.body).foregroundStyle(Theme.textSecondary).padding(.horizontal, 6).padding(.vertical, 3).contentShape(Rectangle())
                 }
                     .keyboardShortcut(.cancelAction)
@@ -118,8 +119,9 @@ struct IntroView: View {
                     .controlSize(.large)
                     .accessibilitySortPriority(1)
                 Spacer()
+                // Return goes through onKeyPress (first press only), not a .defaultAction
+                // shortcut, whose key equivalent fires again on auto-repeat.
                 Button { perform(.next) } label: { Text(IntroModel.nextTitle(at: step)).frame(minWidth: 84) }
-                    .keyboardShortcut(.defaultAction)
                     .appProminentButton()
                     .accessibilitySortPriority(1)
             }

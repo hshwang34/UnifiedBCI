@@ -146,6 +146,21 @@ struct FirstRun {
     func shouldPresent(reset: Bool = false) -> Bool { reset || !defaults.bool(forKey: Self.key) }
 
     func markPresented() { defaults.set(true, forKey: Self.key) }
+
+    /// Starts the intro in `flow` if this is a first run (or Debug asks for a step or a
+    /// reset), and sets the flag in the same moment. Returns whether it presented.
+    @discardableResult
+    func presentIfNeeded(flow: inout WelcomeFlow, reset: Bool = false, introStep: Int? = nil) -> Bool {
+        if let introStep {
+            flow.start(at: introStep)
+        } else if shouldPresent(reset: reset) {
+            flow.start(at: 0)
+        } else {
+            return false
+        }
+        markPresented()
+        return true
+    }
 }
 
 // MARK: - Motion policy
