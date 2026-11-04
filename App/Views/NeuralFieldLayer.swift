@@ -12,22 +12,39 @@ struct IntroMarks: View {
     /// nil lights every site (drawn by the animated layer); otherwise these are cups.
     let lit: Set<String>?
     let labelled: Bool
+    /// The step's own view. Labels are laid out only once the camera has arrived there, and
+    /// cached: during the morph between steps they are hidden rather than re-laid out on
+    /// every frame.
+    let resting: Orbit
     @Environment(\.colorScheme) private var scheme
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
+    private static var cache: (key: String, labels: [LabelLayout.Placed])?
+
+    private var atRest: Bool { abs(camera.orbit.yaw - resting.yaw) < 0.01 && abs(camera.orbit.pitch - resting.pitch) < 0.01 }
+
+    private func labels(cups: Set<String>) -> [LabelLayout.Placed] {
+        guard labelled, atRest else { return [] }
+        let key = "\(cups.sorted())|\(resting.yaw)|\(resting.pitch)|\(size.width)x\(size.height)"
+        if let hit = Self.cache, hit.key == key { return hit.labels }
+        let centre = camera.project(HeadGeometry.labelCentre, in: size) ?? CGPoint(x: size.width / 2, y: size.height / 2)
+        var obstacles: [CGRect] = []
+        let items = StandardPositions.tenTen.filter { cups.contains($0.label) }.compactMap { site -> LabelLayout.Item? in
+            let p = HeadGeometry.surfacePoint(site)
+            guard let q = camera.project(p, in: size) else { return nil }
+            if camera.faces(p) { obstacles.append(LabelLayout.cupBox(at: q)) }
+            return LabelLayout.Item(id: site.label, anchor: q, size: LabelMetrics.size(site.label, strong: false), dim: !camera.faces(p))
+        }
+        let placed = LabelLayout.place(items, centre: centre, bounds: CGRect(origin: .zero, size: size), obstacles: obstacles)
+        Self.cache = (key, placed)
+        return placed
+    }
+
     var body: some View {
         let style = HeadStyle(scheme: scheme, contrast: contrast, reduceTransparency: reduceTransparency)
         let cups = lit ?? []
-        let labels: [LabelLayout.Placed] = labelled ? {
-            let centre = camera.project(HeadGeometry.labelCentre, in: size) ?? CGPoint(x: size.width / 2, y: size.height / 2)
-            let items = StandardPositions.tenTen.filter { cups.contains($0.label) }.compactMap { site -> LabelLayout.Item? in
-                let p = HeadGeometry.surfacePoint(site)
-                guard let q = camera.project(p, in: size) else { return nil }
-                return LabelLayout.Item(id: site.label, anchor: q, size: LabelMetrics.size(site.label, strong: false), dim: !camera.faces(p))
-            }
-            return LabelLayout.place(items, centre: centre, bounds: CGRect(origin: .zero, size: size))
-        }() : []
+        let labels = labels(cups: cups)
         Canvas { gc, size in
             HeadDrawing.grid(&gc, camera: camera, size: size, style: style)
             HeadDrawing.notch(&gc, camera: camera, size: size, style: style)
@@ -54,21 +71,40 @@ struct IntroMarks: View {
 struct NeuralFieldLayer: View {
     let camera: HeadCamera
     let size: CGSize
-    /// nil lights every site.
-    let lit: Set<String>?
     let policy: MotionPolicy
     let start: Date
     let clock: FrameClock
+    /// The lit sites, worked out once per camera position rather than on every frame:
+    /// indices into the table, their projected points (front-facing only), facing and the
+    /// distance from the vertex that drives the glow wave.
+    private let lit: [(point: CGPoint?, facing: Double, fromVertex: Double)]
+    private let allLit: Bool
 
     private static let sites = StandardPositions.tenTen.map { (label: $0.label, point: HeadGeometry.surfacePoint($0)) }
     private static let vertex = HeadGeometry.surfacePoint(StandardPositions.byLabel["Cz"]!)
 
+    /// `lit` nil lights every site.
+    init(camera: HeadCamera, size: CGSize, lit: Set<String>?, policy: MotionPolicy, start: Date, clock: FrameClock) {
+        self.camera = camera
+        self.size = size
+        self.policy = policy
+        self.start = start
+        self.clock = clock
+        allLit = lit == nil
+        self.lit = Self.sites.filter { lit?.contains($0.label) ?? true }.map { s in
+            (point: camera.faces(s.point) ? camera.project(s.point, in: size) : nil,
+             facing: camera.facing(s.point),
+             fromVertex: simd_distance(s.point, Self.vertex) / 1000)
+        }
+    }
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: nil, paused: policy.timelinePaused)) { context in
+        // Nothing lit (the hardware step) means nothing moves: the timeline stops too.
+        TimelineView(.animation(minimumInterval: nil, paused: policy.timelinePaused || lit.isEmpty)) { context in
             let t = policy.animates ? context.date.timeIntervalSince(start) : MotionPolicy.stillTime
-            let _ = policy.animates ? clock.tick(context.date) : clock.pause()
-            Canvas { gc, canvasSize in
-                draw(&gc, size: canvasSize, t: t)
+            let _ = policy.animates && !lit.isEmpty ? clock.tick(context.date) : clock.pause()
+            Canvas { gc, _ in
+                draw(&gc, t: t)
             }
         }
         .frame(width: size.width, height: size.height)
@@ -76,34 +112,28 @@ struct NeuralFieldLayer: View {
         .accessibilityHidden(true)
     }
 
-    private func draw(_ gc: inout GraphicsContext, size: CGSize, t: Double) {
+    private func draw(_ gc: inout GraphicsContext, t: Double) {
         let state = FrameClock.signposter.beginInterval("IntroDraw")
         defer { FrameClock.signposter.endInterval("IntroDraw", state) }
-        let litIndices = Self.sites.indices.filter { lit?.contains(Self.sites[$0].label) ?? true }
-        guard !litIndices.isEmpty else { return }
-        var points: [Int: CGPoint] = [:]
-        for i in litIndices where camera.faces(Self.sites[i].point) {
-            points[i] = camera.project(Self.sites[i].point, in: size)
-        }
+        guard !lit.isEmpty else { return }
         // Lit sites: a halo that swells with the wave; when every site is lit, an accent core
         // too (the still layer draws cups only for a named set).
-        for i in litIndices {
-            guard let p = points[i] else { continue }
-            let f = camera.facing(Self.sites[i].point)
-            let g = NeuralField.glow(distance: simd_distance(Self.sites[i].point, Self.vertex) / 1000, at: t)
+        for site in lit {
+            guard let p = site.point else { continue }
+            let g = NeuralField.glow(distance: site.fromVertex, at: t)
             let halo = 4 + 9 * g
             gc.fill(Path(ellipseIn: CGRect(x: p.x - halo, y: p.y - halo, width: 2 * halo, height: 2 * halo)),
-                    with: .radialGradient(Gradient(colors: [Theme.aurora.opacity(0.6 * g * f), Theme.aurora.opacity(0)]),
+                    with: .radialGradient(Gradient(colors: [Theme.aurora.opacity(0.6 * g * site.facing), Theme.aurora.opacity(0)]),
                                           center: p, startRadius: 0, endRadius: halo))
-            if lit == nil {
+            if allLit {
                 let r = 1.8 + 1.2 * g
                 gc.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)),
-                        with: .color(Theme.accentInk.opacity(0.45 + 0.55 * f)))
+                        with: .color(Theme.accentInk.opacity(0.45 + 0.55 * site.facing)))
             }
         }
         // Particles between lit sites; a trip is drawn only while both ends face the camera.
-        for particle in NeuralField.particles(at: t, count: policy.particleCount, nodes: litIndices.count) {
-            guard let a = points[litIndices[particle.from]], let b = points[litIndices[particle.to]] else { continue }
+        for particle in NeuralField.particles(at: t, count: policy.particleCount, nodes: lit.count) {
+            guard let a = lit[particle.from].point, let b = lit[particle.to].point else { continue }
             let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
             let dx = b.x - a.x, dy = b.y - a.y
             let control = CGPoint(x: mid.x - dy * 0.3 * particle.bow, y: mid.y + dx * 0.3 * particle.bow)

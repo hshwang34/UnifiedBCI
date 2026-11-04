@@ -76,7 +76,8 @@ struct IntroView: View {
     private var stage: some View {
         VStack(spacing: 0) {
             HeadStage(orbit: IntroModel.orbit(for: kind), distance: 820) { camera, size in
-                IntroMarks(camera: camera, size: size, lit: IntroModel.litLabels(for: kind), labelled: IntroModel.showsLabels(kind))
+                IntroMarks(camera: camera, size: size, lit: IntroModel.litLabels(for: kind), labelled: IntroModel.showsLabels(kind),
+                           resting: IntroModel.orbit(for: kind))
                 NeuralFieldLayer(camera: camera, size: size, lit: IntroModel.litLabels(for: kind),
                                  policy: policy, start: start, clock: clock)
             }
