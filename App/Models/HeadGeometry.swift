@@ -216,13 +216,14 @@ enum LabelLayout {
         let lineEnd: CGPoint
     }
 
-    static let distances: [Double] = [20, 30, 42, 56, 72, 90, 110]
-    static let angles: [Double] = [0, 0.26, -0.26, 0.52, -0.52, 0.8, -0.8]
+    static let distances: [Double] = [20, 30, 42, 56, 72, 90, 110, 130, 150]
+    static let angles: [Double] = [0, 0.26, -0.26, 0.52, -0.52, 0.8, -0.8, 1.1, -1.1]
     static let gap: CGFloat = 2
 
     /// `bounds`, when given, keeps every box inside it (inset 4 pt), so labels never clip at
     /// the stage edge.
-    static func place(_ items: [Item], centre: CGPoint, bounds: CGRect? = nil) -> [Placed] {
+    /// `obstacles` (e.g. the front-facing electrodes) are avoided like placed labels.
+    static func place(_ items: [Item], centre: CGPoint, bounds: CGRect? = nil, obstacles: [CGRect] = []) -> [Placed] {
         let inner = bounds?.insetBy(dx: 4, dy: 4)
         let order = items.sorted { ($0.dim ? 1 : 0, $0.strong ? 0 : 1, $0.id) < ($1.dim ? 1 : 0, $1.strong ? 0 : 1, $1.id) }
         var placed: [Placed] = []
@@ -241,6 +242,7 @@ enum LabelLayout {
                         box.origin.y = min(max(box.minY, inner.minY), inner.maxY - box.height)
                     }
                     let hits = placed.filter { $0.frame.insetBy(dx: -gap, dy: -gap).intersects(box) }.count
+                        + obstacles.filter { $0.intersects(box) }.count
                     if best == nil || hits < best!.3 { best = (box, ux, uy, hits) }
                     if hits == 0 { break search }
                 }
@@ -252,6 +254,10 @@ enum LabelLayout {
         }
         return placed
     }
+
+    /// The box a front-facing electrode occupies on screen, for `obstacles` (a cup of
+    /// radius 6.6 mm with its hover ring is under 8 pt at the stage's scale).
+    static func cupBox(at p: CGPoint) -> CGRect { CGRect(x: p.x - 8, y: p.y - 8, width: 16, height: 16) }
 
     /// Pairs of placed labels whose boxes overlap (for tests and the debug log).
     static func overlaps(_ placed: [Placed]) -> Int {

@@ -344,6 +344,11 @@ final class MontageTests: XCTestCase {
                 let placed = MontageLabels.place(layout: l, camera: camera, size: size, selected: "ch05")
                 XCTAssertEqual(placed.count, 16)
                 XCTAssertEqual(LabelLayout.overlaps(placed), 0, "\(preset) at \(width)")
+                // Decision #20: no label, front or dimmed, sits on a front-facing cup.
+                let cups = MontageLabels.frontCups(layout: l, camera: camera, size: size)
+                for label in placed {
+                    XCTAssertFalse(cups.contains { $0.intersects(label.frame) }, "\(label.id) on a cup, \(preset) at \(width)")
+                }
             }
         }
     }

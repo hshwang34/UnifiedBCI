@@ -169,7 +169,17 @@ enum MontageLabels {
             return LabelLayout.Item(id: e.channelID, anchor: q, size: LabelMetrics.size(e.label, strong: strong),
                                     strong: strong, dim: !camera.faces(p))
         }
-        return LabelLayout.place(items, centre: centre, bounds: CGRect(origin: .zero, size: size))
+        return LabelLayout.place(items, centre: centre, bounds: CGRect(origin: .zero, size: size),
+                                 obstacles: frontCups(layout: layout, camera: camera, size: size))
+    }
+
+    /// Screen boxes of the electrodes facing the camera: labels keep off them.
+    static func frontCups(layout: MontageLayout, camera: HeadCamera, size: CGSize) -> [CGRect] {
+        layout.placed.compactMap { e in
+            let p = HeadGeometry.surfacePoint(e.site)
+            guard camera.faces(p), let q = camera.project(p, in: size) else { return nil }
+            return LabelLayout.cupBox(at: q)
+        }
     }
 }
 
