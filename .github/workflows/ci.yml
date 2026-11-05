@@ -1,0 +1,58 @@
+# Checks every pull request and every push to main: the Xcode test suite (app, store crash
+# matrix, worker round-trip) and the Python worker's own tests. The app is Apple Silicon only
+# (decision #5), so both jobs run on arm64 macOS runners with Xcode 26.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  worker:
+    name: Worker tests
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        run: brew install uv
+      - name: Sync pinned worker env
+        working-directory: worker
+        run: uv sync
+      - name: pytest
+        working-directory: worker
+        run: uv run pytest
+
+  app:
+    name: Xcode tests
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: brew install uv xcodegen
+      - name: Show Xcode
+        run: xcodebuild -version
+      - name: Bootstrap (worker env, vendored BrainFlow, Xcode project)
+        run: scripts/bootstrap.sh
+      # Debug normally signs with the owner's personal team so macOS keeps the Documents
+      # grant; CI has no certificate, so it signs ad hoc instead.
+      - name: xcodebuild test
+        run: |
+          set -o pipefail
+          xcodebuild -project BCIWorkspace.xcodeproj -scheme BCIWorkspace \
+            -destination 'platform=macOS,arch=arm64' \
+            CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
+            -resultBundlePath build/TestResults.xcresult \
+            test
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TestResults
+          path: build/TestResults.xcresult
