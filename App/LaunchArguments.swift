@@ -19,9 +19,71 @@ import Foundation
 ///     -BCIFailingWorker YES                    use a worker that dies before it is ready, to
 ///                                              show the "analysis unavailable" banner
 ///     -BCIWindowSize 1100x640                  content size of the project window for snapshots
+///     -BCIResetFirstRun YES                    show the intro as on a first launch (brief 003)
+///     -BCIIntroStep N                          start the intro at step N (0-based; implies the intro)
+///     -BCIIntroTour YES                        with -BCISnapshotDir: snapshot every intro step
+///     -BCIReduceMotion YES                     force the Reduce Motion policy (intro, montage)
+///     -BCIReduceTransparency YES               force the frosted, solid head dome
+///     -BCIMontageView top|left|right|front     the montage head's initial view
+///     -BCIFrameLog /path/file.txt              append intro frame-interval stats there
+///     -BCIOffscreenSnapshotDir /path/dir       render intro steps and montage presets with
+///                                              ImageRenderer (works with the display asleep)
 @MainActor
 enum LaunchArguments {
     private static var done = false
+
+    // MARK: Brief 003 debug overrides (all no-ops in Release)
+
+    /// Reduce Motion as the views apply it: the system setting, or the debug override.
+    static func reduceMotion(system: Bool) -> Bool {
+        #if DEBUG
+        return system || UserDefaults.standard.bool(forKey: "BCIReduceMotion")
+        #else
+        return system
+        #endif
+    }
+
+    /// Reduce Transparency as the head applies it (Debug `-BCIReduceTransparency YES`; the
+    /// system key is read-only, so snapshots need this to show the frosted dome).
+    static func reduceTransparency(system: Bool) -> Bool {
+        #if DEBUG
+        return system || UserDefaults.standard.bool(forKey: "BCIReduceTransparency")
+        #else
+        return system
+        #endif
+    }
+
+    static var resetFirstRun: Bool {
+        #if DEBUG
+        return UserDefaults.standard.bool(forKey: "BCIResetFirstRun")
+        #else
+        return false
+        #endif
+    }
+
+    static var introStep: Int? {
+        #if DEBUG
+        return UserDefaults.standard.object(forKey: "BCIIntroStep") == nil ? nil : UserDefaults.standard.integer(forKey: "BCIIntroStep")
+        #else
+        return nil
+        #endif
+    }
+
+    static var montagePreset: Orbit.Preset? {
+        #if DEBUG
+        return UserDefaults.standard.string(forKey: "BCIMontageView").flatMap(Orbit.Preset.init(rawValue:))
+        #else
+        return nil
+        #endif
+    }
+
+    static var frameLogURL: URL? {
+        #if DEBUG
+        return UserDefaults.standard.string(forKey: "BCIFrameLog").map { URL(fileURLWithPath: $0) }
+        #else
+        return nil
+        #endif
+    }
 
     /// The worker the app uses: the located one, or (Debug, `-BCIFailingWorker YES`) one
     /// that writes to stderr and exits before announcing ready.
@@ -64,6 +126,27 @@ enum LaunchArguments {
             // From a run-loop perform, not a main-queue block: `.terminateLater` spins a nested
             // run loop, and a busy (serial) main queue would starve the shutdown Task.
             if defaults.bool(forKey: "BCIQuitWhenDone") { NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0) }
+        }
+        if let dir = defaults.string(forKey: "BCIOffscreenSnapshotDir") {
+            OffscreenSnapshots.run(into: URL(fileURLWithPath: dir, isDirectory: true))
+            return
+        }
+        // Brief 003: every intro step, through the same commands the keys send, then the
+        // welcome screen it lands on ("Explore an example" focused).
+        if defaults.bool(forKey: "BCIIntroTour"), workspace.welcomeFlow.isIntro {
+            let first = workspace.welcomeFlow.step ?? 0
+            // Without -BCISnapshotDir the tour still dwells on each step, so a -BCIFrameLog run
+            // measures steps and transitions with no capture stalling the main thread.
+            for i in first..<IntroModel.steps.count {
+                try? await Task.sleep(for: .seconds(2.5))
+                await snap("intro-\(i)", settle: .zero)
+                if i == first {
+                    try? await Task.sleep(for: .seconds(2))
+                    await snap("intro-\(i)-later", settle: .zero)
+                }
+                workspace.welcomeFlow.apply(.next)
+            }
+            try? await Task.sleep(for: .seconds(1))
         }
         await snap("welcome")
 

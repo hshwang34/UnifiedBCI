@@ -5,9 +5,53 @@ import SwiftUI
 struct WelcomeView: View {
     @Environment(Workspace.self) private var workspace
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @State private var selection: URL?
+    @FocusState private var focus: WelcomeFlow.Focus?
+    @AccessibilityFocusState private var voiceOverFocus: WelcomeFlow.Focus?
 
     var body: some View {
+        // Brief 003: the intro is a mode of this fixed-size window, so `.contentSize` never jumps.
+        // The welcome screen stays built underneath the intro (hidden, disabled), so ending the
+        // intro is only a fade: building the list and cards mid-transition cost a dropped frame.
+        ZStack {
+            welcome
+                .opacity(workspace.welcomeFlow.isIntro ? 0 : 1)
+                .disabled(workspace.welcomeFlow.isIntro)
+                .accessibilityHidden(workspace.welcomeFlow.isIntro)
+            if workspace.welcomeFlow.isIntro {
+                IntroView().transition(.opacity)
+            }
+        }
+        .frame(width: 760, height: 460)
+        .animation(LaunchArguments.reduceMotion(system: systemReduceMotion) ? nil : .smooth(duration: 0.45), value: workspace.welcomeFlow.isIntro)
+        .onAppear {
+            if workspace.openWindow == nil { workspace.openWindow = openWindow }
+            workspace.refreshRecents()
+            presentIntroIfFirstRun()
+        }
+        .onChange(of: workspace.welcomeFlow.isIntro) { _, isIntro in if !isIntro { takeFocusAfterIntro() } }
+        .task { await LaunchArguments.runOnce(workspace) }
+    }
+
+    /// Lead default 6: the flag is set the moment the intro is first presented (Workspace
+    /// makes the decision once per launch).
+    private func presentIntroIfFirstRun() {
+        workspace.presentIntroIfFirstRun(FirstRun(defaults: .standard), reset: LaunchArguments.resetFirstRun,
+                                         introStep: LaunchArguments.introStep)
+    }
+
+    /// After the intro: "Explore an example" takes keyboard and VoiceOver focus.
+    private func takeFocusAfterIntro() {
+        guard workspace.welcomeFlow.focus == .exploreExample else { return }
+        workspace.welcomeFlow.consumeFocus()
+        Task { @MainActor in
+            focus = .exploreExample
+            voiceOverFocus = .exploreExample
+        }
+    }
+
+    private var welcome: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xl) {
             HStack(spacing: Theme.Space.l) {
                 // From the asset catalog: the Dock's cached icon can lag behind a rebuilt bundle.
@@ -26,7 +70,15 @@ struct WelcomeView: View {
                 GlassGroup(spacing: 12) {
                     VStack(spacing: Theme.Space.m) {
                         ForEach(WelcomeModel.actions) { action in
-                            WelcomeActionCard(action: action) { perform(action.kind) }
+                            if action.kind == .example {
+                                WelcomeActionCard(action: action) { perform(action.kind) }
+                                    .focusable()
+                                    .focused($focus, equals: .exploreExample)
+                                    .accessibilityFocused($voiceOverFocus, equals: .exploreExample)
+                                    .onKeyPress(keys: Set(IntroKeys.activateKeys), phases: IntroKeys.phases) { _ in perform(action.kind); return .handled }
+                            } else {
+                                WelcomeActionCard(action: action) { perform(action.kind) }
+                            }
                         }
                     }
                 }
@@ -40,11 +92,6 @@ struct WelcomeView: View {
         .padding(.bottom, Theme.Space.xl)
         .frame(width: 760, height: 460)
         .background { AmbientBackdrop() }
-        .onAppear {
-            if workspace.openWindow == nil { workspace.openWindow = openWindow }
-            workspace.refreshRecents()
-        }
-        .task { await LaunchArguments.runOnce(workspace) }
     }
 
     private var recentList: some View {

@@ -57,6 +57,8 @@ final class Workspace {
     private(set) var sessions: [URL: ProjectSession] = [:]
     private(set) var recents: [RecentProject] = []
     let launch: WorkerLaunch?
+    /// The Welcome window's mode: the first-run intro or the welcome screen (brief 003).
+    var welcomeFlow = WelcomeFlow()
 
     /// Installed by the first view that has `openWindow` in its environment.
     @ObservationIgnored var openWindow: OpenWindowAction?
@@ -319,6 +321,28 @@ final class Workspace {
                 Self.alert("The project could not be created.", info: "\(error)")
             }
         }
+    }
+
+    /// Help ▸ Show Welcome Tour (brief 003): restarts the intro at step 0 in the Welcome
+    /// window, opening it if needed. Never touches the first-run flag (lead default 6) and
+    /// never opens or closes a project.
+    func showWelcomeTour(open: OpenWindowAction? = nil) {
+        welcomeFlow.start(at: 0)
+        // The menu passes its own action, so this works even when no view has installed one
+        // yet (e.g. only a project window has opened this run).
+        (open ?? openWindow)?(id: "welcome")
+    }
+
+    /// Whether this run has already made its first-run decision: the Welcome window can close
+    /// and reopen, but the intro is considered once per launch.
+    private(set) var checkedFirstRun = false
+
+    /// The first-run gate (lead default 6), once per launch. Returns whether it presented.
+    @discardableResult
+    func presentIntroIfFirstRun(_ firstRun: FirstRun, reset: Bool = false, introStep: Int? = nil) -> Bool {
+        guard !checkedFirstRun else { return false }
+        checkedFirstRun = true
+        return firstRun.presentIfNeeded(flow: &welcomeFlow, reset: reset, introStep: introStep)
     }
 
     func exploreExamplePanel() {

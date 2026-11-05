@@ -187,6 +187,9 @@ struct RecordingDetailModel {
     let citations: [Citation]
     let derivations: [String]
     let montage: String
+    /// The stored montage and reference strings, verbatim, for `MontageLayout` (brief 003).
+    let montageRaw: String
+    let referenceRaw: String
     let channels: [ChannelRow]
     let segments: [SegmentRow]
     let events: [EventRow]
@@ -213,6 +216,8 @@ struct RecordingDetailModel {
         citations = (s.attribution ?? []).map { Citation(text: $0.text, doi: $0.doi) }
         derivations = s.derivations ?? []
         montage = Self.declared(m.montage) ?? Self.undeclared
+        montageRaw = m.montage
+        referenceRaw = m.reference
 
         channels = m.channels.map {
             ChannelRow(id: $0.id, label: Self.declared($0.label), unit: Self.declared($0.unit), kind: Self.declared($0.kind))

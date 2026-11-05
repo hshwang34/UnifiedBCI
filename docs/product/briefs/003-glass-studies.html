@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Glass Dome Studies</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,650&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap">
+<style>
+/* Layout: header, a channel strip that drives every stage, four live studies in a 2×2 grid, then a short comparison. */
+:root {
+  --bg: #F3F6FA; --surface: #FFFFFF; --surface-2: #EAEFF5; --hairline: rgba(15, 23, 34, 0.09);
+  --text: #0F1722; --text-2: #4A5565; --text-3: #5D697B;
+  --accent: #0A5FCF; --aurora: #1CA7C4;
+  --stage-a: #FFFFFF; --stage-b: #D9E1EB;
+  --cap: #EEF2F7; --ink: #5D697B; --line: #3B4757; --ring: #FFFFFF;
+  --electrode-a: #D5DBE3; --electrode-b: #7A8494;
+  --label-bg: rgba(255, 255, 255, 0.86);
+  --warn: #B25E00;
+  --font-display: "Bricolage Grotesque", "SF Pro Display", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-body: "Figtree", -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0E1116; --surface: #171B22; --surface-2: #1E232C; --hairline: rgba(255, 255, 255, 0.10);
+    --text: #F2F5F9; --text-2: #A7B0BD; --text-3: #8892A2; --accent: #5AA9FF; --aurora: #58E0D6;
+    --stage-a: #252B37; --stage-b: #0E1116; --cap: #2E3542; --ink: #C9D3E0; --line: #C9D3E0; --ring: #E8EEF6;
+    --electrode-a: #E3E8EF; --electrode-b: #59626F; --label-bg: rgba(14, 17, 22, 0.80); --warn: #FFB340;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0E1116; --surface: #171B22; --surface-2: #1E232C; --hairline: rgba(255, 255, 255, 0.10);
+  --text: #F2F5F9; --text-2: #A7B0BD; --text-3: #8892A2; --accent: #5AA9FF; --aurora: #58E0D6;
+  --stage-a: #252B37; --stage-b: #0E1116; --cap: #2E3542; --ink: #C9D3E0; --line: #C9D3E0; --ring: #E8EEF6;
+  --electrode-a: #E3E8EF; --electrode-b: #59626F; --label-bg: rgba(14, 17, 22, 0.80); --warn: #FFB340;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text); font: 400 15px/1.55 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 64px;
+}
+.wrap { max-width: 1180px; margin: 0 auto; display: grid; gap: 28px; }
+header { display: grid; gap: 10px; }
+.eyebrow { font: 600 12px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+h1 { font: 650 clamp(30px, 4.4vw, 46px)/1.05 var(--font-display); letter-spacing: -0.02em; margin: 0; text-wrap: balance; }
+.lede { max-width: 70ch; color: var(--text-2); margin: 0; }
+.lede strong { color: var(--text); font-weight: 600; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: center; padding: 14px 16px; background: var(--surface); border: 1px solid var(--hairline); border-radius: 14px; }
+.toolbar .group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.toolbar .label { font: 600 11px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); margin-right: 4px; }
+.chip { font: 500 12px/1 var(--font-mono); padding: 7px 9px; border-radius: 8px; cursor: pointer; border: 1px solid var(--hairline); background: var(--surface-2); color: var(--text); }
+.chip[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: transparent; }
+.chip:hover { border-color: var(--accent); }
+.toggle { display: inline-flex; gap: 8px; align-items: center; font-size: 14px; color: var(--text-2); cursor: pointer; }
+.toggle input { accent-color: var(--accent); width: 16px; height: 16px; }
+.btn { font: 500 13px/1 var(--font-body); padding: 8px 12px; border-radius: 9px; cursor: pointer; border: 1px solid var(--hairline); background: var(--surface-2); color: var(--text); }
+.btn:hover { border-color: var(--accent); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+@media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.card { background: var(--surface); border: 1px solid var(--hairline); border-radius: 18px; display: grid; grid-template-rows: auto auto auto 1fr; overflow: hidden; min-width: 0; }
+.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 18px 20px 12px; }
+.card-head h2 { font: 650 22px/1.15 var(--font-display); letter-spacing: -0.01em; margin: 0; }
+.tag { font: 600 11px/1 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; color: var(--text-3); }
+.tag.rec { color: var(--accent); }
+.stage { position: relative; aspect-ratio: 4 / 3; max-width: 100%; background: radial-gradient(120% 90% at 50% 28%, var(--stage-a), var(--stage-b)); border-block: 1px solid var(--hairline); touch-action: none; cursor: grab; }
+.stage.dragging { cursor: grabbing; }
+.stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.stage .hint { position: absolute; left: 12px; bottom: 10px; font: 500 11px/1 var(--font-mono); color: var(--text-3); pointer-events: none; }
+.stage .fail { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--text-2); }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 20px; border-bottom: 1px solid var(--hairline); }
+.notes { padding: 14px 20px 20px; display: grid; gap: 10px; align-content: start; }
+.notes p { margin: 0; color: var(--text-2); max-width: 62ch; }
+.notes dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; font-size: 14px; }
+.notes dt { font: 600 11px/1.9 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
+.notes dd { margin: 0; }
+section.also { display: grid; gap: 8px; }
+section.also h2 { font: 650 24px/1.2 var(--font-display); margin: 0; }
+section.also ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; max-width: 78ch; color: var(--text-2); }
+section.also strong { color: var(--text); }
+footer { font-size: 13px; color: var(--text-3); max-width: 80ch; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Brief 003 · Recording screen · glass dome, round 2</div>
+    <h1>Glass dome studies</h1>
+    <p class="lede">Four ways to push the glass dome further. Every study also gets two fixes the first sketch lacked: <strong>electrodes drawn as small cups</strong> instead of flat dots, and <strong>labels on short leader lines</strong> pushed outward so they stop piling on each other. Drag to rotate, click an electrode or a channel to select it.</p>
+  </header>
+
+  <div class="toolbar" role="group" aria-label="View controls">
+    <div class="group" id="chips"><span class="label">Channels</span></div>
+    <div class="group">
+      <label class="toggle" for="sync"><input type="checkbox" id="sync" checked> Rotate all views together</label>
+      <button class="btn" id="themeBtn" type="button">Theme: system</button>
+    </div>
+  </div>
+
+  <div class="grid">
+    <article class="card">
+      <div class="card-head"><h2>A1 · Real glass</h2><span class="tag rec">Recommended</span></div>
+      <div class="stage" data-view="thick"><canvas class="gl"></canvas><canvas class="ov"></canvas><span class="hint">drag to rotate</span></div>
+      <div class="presets"></div>
+      <div class="notes">
+        <p>The same dome made to behave like a piece of glass. It has thickness, so its edges catch more light. It reflects two soft studio lights, sits on a polished rim, and casts a soft shadow.</p>
+        <dl><dt>Good</dt><dd>Keeps everything you liked about A, but reads as a real object rather than a wireframe. The back electrodes still show through.</dd>
+        <dt>Watch</dt><dd>The reflections slide as you rotate, which is a little more for the Mac to draw.</dd></dl>
+      </div>
+    </article>
+
+    <article class="card">
+      <div class="card-head"><h2>A2 · Fitted cap</h2><span class="tag">Most familiar to researchers</span></div>
+      <div class="stage" data-view="cap"><canvas class="gl"></canvas><canvas class="ov"></canvas><span class="hint">drag to rotate</span></div>
+      <div class="presets"></div>
+      <div class="notes">
+        <p>The dome becomes a frosted EEG cap with a socket at every standard site. Your channels are cups seated in their sockets, and the empty sockets show where else an electrode could go.</p>
+        <dl><dt>Good</dt><dd>Anyone who has worn or fitted a cap recognises it at once. The empty sockets explain the montage without words.</dd>
+        <dt>Watch</dt><dd>Opaque, so the back of the head hides until you rotate. Less "glass" than the others.</dd></dl>
+      </div>
+    </article>
+
+    <article class="card">
+      <div class="card-head"><h2>A3 · Point field</h2><span class="tag">Matches the intro</span></div>
+      <div class="stage" data-view="dots"><canvas class="gl"></canvas><canvas class="ov"></canvas><span class="hint">drag to rotate</span></div>
+      <div class="presets"></div>
+      <div class="notes">
+        <p>The dome is drawn as a fine field of points with a soft glowing edge, and your channels are bright rings. The points echo the drifting particles in the intro.</p>
+        <dl><dt>Good</dt><dd>The lightest and most "scientific instrument" of the four. Nothing ever hides behind the surface.</dd>
+        <dt>Watch</dt><dd>The shape reads less solidly, especially in light mode.</dd></dl>
+      </div>
+    </article>
+
+    <article class="card">
+      <div class="card-head"><h2>A4 · Glass over a ghost head</h2><span class="tag">Best orientation</span></div>
+      <div class="stage" data-view="ghost"><canvas class="gl"></canvas><canvas class="ov"></canvas><span class="hint">drag to rotate</span></div>
+      <div class="presets"></div>
+      <div class="notes">
+        <p>The glass dome sits over a faint outline of a head, drawn only as a glowing edge. Front, back and ears are obvious without a sculpted face.</p>
+        <dl><dt>Good</dt><dd>Fixes the dome's one weakness (which way is the front?) without the mannequin look you rejected.</dd>
+        <dt>Watch</dt><dd>Busier, and the outline is still a face, just a very faint one.</dd></dl>
+      </div>
+    </article>
+  </div>
+
+  <section class="also">
+    <h2>These can be combined</h2>
+    <ul>
+      <li><strong>A1 + A2's sockets:</strong> real glass, with a faint socket ring at every unused standard site instead of grid lines.</li>
+      <li><strong>A1 + A4's outline:</strong> real glass, with the ghost head switched on only in the Front, Left and Right views.</li>
+      <li><strong>A3 for the intro, A1 for the Recording screen:</strong> the intro animates the point field and it settles into the glass dome when the step ends.</li>
+    </ul>
+  </section>
+
+  <footer>Electrode positions: the 10-10 system, Oostenveld &amp; Praamstra (2001), the same table the app uses. Channels: the bundled PhysioNet EEGMMIDB S001 example. These are browser sketches of the look, not screenshots of the app; the chosen one is rebuilt natively.</footer>
+</div>
+
+<script>
+"use strict";
+const SITES = [["Fp1",-29.4,83.9,-7.0],["Fpz",0.1,88.2,-1.7],["Fp2",29.9,84.9,-7.1],["AF9",-49.0,64.1,-47.7],["AF7",-54.8,68.6,-10.6],["AF5",-45.4,72.9,6.0],["AF3",-33.7,76.8,21.2],["AF1",-18.5,79.9,32.8],["AFz",0.2,80.8,35.4],["AF2",19.8,80.3,32.8],["AF4",35.7,77.7,22.0],["AF6",46.6,73.8,6.0],["AF8",55.7,69.7,-10.8],["AF10",50.4,63.9,-48.0],["F9",-70.1,41.7,-50.0],["F7",-70.3,42.5,-11.4],["F5",-64.5,48.0,16.9],["F3",-50.2,53.1,42.2],["F1",-27.5,56.9,60.3],["Fz",0.3,58.5,66.5],["F2",29.5,57.6,59.5],["F4",51.8,54.3,40.8],["F6",67.9,49.8,16.4],["F8",73.0,44.4,-12.0],["F10",72.1,42.1,-50.5],["FT9",-84.1,14.6,-50.4],["FT7",-80.8,14.1,-11.1],["FC5",-77.2,18.6,24.5],["FC3",-60.2,22.7,55.5],["FC1",-34.1,26.0,80.0],["FCz",0.4,27.4,88.7],["FC2",34.8,26.4,78.8],["FC4",62.3,23.7,55.6],["FC6",79.5,19.9,24.4],["FT8",81.8,15.4,-11.3],["FT10",84.1,14.4,-50.5],["T9",-85.9,-15.8,-48.3],["T7",-84.2,-16.0,-9.3],["C5",-80.3,-13.8,29.2],["C3",-65.4,-11.6,64.4],["C1",-36.2,-10.0,89.8],["Cz",0.4,-9.2,100.2],["C2",37.7,-9.6,88.4],["C4",67.1,-10.9,63.6],["C6",83.5,-12.8,29.2],["T8",85.1,-15.0,-9.5],["T10",85.6,-16.4,-48.3],["TP9",-85.6,-46.5,-45.7],["TP7",-84.8,-46.0,-7.1],["CP5",-79.6,-46.6,30.9],["CP3",-63.6,-47.0,65.6],["CP1",-35.5,-47.3,91.3],["CPz",0.4,-47.3,99.4],["CP2",38.4,-47.1,90.7],["CP4",66.6,-46.6,65.6],["CP6",83.3,-46.1,31.2],["TP8",85.5,-45.5,-7.1],["TP10",86.2,-47.0,-45.9],["P9",-73.0,-73.8,-41.0],["P7",-72.4,-73.5,-2.5],["P5",-67.3,-76.3,28.4],["P3",-53.0,-78.8,55.9],["P1",-28.6,-80.5,75.4],["Pz",0.3,-81.1,82.6],["P2",31.9,-80.5,76.7],["P4",55.7,-78.6,56.6],["P6",67.9,-75.9,28.1],["P8",73.1,-73.1,-2.5],["P10",73.9,-74.4,-41.2],["PO9",-54.9,-98.0,-35.5],["PO7",-54.8,-97.5,2.8],["PO5",-48.4,-99.3,21.6],["PO3",-36.5,-100.9,37.2],["PO1",-19.0,-101.8,46.5],["POz",0.2,-102.2,50.6],["PO2",19.9,-101.8,46.4],["PO4",36.8,-100.8,36.4],["PO6",49.8,-99.4,21.7],["PO8",55.7,-97.6,2.7],["PO10",55.0,-98.1,-35.5],["O1",-29.4,-112.4,8.8],["Oz",0.1,-114.9,14.7],["O2",29.8,-112.2,8.8],["I1",-29.8,-114.6,-29.2],["Iz",0.0,-118.6,-23.1],["I2",29.7,-114.3,-29.3]];
+const ACTIVE = ["FC3","FC1","FC2","FC4","C5","C3","C1","Cz","C2","C4","C6","CP3","CP1","CPz","CP2","CP4"];
+const C = [0.8, -16.5, -16.4], RAD = [89.3, 105.9, 120.5], ZC = -58;
+const DEFAULT = { yaw: -38, pitch: 26 };
+const PRESETS = [["Top", 180, 89], ["Left", -90, 6], ["Right", 90, 6], ["Front", 0, 6], ["Reset", DEFAULT.yaw, DEFAULT.pitch]];
+const FRAMING = { thick: { t: [0, -14, 10], d: 560 }, cap: { t: [0, -14, 10], d: 560 }, dots: { t: [0, -14, 12], d: 540 }, ghost: { t: [0, -6, -26], d: 740 } };
+const STYLE_ID = { thick: 0, cap: 1, dots: 2, ghost: 3 };
+const SEE_THROUGH = { thick: true, cap: false, dots: true, ghost: true };
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
+
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const mul = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm = a => mul(a, 1 / Math.hypot(a[0], a[1], a[2]));
+const lerp = (a, b, t) => add(a, mul(sub(b, a), t));
+const rad = d => d * Math.PI / 180;
+
+function onSurface(p) {
+  const d = sub(p, C), q = [d[0] / RAD[0], d[1] / RAD[1], d[2] / RAD[2]];
+  const s = add(C, mul(d, 1 / Math.hypot(q[0], q[1], q[2]))), r = sub(s, C);
+  return { s, n: norm([r[0] / RAD[0] ** 2, r[1] / RAD[1] ** 2, r[2] / RAD[2] ** 2]) };
+}
+const SITE = SITES.map(([label, x, y, z]) => ({ label, raw: [x, y, z], ...onSurface([x, y, z]), active: ACTIVE.includes(label) }));
+
+function parts(label) {
+  const m = /^([A-Za-z]+?)(z|\d+)$/.exec(label); let row = m[1];
+  if (row === "FT") row = "FC"; else if (row === "T") row = "C"; else if (row === "TP") row = "CP";
+  return { row, col: m[2] };
+}
+const ROWS = {}, COLS = {};
+for (const s of SITE) {
+  const { row, col } = parts(s.label);
+  (ROWS[row] ||= []).push(s);
+  if (col === "z" || ["AF", "F", "FC", "C", "CP", "P", "PO"].includes(row)) (COLS[col] ||= []).push(s);
+}
+const LINES = [];
+for (const r of Object.values(ROWS)) if (r.length > 1) LINES.push(r.sort((a, b) => a.raw[0] - b.raw[0]));
+for (const c of Object.values(COLS)) if (c.length > 1) LINES.push(c.sort((a, b) => b.raw[1] - a.raw[1]));
+const POLYS = LINES.map(line => {
+  const pts = [];
+  for (let i = 0; i < line.length - 1; i++) for (let k = 0; k < 8; k++) pts.push(onSurface(lerp(line[i].raw, line[i + 1].raw, k / 8)));
+  pts.push(onSurface(line[line.length - 1].raw));
+  return pts;
+});
+// Point field: a Fibonacci lattice over the ellipsoid, kept above the cut.
+const FIELD = [];
+for (let i = 0, N = 2200, g = Math.PI * (3 - Math.sqrt(5)); i < N; i++) {
+  const z = 1 - 2 * (i + 0.5) / N, r = Math.sqrt(1 - z * z), th = g * i;
+  const q = [Math.cos(th) * r, Math.sin(th) * r, z], s = add(C, [q[0] * RAD[0], q[1] * RAD[1], q[2] * RAD[2]]);
+  if (s[2] > ZC + 2) FIELD.push({ s, n: norm([q[0] / RAD[0], q[1] / RAD[1], q[2] / RAD[2]]) });
+}
+
+function rgb(hex) { const h = hex.trim().replace("#", ""); return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16) / 255); }
+function alpha(color, a) { const [r, g, b] = rgb(color).map(v => Math.round(v * 255)); return `rgba(${r},${g},${b},${a})`; }
+let T = {};
+function readTheme() {
+  const cs = getComputedStyle(document.documentElement), v = n => cs.getPropertyValue(n).trim();
+  T = { accent: v("--accent"), aurora: v("--aurora"), cap: v("--cap"), ink: v("--ink"), line: v("--line"), ring: v("--ring"),
+        text: v("--text"), labelBg: v("--label-bg"), eA: v("--electrode-a"), eB: v("--electrode-b"),
+        dark: cs.getPropertyValue("color-scheme").includes("dark") };
+}
+
+function camera(kind, orbit) {
+  const f0 = FRAMING[kind], y = rad(orbit.yaw), p = rad(Math.min(orbit.pitch, 89.4));
+  const pos = add(f0.t, mul([Math.sin(y) * Math.cos(p), Math.cos(y) * Math.cos(p), Math.sin(p)], f0.d));
+  const f = norm(sub(f0.t, pos)), r = norm(cross(f, [0, 0, 1])), u = cross(r, f);
+  return { pos, f, r, u, fl: 1 / Math.tan(rad(13)) };
+}
+function project(cam, p, W, H) {
+  const v = sub(p, cam.pos), z = dot(v, cam.f);
+  if (z <= 1) return null;
+  return [W / 2 + dot(v, cam.r) / z * cam.fl * H / 2, H / 2 - dot(v, cam.u) / z * cam.fl * H / 2];
+}
+
+const VS = `#version 300 es
+in vec2 a; void main(){ gl_Position = vec4(a, 0.0, 1.0); }`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 uRes; uniform vec3 uCam, uF, uR, uU; uniform float uFl; uniform int uStyle;
+uniform vec3 uCap, uInk, uAccent, uGlow; uniform float uDark;
+out vec4 o;
+const vec3 C = vec3(0.8, -16.5, -16.4);
+const vec3 RAD = vec3(89.3, 105.9, 120.5);
+const float ZC = -58.0;
+vec2 ell(vec3 ro, vec3 rd, float s){ vec3 R = RAD * s; vec3 a2 = (ro - C) / R, d2 = rd / R;
+  float a = dot(d2, d2), b = dot(a2, d2), c = dot(a2, a2) - 1.0, h = b * b - a * c;
+  if (h < 0.0) return vec2(-1.0); h = sqrt(h); return vec2((-b - h) / a, (-b + h) / a); }
+vec3 ellN(vec3 p){ return normalize((p - C) / (RAD * RAD)); }
+vec4 over(vec4 f, vec4 b){ return f + b * (1.0 - f.a); }
+float env(vec3 r){
+  vec3 k1 = normalize(uU * 0.9 - uF * 0.25 - uR * 0.55), k2 = normalize(uR * 0.95 + uU * 0.15 - uF * 0.1);
+  return smoothstep(0.88, 0.975, dot(r, k1)) + 0.5 * smoothstep(0.93, 0.985, dot(r, k2)) + 0.06 * clamp(r.z, 0.0, 1.0);
+}
+float sdEll(vec3 p, vec3 r){ float k0 = length(p / r); float k1 = length(p / (r * r)); return k0 * (k0 - 1.0) / k1; }
+float smin(float a, float b, float k){ float h = max(k - abs(a - b), 0.0) / k; return min(a, b) - h * h * k * 0.25; }
+float smax(float a, float b, float k){ return -smin(-a, -b, k); }
+float sdCap(vec3 p, vec3 a, vec3 b, float r){ vec3 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0); return length(pa - ba * h) - r; }
+float headSDF(vec3 p){
+  float d = sdEll(p - C, RAD * 0.985);
+  d = smin(d, sdEll(p - vec3(0.0, 36.0, -90.0), vec3(58.0, 56.0, 60.0)), 30.0);
+  d = smin(d, sdEll(p - vec3(0.0, 72.0, -26.0), vec3(56.0, 20.0, 15.0)), 14.0);
+  d = smin(d, sdCap(p, vec3(0.0, 88.0, -40.0), vec3(0.0, 104.0, -70.0), 8.5), 9.0);
+  d = smin(d, sdEll(p - vec3(0.0, 66.0, -136.0), vec3(26.0, 20.0, 17.0)), 18.0);
+  vec3 q = vec3(abs(p.x), p.y, p.z);
+  d = smin(d, sdEll(q - vec3(85.0, -24.0, -50.0), vec3(8.0, 17.0, 28.0)), 6.0);
+  d = smin(d, sdCap(p, vec3(0.0, -30.0, -110.0), vec3(0.0, -38.0, -320.0), 50.0), 36.0);
+  d = smax(d, -(length(q - vec3(31.0, 90.0, -50.0)) - 12.0), 9.0);
+  return d;
+}
+vec3 headN(vec3 p){ vec2 e = vec2(0.35, 0.0);
+  return normalize(vec3(headSDF(p + e.xyy) - headSDF(p - e.xyy), headSDF(p + e.yxy) - headSDF(p - e.yxy), headSDF(p + e.yyx) - headSDF(p - e.yyx))); }
+
+// One glass surface. thick = path length through the glass wall (mm).
+vec4 glassSurf(vec3 p, vec3 n, vec3 rd, float thick, bool front){
+  float c = abs(dot(n, rd)), F = 0.04 + 0.96 * pow(1.0 - c, 5.0);
+  float e = env(reflect(rd, n));
+  float ab = 1.0 - exp(-min(thick, 60.0) * 0.03);
+  vec3 tint = mix(uAccent, uGlow, 0.35);
+  float a = clamp(ab * 0.5 + F * 0.55 + e * (0.25 + F), 0.0, 1.0);
+  vec3 col = tint * ab * 0.5 + tint * F * 0.35 + vec3(e * (0.3 + F) * (front ? 1.0 : 0.35));
+  if (p.z < ZC + 3.2){ float m = env(reflect(rd, vec3(n.xy, 0.0) * 0.9 + vec3(0.0, 0.0, 0.1)));
+    col = mix(uInk * 0.85, vec3(1.0), m * 0.8); a = 0.96; }
+  if (!front){ a *= 0.5; col *= 0.5; }
+  return vec4(col, a);
+}
+vec4 thickGlass(vec3 ro, vec3 rd){
+  vec2 to = ell(ro, rd, 1.0); if (to.y < 0.0) return vec4(0.0);
+  vec2 ti = ell(ro, rd, 0.968);
+  vec4 res = vec4(0.0);
+  vec3 pf = ro + rd * to.x;
+  if (to.x > 0.0 && pf.z > ZC){ float th = ti.y < 0.0 ? to.y - to.x : ti.x - to.x; res = glassSurf(pf, ellN(pf), rd, th, true); }
+  vec3 pb = ro + rd * to.y;
+  if (pb.z > ZC){ float th = ti.y < 0.0 ? 0.0 : to.y - ti.y; res = over(res, glassSurf(pb, -ellN(pb), rd, th, false)); }
+  return res;
+}
+vec4 floorShadow(vec3 ro, vec3 rd, float strength){
+  float pz = ZC - 1.0; if (ro.z < pz || rd.z >= 0.0) return vec4(0.0);
+  vec3 g = ro + rd * ((pz - ro.z) / rd.z);
+  float q = length((g.xy - C.xy) / RAD.xy) / 0.938;
+  float a = 0.20 * (1.0 - smoothstep(0.55, 1.55, q)) + 0.22 * exp(-pow((q - 1.0) * 12.0, 2.0));
+  return vec4(vec3(0.0), a * strength);
+}
+vec4 cap(vec3 ro, vec3 rd){
+  vec2 t = ell(ro, rd, 1.0); if (t.y < 0.0) return vec4(0.0);
+  vec3 p = ro + rd * t.x; bool inside = false;
+  if (t.x < 0.0 || p.z <= ZC){ p = ro + rd * t.y; inside = true; if (p.z <= ZC) return vec4(0.0); }
+  vec3 n = inside ? -ellN(p) : ellN(p);
+  vec3 L = normalize(uU * 0.8 - uF * 0.5 - uR * 0.45);
+  float dif = clamp((dot(n, L) + 0.3) / 1.3, 0.0, 1.0), fr = pow(1.0 - abs(dot(n, rd)), 3.0);
+  float sp = pow(clamp(dot(n, normalize(L - rd)), 0.0, 1.0), 24.0);
+  vec3 base = mix(uCap, uAccent, 0.07);
+  vec3 col = base * (0.42 + 0.58 * dif) + uGlow * fr * 0.22 + vec3(sp * 0.10);
+  if (p.z < ZC + 6.0) col *= 0.72;
+  if (inside) col *= 0.55;
+  return vec4(col, 1.0);
+}
+vec4 dotsShell(vec3 ro, vec3 rd){
+  vec2 t = ell(ro, rd, 1.0); if (t.y < 0.0) return vec4(0.0);
+  vec4 res = vec4(0.0);
+  vec3 pf = ro + rd * t.x;
+  if (t.x > 0.0 && pf.z > ZC){ float a = pow(1.0 - abs(dot(ellN(pf), rd)), 3.0) * 0.5; res = vec4(uGlow * a, a); }
+  vec3 pb = ro + rd * t.y;
+  if (pb.z > ZC){ float a = pow(1.0 - abs(dot(ellN(pb), rd)), 3.0) * 0.18; res = over(res, vec4(uGlow * a, a)); }
+  return res;
+}
+vec4 ghost(vec3 ro, vec3 rd){
+  float t = max(0.0, length(ro - vec3(0.0, -10.0, -60.0)) - 330.0); bool hit = false;
+  for (int i = 0; i < 200; i++){ float d = headSDF(ro + rd * t); if (d < 0.25){ hit = true; break; } t += d * 0.85; if (t > 1700.0) break; }
+  if (!hit) return vec4(0.0);
+  vec3 p = ro + rd * t, n = headN(p);
+  float fade = smoothstep(-240.0, -170.0, p.z) * (1.0 - smoothstep(ZC - 6.0, ZC + 6.0, p.z) * 0.85);
+  float a = (pow(1.0 - clamp(dot(n, -rd), 0.0, 1.0), 2.4) * 0.6 + 0.03) * fade;
+  return vec4(uInk * a, a);
+}
+void main(){
+  vec2 uv = (gl_FragCoord.xy - 0.5 * uRes) / (0.5 * uRes.y);
+  vec3 rd = normalize(uF * uFl + uR * uv.x + uU * uv.y), ro = uCam;
+  if (uStyle == 0) o = over(thickGlass(ro, rd), floorShadow(ro, rd, uDark > 0.5 ? 1.6 : 1.0));
+  else if (uStyle == 1) o = over(cap(ro, rd), floorShadow(ro, rd, uDark > 0.5 ? 1.6 : 1.0));
+  else if (uStyle == 2) o = dotsShell(ro, rd);
+  else {
+    vec2 to = ell(ro, rd, 1.0); vec4 g = thickGlass(ro, rd);
+    vec4 front = vec4(0.0), back = vec4(0.0);
+    vec3 pf = ro + rd * to.x;
+    if (to.y >= 0.0 && to.x > 0.0 && pf.z > ZC) front = g; else back = g;
+    o = over(front, over(ghost(ro, rd), back));
+  }
+}`;
+
+function makeGL(canvas) {
+  const gl = canvas.getContext("webgl2", { premultipliedAlpha: true, alpha: true, antialias: false });
+  if (!gl) return null;
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, "a"); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  const u = n => gl.getUniformLocation(prog, n);
+  return { gl, u: Object.fromEntries(["uRes", "uCam", "uF", "uR", "uU", "uFl", "uStyle", "uCap", "uInk", "uAccent", "uGlow", "uDark"].map(n => [n, u(n)])) };
+}
+
+const views = [];
+let selected = "C3", hovered = null;
+const shared = { orbit: { ...DEFAULT } };
+const syncBox = document.getElementById("sync");
+const orbitOf = view => syncBox.checked ? shared.orbit : view.orbit;
+
+function setupView(stage) {
+  const kind = stage.dataset.view;
+  const view = { kind, stage, orbit: { ...DEFAULT }, hits: [], ov: stage.querySelector("canvas.ov"), glc: stage.querySelector("canvas.gl"), g: null };
+  try { view.g = makeGL(view.glc); } catch (e) { console.error(e); }
+  if (!view.g) stage.insertAdjacentHTML("beforeend", '<div class="fail">This sketch needs WebGL 2, which this browser has turned off.</div>');
+  views.push(view);
+  const bar = stage.parentElement.querySelector(".presets");
+  for (const [name, yaw, pitch] of PRESETS) {
+    const b = document.createElement("button"); b.className = "btn"; b.type = "button"; b.textContent = name;
+    b.addEventListener("click", () => goTo(view, { yaw, pitch })); bar.appendChild(b);
+  }
+  let drag = null;
+  stage.addEventListener("pointerdown", e => { drag = { x: e.clientX, y: e.clientY, moved: false }; stage.setPointerCapture(e.pointerId); });
+  stage.addEventListener("pointermove", e => {
+    const rect = stage.getBoundingClientRect();
+    if (drag) {
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (Math.abs(dx) + Math.abs(dy) > 3) { drag.moved = true; stage.classList.add("dragging"); }
+      if (drag.moved) {
+        const o = orbitOf(view); o.yaw -= dx * 0.45; o.pitch = Math.max(-20, Math.min(89, o.pitch + dy * 0.35));
+        drag.x = e.clientX; drag.y = e.clientY; cancelAnimationFrame(animFrame); renderGroup(view);
+      }
+      return;
+    }
+    const h = hitTest(view, e.clientX - rect.left, e.clientY - rect.top);
+    stage.style.cursor = h ? "pointer" : "";
+    if (h !== hovered) { hovered = h; renderAll(); }
+  });
+  stage.addEventListener("pointerup", e => {
+    const rect = stage.getBoundingClientRect();
+    if (drag && !drag.moved) { const h = hitTest(view, e.clientX - rect.left, e.clientY - rect.top); if (h) select(h === selected ? null : h); }
+    drag = null; stage.classList.remove("dragging");
+  });
+  stage.addEventListener("pointerleave", () => { if (hovered) { hovered = null; renderAll(); } });
+  new ResizeObserver(() => render(view)).observe(stage);
+}
+function renderGroup(view) { if (syncBox.checked) renderAll(); else render(view); }
+let animFrame = 0;
+function goTo(view, target) {
+  const o = orbitOf(view), dy = ((target.yaw - o.yaw) % 360 + 540) % 360 - 180;
+  const from = { ...o }, to = { yaw: o.yaw + dy, pitch: target.pitch };
+  cancelAnimationFrame(animFrame);
+  if (reduceMotion.matches) { Object.assign(o, to); renderGroup(view); return; }
+  const t0 = performance.now();
+  const step = now => {
+    const k = Math.min(1, (now - t0) / 520), e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    o.yaw = from.yaw + (to.yaw - from.yaw) * e; o.pitch = from.pitch + (to.pitch - from.pitch) * e;
+    renderGroup(view); if (k < 1) animFrame = requestAnimationFrame(step);
+  };
+  animFrame = requestAnimationFrame(step);
+}
+function hitTest(view, x, y) {
+  let best = null, bd = 14;
+  for (const h of view.hits) { const d = Math.hypot(h.x - x, h.y - y); if (d < bd) { bd = d; best = h.label; } }
+  return best;
+}
+function sizeCanvas(c, stage) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), w = Math.round(stage.clientWidth * dpr), h = Math.round(stage.clientHeight * dpr);
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  return dpr;
+}
+
+function render(view) {
+  if (!view.stage.clientWidth) return;
+  const dpr = sizeCanvas(view.ov, view.stage), cam = camera(view.kind, orbitOf(view));
+  if (view.g) {
+    sizeCanvas(view.glc, view.stage);
+    const { gl, u } = view.g, W = view.glc.width, H = view.glc.height;
+    gl.viewport(0, 0, W, H); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(u.uRes, W, H); gl.uniform3fv(u.uCam, cam.pos); gl.uniform3fv(u.uF, cam.f); gl.uniform3fv(u.uR, cam.r);
+    gl.uniform3fv(u.uU, cam.u); gl.uniform1f(u.uFl, cam.fl); gl.uniform1i(u.uStyle, STYLE_ID[view.kind]);
+    gl.uniform3fv(u.uCap, rgb(T.cap)); gl.uniform3fv(u.uInk, rgb(T.ink)); gl.uniform3fv(u.uAccent, rgb(T.accent));
+    gl.uniform3fv(u.uGlow, rgb(view.kind === "dots" ? T.aurora : T.accent)); gl.uniform1f(u.uDark, T.dark ? 1 : 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  drawOverlay(view, cam, dpr);
+}
+
+const facing = (cam, pt) => dot(pt.n, sub(cam.pos, pt.s)) > 0;
+function disc(cam, pt, radius, W, H, lift = 0.8) {
+  let t1 = cross(pt.n, [0, 0, 1]); if (Math.hypot(...t1) < 0.1) t1 = [1, 0, 0]; t1 = norm(t1);
+  const t2 = cross(pt.n, t1), c = add(pt.s, mul(pt.n, lift)), out = [];
+  for (let i = 0; i < 22; i++) {
+    const a = i / 22 * Math.PI * 2, p = project(cam, add(c, add(mul(t1, Math.cos(a) * radius), mul(t2, Math.sin(a) * radius))), W, H);
+    if (!p) return null; out.push(p);
+  }
+  return out;
+}
+function poly(ctx, pts) { ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath(); }
+
+function drawElectrode(ctx, kind, cam, pt, W, H, front, isSel, isHov) {
+  const outer = disc(cam, pt, isSel ? 6.6 : 5.8, W, H, 1.2), inner = disc(cam, pt, isSel ? 3.6 : 3.0, W, H, 1.6);
+  if (!outer || !inner) return;
+  ctx.save(); if (!front) ctx.globalAlpha = 0.32;
+  if (kind === "dots") {
+    poly(ctx, outer); ctx.shadowColor = T.aurora; ctx.shadowBlur = front ? 12 : 0;
+    ctx.strokeStyle = isSel ? T.accent : T.aurora; ctx.lineWidth = isSel ? 2.6 : 2; ctx.stroke(); ctx.shadowBlur = 0;
+    poly(ctx, inner); ctx.fillStyle = isSel ? T.accent : T.aurora; ctx.fill();
+  } else if (kind === "cap") {
+    const c = outer.reduce((a, p) => [a[0] + p[0] / outer.length, a[1] + p[1] / outer.length], [0, 0]);
+    const g = ctx.createLinearGradient(c[0] - 6, c[1] - 6, c[0] + 6, c[1] + 6); g.addColorStop(0, T.eA); g.addColorStop(1, T.eB);
+    poly(ctx, outer); ctx.fillStyle = isSel ? T.accent : g; ctx.fill();
+    ctx.strokeStyle = alpha(T.dark ? "#0E1116" : "#2A3039", 0.5); ctx.lineWidth = 1; ctx.stroke();
+    poly(ctx, inner); ctx.fillStyle = isSel ? "#FFFFFF" : T.accent; ctx.fill();
+  } else {
+    poly(ctx, outer); ctx.shadowColor = alpha(T.accent, 0.55); ctx.shadowBlur = front ? 8 : 0;
+    ctx.fillStyle = isSel ? T.accent : T.ring; ctx.fill(); ctx.shadowBlur = 0;
+    ctx.strokeStyle = alpha(T.accent, 0.9); ctx.lineWidth = 1.2; ctx.stroke();
+    poly(ctx, inner); ctx.fillStyle = isSel ? "#FFFFFF" : T.accent; ctx.fill();
+  }
+  if (isHov && !isSel) { const ring = disc(cam, pt, 9, W, H, 1.2); if (ring) { poly(ctx, ring); ctx.strokeStyle = T.accent; ctx.lineWidth = 2; ctx.stroke(); } }
+  ctx.restore();
+}
+
+function drawLabels(ctx, labels, center) {
+  ctx.font = '500 11px "JetBrains Mono", ui-monospace, Menlo, monospace';
+  const placed = [];
+  const order = labels.slice().sort((a, b) => (a.dim - b.dim) || (b.strong - a.strong));
+  for (const l of order) {
+    let dx = l.x - center[0], dy = l.y - center[1]; const len = Math.hypot(dx, dy) || 1; dx /= len; dy /= len;
+    ctx.font = `${l.strong ? 600 : 500} 11px "JetBrains Mono", ui-monospace, Menlo, monospace`;
+    const w = ctx.measureText(l.text).width + 10, h = 17;
+    let box = null;
+    for (const k of [20, 30, 42, 56, 72]) {
+      const ax = l.x + dx * k, ay = l.y + dy * k, b = { x: ax - w / 2, y: ay - h / 2, w, h, ax, ay };
+      if (!placed.some(p => b.x < p.x + p.w + 2 && b.x + b.w + 2 > p.x && b.y < p.y + p.h + 2 && b.y + b.h + 2 > p.y)) { box = b; break; }
+      box = b;
+    }
+    placed.push(box);
+    l.box = box; l.dx = dx; l.dy = dy;
+  }
+  for (const l of order.slice().reverse()) {
+    const b = l.box;
+    ctx.globalAlpha = l.dim ? 0.4 : 1;
+    ctx.strokeStyle = alpha(T.line, 0.55); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(l.x + l.dx * 8, l.y + l.dy * 8); ctx.lineTo(b.ax - l.dx * (b.w / 2 - 2) * Math.abs(l.dx), b.ay - l.dy * (b.h / 2) * Math.abs(l.dy)); ctx.stroke();
+    ctx.fillStyle = l.strong ? T.accent : T.labelBg;
+    ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 5); ctx.fill();
+    ctx.font = `${l.strong ? 600 : 500} 11px "JetBrains Mono", ui-monospace, Menlo, monospace`;
+    ctx.fillStyle = l.strong ? "#fff" : T.text; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(l.text, b.ax, b.ay + 0.5);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawOverlay(view, cam, dpr) {
+  const c = view.ov, ctx = c.getContext("2d"), W = c.width / dpr, H = c.height / dpr, kind = view.kind;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+  const see = SEE_THROUGH[kind];
+
+  if (kind === "thick" || kind === "ghost") {
+    for (const pass of [false, true]) {
+      ctx.lineWidth = 1; ctx.strokeStyle = alpha(T.line, pass ? 0.22 : 0.07);
+      for (const pl of POLYS) {
+        ctx.beginPath(); let pen = false;
+        for (const pt of pl) { const p = facing(cam, pt) === pass && project(cam, pt.s, W, H); if (p) { pen ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); pen = true; } else pen = false; }
+        ctx.stroke();
+      }
+    }
+  } else if (kind === "cap") {
+    ctx.lineWidth = 1.4; ctx.strokeStyle = alpha(T.line, 0.16);
+    for (const pl of POLYS) {
+      ctx.beginPath(); let pen = false;
+      for (const pt of pl) { const p = facing(cam, pt) && project(cam, add(pt.s, mul(pt.n, 0.3)), W, H); if (p) { pen ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); pen = true; } else pen = false; }
+      ctx.stroke();
+    }
+  } else {
+    for (const pt of FIELD) {
+      const p = project(cam, pt.s, W, H); if (!p) continue;
+      const f = facing(cam, pt);
+      ctx.fillStyle = alpha(T.dark ? T.aurora : T.line, f ? (T.dark ? 0.5 : 0.42) : 0.12);
+      ctx.beginPath(); ctx.arc(p[0], p[1], f ? 1.1 : 0.8, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  if (kind !== "ghost") {
+    const tip = onSurface([0.8, 92, -44]), base = onSurface([0.8, 86, -22]);
+    const a = project(cam, add(tip.s, mul(tip.n, 10)), W, H), b = project(cam, base.s, W, H);
+    if (a && b) { ctx.strokeStyle = alpha(T.accent, facing(cam, base) ? 0.9 : 0.3); ctx.lineWidth = 2.5; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(b[0], b[1]); ctx.lineTo(a[0], a[1]); ctx.stroke(); }
+  }
+
+  const items = SITE.map(pt => ({ pt, front: facing(cam, pt), depth: dot(sub(pt.s, cam.pos), cam.f) }))
+                    .filter(o => o.front || see).sort((a, b) => b.depth - a.depth);
+  view.hits = [];
+  const labels = [];
+  for (const { pt, front } of items) {
+    if (!pt.active) {
+      if (kind === "cap") {
+        const s = disc(cam, pt, 4.2, W, H, 0.4); if (!s) continue;
+        poly(ctx, s); ctx.fillStyle = alpha(T.line, T.dark ? 0.22 : 0.08); ctx.fill(); ctx.strokeStyle = alpha(T.line, 0.32); ctx.lineWidth = 1; ctx.stroke();
+      } else if (kind !== "dots") {
+        const s = disc(cam, pt, 1.9, W, H); if (!s) continue;
+        poly(ctx, s); ctx.strokeStyle = alpha(T.line, front ? 0.4 : 0.12); ctx.lineWidth = 1; ctx.stroke();
+      }
+      continue;
+    }
+    const isSel = pt.label === selected, isHov = pt.label === hovered;
+    drawElectrode(ctx, kind, cam, pt, W, H, front, isSel, isHov);
+    const p = project(cam, add(pt.s, mul(pt.n, 1.2)), W, H); if (!p) continue;
+    if (front) view.hits.push({ label: pt.label, x: p[0], y: p[1] });
+    labels.push({ x: p[0], y: p[1], text: pt.label, strong: isSel, dim: !front });
+  }
+  const center = project(cam, add(C, [0, 0, 40]), W, H) || [W / 2, H / 2];
+  drawLabels(ctx, labels, center);
+}
+
+function renderAll() { views.forEach(render); syncChips(); }
+const chipBox = document.getElementById("chips");
+for (const l of ACTIVE) {
+  const b = document.createElement("button"); b.type = "button"; b.className = "chip"; b.textContent = l; b.dataset.label = l;
+  b.addEventListener("click", () => select(selected === l ? null : l));
+  b.addEventListener("mouseenter", () => { hovered = l; renderAll(); });
+  b.addEventListener("mouseleave", () => { hovered = null; renderAll(); });
+  chipBox.appendChild(b);
+}
+function syncChips() { chipBox.querySelectorAll(".chip").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.label === selected))); }
+function select(l) { selected = l; renderAll(); }
+syncBox.addEventListener("change", () => { views.forEach(v => Object.assign(v.orbit, shared.orbit)); renderAll(); });
+
+const themeBtn = document.getElementById("themeBtn"), modes = ["system", "light", "dark"];
+let mode = "system";
+try { mode = localStorage.getItem("glass-studies-theme") || "system"; } catch (e) {}
+function applyTheme() {
+  if (mode === "system") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", mode);
+  themeBtn.textContent = "Theme: " + mode; readTheme(); renderAll();
+}
+themeBtn.addEventListener("click", () => { mode = modes[(modes.indexOf(mode) + 1) % 3]; try { localStorage.setItem("glass-studies-theme", mode); } catch (e) {} applyTheme(); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readTheme(); renderAll(); });
+document.querySelectorAll(".stage").forEach(setupView);
+applyTheme();
+if (document.fonts) document.fonts.ready.then(renderAll);
+</script>
+</body>
+</html>

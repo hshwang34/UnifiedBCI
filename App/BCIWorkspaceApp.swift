@@ -62,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         LaunchArguments.applyAppearance()
+        HeadGlassWarmUp.start()
     }
 
     /// Closing the last project window leaves the app running; Welcome stays reachable.
@@ -146,6 +147,10 @@ struct WorkspaceCommands: Commands {
             Button("Cancel Evaluation") { session?.cancel() }
                 .keyboardShortcut(".")
                 .disabled(!(session?.isRunning ?? false))
+        }
+        // Brief 003: the app has no help book, so the Help item is the tour.
+        CommandGroup(replacing: .help) {
+            Button("Show Welcome Tour") { workspace.showWelcomeTour(open: openWindow) }
         }
         #if DEBUG
         CommandMenu("Debug") {

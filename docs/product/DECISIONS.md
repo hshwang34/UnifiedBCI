@@ -49,3 +49,18 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #15 · 2026-10-22 · Brief 003 ships as its own PR after PR 3 merges.
 *Why:* keeps PR 3 reviewable. Brief 003.
+
+#16 · 2026-10-23 · Brief 003 grows a live 3D montage view: a stylized head reused from the intro, on the Recording screen above the channel table, cross-highlighting with it.
+*Why:* PM choice ("Intro + one live view"); montage is a recording property. Brief 003.
+
+#17 · 2026-10-23 · The montage head shows declared electrode positions, reference and labels only — no per-channel colour until brief 002 (signal quality) supplies real values.
+*Why:* nothing shown that isn't stored. Brief 003.
+
+#18 · 2026-10-23 · The head rotates by drag, with Top / Left / Right / Front / Reset buttons as the keyboard- and VoiceOver-accessible path.
+*Why:* PM choice. Brief 003.
+
+#19 · 2026-10-23 · Neuralink Telepathy stays a tone reference only (decision #9); its visuals aren't publicly verifiable, so design proceeds on the verified task structure (one focal object, short bounded steps, one headline number with its unit) plus the glass spec.
+*Why:* PM choice; researcher could not verify Telepathy UI. Brief 003.
+
+#20 · 2026-10-30 · Montage head look = "glass over a ghost head" (study A4): a thick-glass scalp dome with the faint 10-10 grid, cup electrodes and leader-line labels, over a faint glowing outline of a head for orientation. No sculpted or shaded face. The intro's scalp map uses the same look. Supersedes the placeholder primitives (sphere/cone/cylinder).
+*Why:* PM choice after two rounds of live sketches (docs/product/briefs/003-head-styles.html, 003-glass-studies.html); the mannequin head was rejected and the plain dome lacked orientation. Brief 003.
