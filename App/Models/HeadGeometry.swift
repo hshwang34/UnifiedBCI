@@ -216,8 +216,8 @@ enum LabelLayout {
         let lineEnd: CGPoint
     }
 
-    static let distances: [Double] = [20, 30, 42, 56, 72, 90, 110, 130, 150]
-    static let angles: [Double] = [0, 0.26, -0.26, 0.52, -0.52, 0.8, -0.8, 1.1, -1.1]
+    static let distances: [CGFloat] = [20, 30, 42, 56, 72, 90, 110, 130, 150]
+    static let angles: [CGFloat] = [0, 0.26, -0.26, 0.52, -0.52, 0.8, -0.8, 1.1, -1.1]
     static let gap: CGFloat = 2
 
     /// `bounds`, when given, keeps every box inside it (inset 4 pt), so labels never clip at
@@ -234,7 +234,7 @@ enum LabelLayout {
             var best: (CGRect, CGFloat, CGFloat, Int)?
             search: for k in distances {
                 for a in angles {
-                    let ux = dx * cos(a) - dy * sin(a), uy = dx * sin(a) + dy * cos(a)
+                    let ux: CGFloat = dx * cos(a) - dy * sin(a), uy: CGFloat = dx * sin(a) + dy * cos(a)
                     let c = CGPoint(x: item.anchor.x + ux * k, y: item.anchor.y + uy * k)
                     var box = CGRect(x: c.x - item.size.width / 2, y: c.y - item.size.height / 2, width: item.size.width, height: item.size.height)
                     if let inner {
