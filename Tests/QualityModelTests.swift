@@ -80,7 +80,10 @@ final class QualityModelTests: XCTestCase {
         XCTAssertEqual(try row(m, "ACC").notAssessed, ["Flatline, Large deflections, Outlier amplitude, Outlier high-frequency power · not assessed (unit g)"])
         XCTAssertEqual(try row(m, "ACC").kindUnit, "accel · g")
         XCTAssertEqual(try row(m, "EMG").notAssessed, ["Outlier amplitude, Outlier high-frequency power · not compared (kind emg; medians are across EEG channels)"])
-        XCTAssertEqual(try row(m, "MV").status, "None of these rules fired")
+        XCTAssertEqual(try row(m, "MV").status, "None of the 2 assessed rules fired")
+        XCTAssertEqual(try row(m, "EMG").status, "None of the 4 assessed rules fired")
+        XCTAssertEqual(try row(m, segment: 1, "C3").status, "None of these rules fired", "one mains line assessed counts as assessed")
+        XCTAssertEqual(try row(m, segment: 2, "C3").status, "None of the 5 assessed rules fired")
         let nan = try row(m, "NAN")
         XCTAssertEqual(nan.status, "No rule could be assessed")
         XCTAssertEqual(nan.notAssessed.count, 1)
@@ -91,6 +94,55 @@ final class QualityModelTests: XCTestCase {
         XCTAssertEqual(undeclared.kindUnit, "EEG · unit not declared")
         XCTAssertEqual(undeclared.notAssessed, ["Flatline, Large deflections, Outlier amplitude, Outlier high-frequency power · unit not declared",
                                                 "Mains line (50 / 60 Hz) · not assessable at 50 Hz"])
+    }
+
+    // MARK: Rounding never contradicts the rule (review round 1)
+
+    func testFaithfulRoundingStaysOnTheTrueSideOfEveryBoundary() {
+        XCTAssertEqual(QualityModel.faithful(10.1, digits: 0, boundaries: [10, 0, 100]), "10.1")
+        XCTAssertEqual(QualityModel.faithful(99.6, digits: 0, boundaries: [10, 0, 100]), "99.6")
+        XCTAssertEqual(QualityModel.faithful(57.1, digits: 0, boundaries: [10, 0, 100]), "57")
+        XCTAssertEqual(QualityModel.faithful(100, digits: 0, boundaries: [10, 0, 100]), "100")
+        XCTAssertEqual(QualityModel.ratio(5.04, [5, 0.2]), "5.04×")
+        XCTAssertEqual(QualityModel.ratio(0.196, [5, 0.2]), "0.196×")
+        XCTAssertEqual(QualityModel.ratio(6.1, [5, 0.2]), "6.1×")
+        XCTAssertEqual(QualityModel.numbers(in: "> 5× or < 0.2×"), [5, 0.2])
+    }
+
+    func testFlagLinesNearThresholdsReadOnTheFlaggedSide() throws {
+        var r = try Self.fixture("inspect_recording_faults")
+        func set(_ label: String, _ rule: String, _ edit: (inout InspectionReport.Measured) -> Void) throws {
+            let c = try XCTUnwrap(r.segments[0].channels.firstIndex { $0.label == label })
+            let k = try XCTUnwrap(r.segments[0].channels[c].checks.firstIndex { $0.rule == rule })
+            r.segments[0].channels[c].checks[k].flagged = true
+            r.segments[0].channels[c].checks[k].measured = r.segments[0].channels[c].checks[k].measured ?? .init()
+            edit(&r.segments[0].channels[c].checks[k].measured!)
+        }
+        try set("C3", "large_deflection") { $0.fraction = 0.101; $0.windowsOver = 101; $0.windows = 1000 }
+        try set("C4", "large_deflection") { $0.fraction = 0.996; $0.windowsOver = 996; $0.windows = 1000 }
+        try set("BIG", "outlier_amplitude") { $0.ratio = 5.04 }
+        try set("Cz", "outlier_amplitude") { $0.ratio = 0.196 }
+        try set("MAINS", "mains_line") { $0.lines = [.init(hz: 60, db: 10.04, flagged: true, assessable: true, reason: nil)] }
+        let m = QualityModel(report: r)
+        let texts = { (label: String) in try self.row(m, label).flags.map(\.text).joined(separator: " | ") }
+        let tC3 = try texts("C3")
+        XCTAssertTrue(tC3.contains("Large deflections · 10.1 % of windows (101 of 1000)"), tC3)
+        let tC4 = try texts("C4")
+        XCTAssertTrue(tC4.contains("Large deflections · 99.6 % of windows"), tC4)
+        let tBIG = try texts("BIG")
+        XCTAssertTrue(tBIG.contains("variance 5.04× the median channel"), tBIG)
+        let tCz = try texts("Cz")
+        XCTAssertTrue(tCz.contains("variance 0.196× the median channel"), tCz)
+        let tMAINS = try texts("MAINS")
+        XCTAssertTrue(tMAINS.contains("60 Hz line 10.04 dB over neighbours"), tMAINS)
+    }
+
+    func testSegmentsAreNumberedByPosition() throws {
+        var r = try Self.fixture("inspect_recording_tiny")
+        for i in r.segments.indices { r.segments[i].index += 10 }
+        let m = QualityModel(report: r)
+        XCTAssertEqual(m.sections.map(\.title).map { String($0.prefix(9)) }, ["Segment 1", "Segment 2", "Segment 3"])
+        XCTAssertEqual(m.sections[2].summary, "Flags on 8 of 8 channels in segment 3")
     }
 
     // MARK: Summary, legend, footer

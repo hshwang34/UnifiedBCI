@@ -80,10 +80,12 @@ struct QualityModel: Equatable {
     init(report: InspectionReport) {
         let titles = Dictionary(report.rules.map { ($0.id, $0.title) }, uniquingKeysWith: { a, _ in a })
         let rules = Dictionary(report.rules.map { ($0.id, $0.rule) }, uniquingKeysWith: { a, _ in a })
+        let limits = Dictionary(report.rules.map { ($0.id, Self.numbers(in: $0.flagWhen)) }, uniquingKeysWith: { a, _ in a })
         legend = report.rules.map { LegendRow(id: $0.id, title: $0.title, rule: $0.rule, flagWhen: $0.flagWhen) }
-        sections = report.segments.map { seg in
-            let number = seg.index + 1
-            let rows = seg.channels.map { Self.row($0, titles: titles, rules: rules) }
+        // Numbered by position, as the progress events count segments ("segment k of n").
+        sections = report.segments.enumerated().map { position, seg in
+            let number = position + 1
+            let rows = seg.channels.map { Self.row($0, titles: titles, rules: rules, limits: limits) }
             let flagged = rows.filter { !$0.flags.isEmpty }.count
             return Section(
                 id: seg.index,
@@ -96,7 +98,8 @@ struct QualityModel: Equatable {
 
     // MARK: Rows
 
-    private static func row(_ c: InspectionReport.Channel, titles: [String: String], rules: [String: String]) -> ChannelRow {
+    private static func row(_ c: InspectionReport.Channel, titles: [String: String], rules: [String: String],
+                            limits: [String: [Double]]) -> ChannelRow {
         let title = { (id: String) in titles[id] ?? id }
         var flags: [Flag] = []
         var skipped: [(reason: String, titles: [String])] = []
@@ -113,12 +116,15 @@ struct QualityModel: Equatable {
                 skip("\(Fmt.hertz(line.hz)) \(line.reason ?? "not assessed")", title(check.rule))
             }
             if check.flagged {
-                flags.append(Flag(ruleID: check.rule, title: title(check.rule), detail: detail(check, rule: rules[check.rule])))
+                flags.append(Flag(ruleID: check.rule, title: title(check.rule), detail: detail(check, rule: rules[check.rule], limits: limits[check.rule] ?? [])))
             }
         }
         let notAssessed = skipped.map { "\($0.titles.joined(separator: ", ")) · \($0.reason)" }
-        let assessedAny = c.checks.contains(where: \.assessable)
-        let status: String? = flags.isEmpty ? (assessedAny ? noFlags : nothingAssessed) : nil
+        let assessed = c.checks.filter(\.assessable).count
+        let status: String? = !flags.isEmpty ? nil
+            : assessed == c.checks.count ? noFlags
+            : assessed == 0 ? nothingAssessed
+            : "None of the \(assessed) assessed rules fired"
         let kindUnit = "\(kindName(c.kind)) · \(unitName(c.unit))"
         let spoken = ([status].compactMap { $0 } + flags.map(\.text) + notAssessed).joined(separator: ". ")
         return ChannelRow(id: c.id, label: c.label, kindUnit: kindUnit, flags: flags, notAssessed: notAssessed,
@@ -126,7 +132,10 @@ struct QualityModel: Equatable {
     }
 
     /// The measured value in plain words, with the worker's rule text where the threshold matters.
-    private static func detail(_ check: InspectionReport.Check, rule: String?) -> String {
+    /// Numbers that sit on a rule's flag boundary (from its `flag_when`) are shown with
+    /// enough decimals that the shown value is on the same side of the boundary as the
+    /// measured one (`faithful`).
+    private static func detail(_ check: InspectionReport.Check, rule: String?, limits: [Double]) -> String {
         let m = check.measured
         let because = rule.map { " (\($0))" } ?? ""
         switch check.rule {
@@ -136,16 +145,16 @@ struct QualityModel: Equatable {
             let runs = m?.runs ?? 0
             return "\(runs) \(runs == 1 ? "run" : "runs"), longest \(m?.longestRunSamples.map(String.init) ?? "—") samples\(because)"
         case "large_deflection":
-            let pct = m?.fraction.map { "\(Fmt.fixed($0 * 100, 0)) %" } ?? "—"
+            let pct = m?.fraction.map { "\(faithful($0 * 100, digits: 0, boundaries: limits + [0, 100])) %" } ?? "—"
             return "\(pct) of windows (\(m?.windowsOver.map(String.init) ?? "—") of \(m?.windows.map(String.init) ?? "—")) with \(rule ?? "large peak-to-peak")"
         case "mains_line":
-            let fired = (m?.lines ?? []).filter(\.flagged).map { "\(Fmt.hertz($0.hz)) line \(num($0.db, 1)) dB over neighbours" }
+            let fired = (m?.lines ?? []).filter(\.flagged).map { "\(Fmt.hertz($0.hz)) line \($0.db.map { faithful($0, digits: 1, boundaries: limits) } ?? "—") dB over neighbours" }
             return fired.isEmpty ? "flagged" : fired.joined(separator: "; ")
         case "outlier_amplitude":
-            return "variance \(ratio(m?.ratio)) the median channel"
+            return "variance \(ratio(m?.ratio, limits)) the median channel"
         case "outlier_high_frequency":
             let band = m?.bandHz.flatMap { $0.count == 2 ? "\(num($0[0]))–\(num($0[1])) Hz" : nil } ?? "high-frequency"
-            return "\(band) power \(ratio(m?.ratio)) the median channel"
+            return "\(band) power \(ratio(m?.ratio, limits)) the median channel"
         default:
             return "flagged\(because)"
         }
@@ -179,9 +188,27 @@ struct QualityModel: Equatable {
         return v == v.rounded() && digits <= 1 ? Fmt.fixed(v, 0) : Fmt.fixed(v, digits)
     }
 
-    static func ratio(_ v: Double?) -> String {
+    static func ratio(_ v: Double?, _ boundaries: [Double] = []) -> String {
         guard let v else { return "—×" }
-        return "\(Fmt.fixed(v, v < 1 ? 2 : 1))×"
+        return "\(faithful(v, digits: v < 1 ? 2 : 1, boundaries: boundaries))×"
+    }
+
+    /// `v` with at least `digits` decimals, adding decimals (up to 6) until the rounded
+    /// value lies on the same side of every boundary as `v` itself: 0.101 of windows
+    /// against "> 10 %" reads "10.1 %", never "10 %"; 5.04× against "> 5×" reads "5.04×".
+    static func faithful(_ v: Double, digits: Int, boundaries: [Double]) -> String {
+        var d = digits
+        while true {
+            let s = Fmt.fixed(v, d)
+            let r = Double(s) ?? v
+            if d >= 6 || boundaries.allSatisfy({ (r > $0) == (v > $0) && (r < $0) == (v < $0) }) { return s }
+            d += 1
+        }
+    }
+
+    /// The numbers in a rule's flag condition: "> 5× or < 0.2×" → [5, 0.2].
+    static func numbers(in text: String) -> [Double] {
+        text.split(whereSeparator: { !($0.isNumber || $0 == ".") }).compactMap { Double($0) }
     }
 
     static func kindName(_ kind: String) -> String {

@@ -34,12 +34,17 @@ final class InspectionRunnerTests: XCTestCase {
         return r
     }
 
-    private func fakeLaunch(_ body: String) throws -> WorkerLaunch {
+    /// Where the last stand-in worker wrote its pid.
+    private var fakePIDFile: URL!
+
+    private func fakeLaunch(_ body: String, startDelay: Double = 0) throws -> WorkerLaunch {
         let real = try realLaunch()
         let dir = scratch.appendingPathComponent("fake-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("fake_worker.py")
-        try (Self.prologue + body).write(to: url, atomically: true, encoding: .utf8)
+        fakePIDFile = dir.appendingPathComponent("pid")
+        let pid = "import os, time\nopen(\(String(reflecting: fakePIDFile.path)), \"w\").write(str(os.getpid()))\ntime.sleep(\(startDelay))\n"
+        try (pid + Self.prologue + body).write(to: url, atomically: true, encoding: .utf8)
         return WorkerLaunch(origin: real.origin, python: real.python, pythonPath: nil, workingDirectory: dir, entry: .script(url))
     }
 
@@ -167,12 +172,17 @@ final class InspectionRunnerTests: XCTestCase {
     }
 
     func testHungWorker_timesOutAsAnalysisUnavailable() async throws {
+        // Ignores every request and SIGTERM, so only a SIGKILL stops it.
         let runner = try makeRunner(try fakeLaunch("""
+        import signal
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         for req in requests():
-            if req["method"] == "shutdown":
-                break
+            pass
         """), timeout: .milliseconds(500))
         guard case .analysisUnavailable = await runner.inspectAndWait(recordingID: recordingID) else { return XCTFail("\(runner.state)") }
+        let pid = try readPID()
+        await waitUntil(.seconds(5)) { !Self.isAlive(pid) }
+        XCTAssertFalse(Self.isAlive(pid), "a timed-out worker is killed, not left running")
     }
 
     func testNoWorker_isAnalysisUnavailable() async throws {
@@ -180,12 +190,117 @@ final class InspectionRunnerTests: XCTestCase {
         guard case .analysisUnavailable = await r.inspectAndWait(recordingID: recordingID) else { return XCTFail("\(r.state)") }
     }
 
-    func testLateProgressForAnotherRequest_isIgnored() async throws {
-        let r = InspectionRunner(projectDirectory: projectDir, launch: nil)
-        r.handle(WorkerEvent(name: "progress", requestID: "other", data: Data(#"{"stage":"loading"}"#.utf8)))
-        XCTAssertEqual(r.state, .idle)
-        XCTAssertEqual(r.progressLog, [])
+    func testProgressForAnotherOrAFinishedRequest_isIgnored() async throws {
+        let runner = try makeRunner(try fakeLaunch(Self.waitsForCancel))
+        runner.inspect(recordingID: recordingID)
+        await waitUntil { runner.progressLog.contains(.segment(1, of: 3)) }
+        let active = try XCTUnwrap(runner.currentRequestID)
+        let segment2 = Data(#"{"stage":"inspect","segment":2,"of":3}"#.utf8)
+        runner.handle(WorkerEvent(name: "progress", requestID: "other", data: segment2))
+        XCTAssertEqual(runner.progressLog.last, .segment(1, of: 3), "another request's progress is not ours")
+        runner.handle(WorkerEvent(name: "progress", requestID: active, data: segment2))
+        XCTAssertEqual(runner.progressLog.last, .segment(2, of: 3), "the active request's progress is")
+        let ended = await runner.cancelAndWait()
+        XCTAssertEqual(ended, .cancelled)
+        runner.handle(WorkerEvent(name: "progress", requestID: active, data: Data(#"{"stage":"inspect","segment":3,"of":3}"#.utf8)))
+        XCTAssertEqual(runner.state, .cancelled, "a late event never flips a finished run back to running")
     }
+
+    func testCancelThenImmediateInspect_runsTheSecondRequest() async throws {
+        let runner = try makeRunner(try fakeLaunch("""
+        for req in requests():
+            if req["method"] == "inspect_recording":
+                out({"v": 1, "event": "progress", "id": req["id"], "data": {"stage": "inspect", "segment": 1, "of": 1}})
+                pending = req["id"]
+                if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "second")):
+                    out({"v": 1, "id": req["id"], "ok": True, "result": {"rules": [], "segments": []}})
+                open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "second"), "w").close()
+            elif req["method"] == "cancel":
+                time.sleep(0.3)   # the cancelled run is still winding down when the next request arrives
+                out({"v": 1, "id": req["id"], "ok": True, "result": {"cancelled": True}})
+                out({"v": 1, "id": req["params"]["id"], "ok": False, "error": {"code": "cancelled", "message": "request was cancelled"}})
+            elif req["method"] == "shutdown":
+                break
+        """))
+        runner.inspect(recordingID: recordingID)
+        await waitUntil { runner.progressLog.contains(.segment(1, of: 1)) }
+        runner.cancel()
+        runner.inspect(recordingID: recordingID)
+        let final = await runner.inspectAndWait(recordingID: recordingID)
+        XCTAssertEqual(final, .done(recordingID: recordingID))
+        XCTAssertEqual(runner.report(for: recordingID)?.segments, [])
+    }
+
+    func testCancelRacingAFinishedWorker_cachesNothing() async throws {
+        // The worker has already finished when the cancel arrives: it says it found
+        // nothing to cancel and answers the request anyway.
+        let runner = try makeRunner(try fakeLaunch("""
+        for req in requests():
+            if req["method"] == "inspect_recording":
+                out({"v": 1, "event": "progress", "id": req["id"], "data": {"stage": "inspect", "segment": 1, "of": 1}})
+                pending = req["id"]
+            elif req["method"] == "cancel":
+                out({"v": 1, "id": pending, "ok": True, "result": {"rules": [], "segments": []}})
+                out({"v": 1, "id": req["id"], "ok": True, "result": {"cancelled": False}})
+            elif req["method"] == "shutdown":
+                break
+        """))
+        runner.inspect(recordingID: recordingID)
+        await waitUntil { runner.progressLog.contains(.segment(1, of: 1)) }
+        let ended = await runner.cancelAndWait()
+        XCTAssertEqual(ended, .cancelled)
+        XCTAssertNil(runner.report(for: recordingID))
+    }
+
+    func testCancelWhileTheWorkerStarts_killsItAndEndsPromptly() async throws {
+        let runner = try makeRunner(try fakeLaunch("", startDelay: 30))
+        runner.inspect(recordingID: recordingID)
+        await waitUntil { FileManager.default.fileExists(atPath: self.fakePIDFile.path) }
+        let pid = try readPID()
+        let t0 = ContinuousClock.now
+        let ended = await runner.cancelAndWait()
+        XCTAssertEqual(ended, .cancelled)
+        XCTAssertLessThan(ContinuousClock.now - t0, .seconds(5))
+        await waitUntil(.seconds(5)) { !Self.isAlive(pid) }
+        XCTAssertFalse(Self.isAlive(pid))
+    }
+
+    func testShutdown_stopsTheWorkerAndLaterInspectsEndAtOnce() async throws {
+        let runner = try makeRunner(try fakeLaunch("""
+        for req in requests():
+            if req["method"] == "inspect_recording":
+                out({"v": 1, "id": req["id"], "ok": True, "result": {"rules": [], "segments": []}})
+            elif req["method"] == "shutdown":
+                out({"v": 1, "id": req["id"], "ok": True, "result": {}})
+                break
+        """))
+        let ended = await runner.inspectAndWait(recordingID: recordingID)
+        XCTAssertEqual(ended, .done(recordingID: recordingID))
+        let pid = try readPID()
+        await runner.shutdown()
+        await waitUntil(.seconds(5)) { !Self.isAlive(pid) }
+        XCTAssertFalse(Self.isAlive(pid))
+        runner.inspect(recordingID: UUID())
+        XCTAssertFalse(runner.isBusy)
+        guard case .analysisUnavailable = runner.state else { return XCTFail("\(runner.state)") }
+    }
+
+    private static let waitsForCancel = """
+    for req in requests():
+        if req["method"] == "inspect_recording":
+            out({"v": 1, "event": "progress", "id": req["id"], "data": {"stage": "inspect", "segment": 1, "of": 3}})
+        elif req["method"] == "cancel":
+            out({"v": 1, "id": req["id"], "ok": True, "result": {"cancelled": True}})
+            out({"v": 1, "id": req["params"]["id"], "ok": False, "error": {"code": "cancelled", "message": "request was cancelled"}})
+        elif req["method"] == "shutdown":
+            break
+    """
+
+    private func readPID() throws -> pid_t {
+        try XCTUnwrap(pid_t(String(contentsOf: fakePIDFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+    }
+
+    private static func isAlive(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 }
 
     // MARK: Helpers
 

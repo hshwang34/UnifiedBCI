@@ -51,8 +51,11 @@ public final class InspectionRunner {
     private var client: WorkerClient?
     private var eventTask: Task<Void, Never>?
     private var runTask: Task<Void, Never>?
-    private var currentRequestID: String?
+    /// The request in flight; internal so tests can deliver events for it.
+    private(set) var currentRequestID: String?
     private var lastRecordingID: UUID?
+    /// Asked for while a cancelled run was still winding down; started when it ends.
+    private var queuedRecordingID: UUID?
     private var cancelRequested = false
     private var isShutDown = false
 
@@ -67,9 +70,17 @@ public final class InspectionRunner {
 
     public var isBusy: Bool { runTask != nil }
 
-    /// Inspects a recording, or reports the cached result at once. A run in flight is left alone.
+    /// Inspects a recording, or reports the cached result at once. A run in flight is left
+    /// alone, unless it was cancelled: then this request starts as soon as that run ends.
     public func inspect(recordingID: UUID) {
-        guard runTask == nil else { return }
+        guard !isShutDown else {
+            state = .analysisUnavailable(reason: Self.shutDownMessage)
+            return
+        }
+        guard runTask == nil else {
+            if cancelRequested { queuedRecordingID = recordingID }
+            return
+        }
         lastRecordingID = recordingID
         if cache[recordingID] != nil {
             state = .done(recordingID: recordingID)
@@ -79,14 +90,24 @@ public final class InspectionRunner {
         cancelRequested = false
         runTask = Task { [weak self] in
             await self?.run(recordingID)
-            self?.runTask = nil
+            guard let self else { return }
+            self.runTask = nil
+            if let next = self.queuedRecordingID {
+                self.queuedRecordingID = nil
+                self.inspect(recordingID: next)
+            }
         }
+    }
+
+    /// Waits for the current run and any request queued behind it.
+    private func waitForRuns() async {
+        while let t = runTask { await t.value }
     }
 
     @discardableResult
     public func inspectAndWait(recordingID: UUID) async -> State {
         inspect(recordingID: recordingID)
-        await runTask?.value
+        await waitForRuns()
         return state
     }
 
@@ -95,18 +116,24 @@ public final class InspectionRunner {
         inspect(recordingID: lastRecordingID)
     }
 
-    /// Asks the worker to stop; the run ends as `.cancelled` even if it had finished.
+    /// Asks the worker to stop; the run ends as `.cancelled` even if it had finished. A
+    /// worker still starting is killed, so the UI never waits out its start-up.
     public func cancel() {
+        queuedRecordingID = nil
         guard runTask != nil, !cancelRequested else { return }
         cancelRequested = true
-        guard let client, let id = currentRequestID else { return }   // not sent yet: `run` checks the flag
+        guard let client else { return }
+        guard let id = currentRequestID else {   // not sent yet: `run` checks the flag
+            Task { if await client.state != .ready { await client.forceTerminate() } }
+            return
+        }
         Task { _ = try? await client.cancel(requestID: id) }
     }
 
     @discardableResult
     public func cancelAndWait() async -> State {
         cancel()
-        await runTask?.value
+        await waitForRuns()
         return state
     }
 
@@ -115,9 +142,13 @@ public final class InspectionRunner {
         isShutDown = true
         cancel()
         let old = client
-        discardClient()
+        eventTask?.cancel()
+        eventTask = nil
+        client = nil
         if let old { await old.shutdown() }
     }
+
+    private static let shutDownMessage = "the analysis worker was shut down with its project window"
 
     // MARK: Internals
 
@@ -143,7 +174,9 @@ public final class InspectionRunner {
             cache[recordingID] = try InspectionReport.decode(data)
             finish(.done(recordingID: recordingID))
         } catch let error as WorkerError {
-            if Self.isWorkerGone(error.code) { discardClient(client) }
+            // A timed-out worker may be hung: kill it rather than ask it to exit.
+            if error.code == "timeout" { await client.forceTerminate() }
+            if Self.isWorkerGone(error.code) { discardClient(client, force: error.code == "timeout") }
             if cancelRequested || error.code == "cancelled" {
                 finish(.cancelled)
             } else if Self.isWorkerGone(error.code) {
@@ -172,7 +205,7 @@ public final class InspectionRunner {
 
     /// The running worker, or a fresh one. Only `run` calls this, and runs never overlap.
     private func readyClient() async throws -> WorkerClient {
-        guard !isShutDown else { throw WorkerError(code: "launch_failed", message: "the analysis worker was shut down with its project window") }
+        guard !isShutDown else { throw WorkerError(code: "launch_failed", message: Self.shutDownMessage) }
         if let client, await client.state == .ready { return client }
         discardClient()
         guard let launch else { throw WorkerError(code: "launch_failed", message: "no analysis worker is available (bundled worker missing and no development venv)") }
@@ -189,16 +222,16 @@ public final class InspectionRunner {
         }
         guard !isShutDown, client === fresh else {
             await fresh.shutdown()
-            throw WorkerError(code: "launch_failed", message: "the analysis worker was shut down with its project window")
+            throw WorkerError(code: "launch_failed", message: Self.shutDownMessage)
         }
         return fresh
     }
 
-    private func discardClient(_ expected: WorkerClient? = nil) {
+    private func discardClient(_ expected: WorkerClient? = nil, force: Bool = false) {
         if let expected, expected !== client { return }
         eventTask?.cancel()
         eventTask = nil
-        if let old = client { Task { await old.shutdown() } }
+        if let old = client { Task { if force { await old.forceTerminate() } else { await old.shutdown() } } }
         client = nil
     }
 

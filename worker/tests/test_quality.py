@@ -9,6 +9,7 @@ its variance from a slow drift, which leaves 1 s peak-to-peak and 20-45 Hz power
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -473,3 +474,35 @@ def _rounded(x):
     if isinstance(x, dict):
         return {k: _rounded(v) for k, v in x.items()}
     return x
+
+
+VERDICT = re.compile(r"(?<![-\w])(pass|passed|passes|fail|failed|fails|good|clean|healthy|neural)\b", re.IGNORECASE)
+
+
+def _strings(x):
+    if isinstance(x, str):
+        yield x
+    elif isinstance(x, list):
+        for v in x:
+            yield from _strings(v)
+    elif isinstance(x, dict):
+        for k, v in x.items():
+            if k in ("reason", "processed_reason", "title", "rule", "flag_when"):
+                yield from _strings(v)
+            elif isinstance(v, (list, dict)):
+                yield from _strings(v)
+
+
+def test_no_rule_or_reason_text_reads_as_a_verdict():
+    """The app shows these verbatim (decision #22). "band-pass" names the filter and is
+    allowed; a free-standing pass/fail/good/clean/neural is not."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("make_quality_fixtures", REPO / "worker" / "tools" / "make_quality_fixtures.py")
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    low = quality.inspect_segment(clean(np.random.default_rng(3), 4, 50.0, 2), 50.0, ["eeg", "eeg", "emg", "eeg"], ["", "V", "uV", "uV"])
+    texts = list(_strings([quality.rules(), tool.tiny(), tool.faults(), low]))
+    assert len(texts) > 100
+    assert any("band-pass" in t for t in texts), "the exemption is exercised"
+    for t in texts:
+        assert not VERDICT.search(t), t
