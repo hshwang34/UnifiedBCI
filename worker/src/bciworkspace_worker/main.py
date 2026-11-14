@@ -36,7 +36,7 @@ from typing import Any, Callable, Iterable, TextIO  # noqa: E402
 import numpy as np  # noqa: E402
 import threadpoolctl  # noqa: E402
 
-from . import pipeline, project_io  # noqa: E402
+from . import pipeline, project_io, quality  # noqa: E402
 from .protocol import (  # noqa: E402
     CONTROL_METHODS,
     PROTOCOL_VERSION,
@@ -274,10 +274,56 @@ def handle_fit_evaluate_project(req: Request, ctx: Context) -> dict[str, Any]:
     return {"evaluation": record, "pipeline": pipeline_block, "fitted_arrays_file": arrays_file}
 
 
+def handle_inspect_recording(req: Request, ctx: Context) -> dict[str, Any]:
+    """Signal-quality checks and spectra for every segment of one recording (brief 002).
+
+    params: project_dir, recording_id. Reads verified chunks only; events are not needed
+    and nothing is written. Progress: `loading`, then `inspect` per segment
+    (`segment` k of `of`). result: {"rules": quality.rules(), "segments": [{index,
+    run_id, sfreq, duration_s, channels: [{id, label, kind, unit, checks, psd, peak_hz}]}]}.
+    Timing goes to the `done` event only, as for evaluation.
+    """
+    p = req.params
+    try:
+        project_dir = str(p["project_dir"])
+        recording_id = str(p["recording_id"])
+    except KeyError as exc:
+        raise ProtocolError("bad_request", f"missing parameter {exc}", req.id) from exc
+    t0 = time.monotonic()
+    ctx.emit("progress", {"stage": "loading"})
+    try:
+        rec = project_io.open_recording(project_dir, recording_id)
+        segments = project_io.load_segments(rec, None)
+    except project_io.IntegrityError as exc:
+        raise ProtocolError("integrity", str(exc), req.id) from exc
+    except project_io.ProjectError as exc:
+        raise ProtocolError("bad_request", str(exc), req.id) from exc
+    channels = rec.manifest["channels"]
+    kinds = [str(c.get("kind", "")) for c in channels]
+    units = [str(c.get("unit", "")) for c in channels]
+    # load_segments returns segments in manifest index order.
+    indices = sorted(int(s["index"]) for s in rec.manifest["segments"])
+    out = []
+    for k, (index, seg) in enumerate(zip(indices, segments), 1):
+        ctx.check_cancelled()
+        ctx.emit("progress", {"stage": "inspect", "segment": k, "of": len(segments)})
+        per_channel = quality.inspect_segment(seg.data, seg.sfreq, kinds, units)
+        out.append({
+            "index": index, "run_id": seg.run_id, "sfreq": seg.sfreq,
+            "duration_s": seg.data.shape[1] / seg.sfreq,
+            "channels": [{"id": str(c["id"]), "label": str(c.get("label", c["id"])), "kind": kinds[i],
+                          "unit": units[i], **per_channel[i]} for i, c in enumerate(channels)],
+        })
+    ctx.check_cancelled()
+    ctx.emit("done", {"elapsed_seconds": time.monotonic() - t0})
+    return {"rules": quality.rules(), "segments": out}
+
+
 HANDLERS: dict[str, Handler] = {
     "fit_evaluate_synthetic": handle_fit_evaluate_synthetic,
     "fit_evaluate_project": handle_fit_evaluate_project,
     "fit_evaluate_defaults": handle_fit_evaluate_defaults,
+    "inspect_recording": handle_inspect_recording,
 }
 
 

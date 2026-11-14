@@ -205,13 +205,14 @@ def read_chunk(rec: Recording, entry: dict[str, Any]) -> np.ndarray:
     return np.frombuffer(raw, dtype="<f8").reshape(rows, count)
 
 
-def load_segments(rec: Recording, labels: dict[str, int]) -> list[Segment]:
+def load_segments(rec: Recording, labels: dict[str, int] | None) -> list[Segment]:
     """Assemble one `Segment` per stream segment from its chunks, with the events
-    whose label is in `labels` (label -> class index). Chunks must tile each segment
-    contiguously from sample 0; anything else is an integrity error, not a repair."""
+    whose label is in `labels` (label -> class index); `labels=None` loads samples only
+    and never reads `events.jsonl` (signal inspection needs no events). Chunks must tile
+    each segment contiguously from sample 0; anything else is an integrity error."""
     manifest = rec.manifest
     rows = [int(c["sourceRow"]) for c in manifest["channels"]]
-    events_by_segment = _events_by_segment(rec, labels)
+    events_by_segment = {} if labels is None else _events_by_segment(rec, labels)
     out: list[Segment] = []
     for seg in sorted(manifest["segments"], key=lambda s: int(s["index"])):
         index = int(seg["index"])
