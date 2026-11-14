@@ -229,15 +229,23 @@ def inspect_segment(data: np.ndarray, sfreq: float, kinds: Sequence[str], units:
     data = np.asarray(data, dtype=np.float64)
     n_ch, n = data.shape
     finite = np.all(np.isfinite(data), axis=1)
-    raw = np.where(finite[:, None], data, 0.0)    # non-finite channels: reported, not computed
-    raw = raw - raw.mean(axis=1, keepdims=True)
+    samples = np.where(finite[:, None], data, 0.0)    # non-finite channels: reported, not computed
+    raw = samples - samples.mean(axis=1, keepdims=True)
 
-    sos = pipeline.BandpassSpec().design(sfreq)
-    settle = pipeline.settling_samples(sos)
-    processed = pipeline.filter_segment(sos, raw)[:, settle:]
     nperseg = min(int(round(PSD_WINDOW_S * sfreq)), n)
+    spec = pipeline.BandpassSpec()
     processed_reason = None
-    if processed.shape[1] < nperseg:
+    if spec.high_hz >= sfreq / 2.0:
+        processed = None
+        processed_reason = (f"band-pass {spec.low_hz:g}–{spec.high_hz:g} Hz does not fit below "
+                            f"Nyquist at {_rate(sfreq)} Hz")
+    else:
+        # Same processed signal as evaluation: the unmodified samples, one causal pass from
+        # zero state, warm-up dropped. The mean is removed for the raw spectrum only.
+        sos = spec.design(sfreq)
+        settle = pipeline.settling_samples(sos)
+        processed = pipeline.filter_segment(sos, samples)[:, settle:]
+    if processed is not None and processed.shape[1] < nperseg:
         if processed.shape[1] >= int(round(WINDOW_S * sfreq)):
             nperseg = processed.shape[1]   # short segment: both spectra use the shorter window
         else:
@@ -269,7 +277,12 @@ def inspect_segment(data: np.ndarray, sfreq: float, kinds: Sequence[str], units:
             psd = {"freqs": [_num(f) for f in out_freqs], "raw": None, "processed": None, "processed_reason": reason}
             channels.append({"checks": checks, "psd": psd, "peak_hz": None})
             continue
-        unit_reason = None if is_uv[i] else f"not assessed (unit {units[i]})"
+        if is_uv[i]:
+            unit_reason = None
+        elif not units[i].strip():
+            unit_reason = "unit not declared"
+        else:
+            unit_reason = f"not assessed (unit {units[i]})"
         if unit_reason:
             flat = _not_assessable("flatline", unit_reason)
             defl = _not_assessable("large_deflection", unit_reason)

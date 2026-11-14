@@ -308,9 +308,144 @@ def test_inspect_missing_recording_is_a_bad_request():
 
 
 def test_inspect_bundled_example_runtime():
+    # Measured about 0.5 s; the 5 s budget leaves room for a loaded CI runner.
     t0 = time.monotonic()
     result, _ = run_in_process(EXAMPLE)
     elapsed = time.monotonic() - t0
     assert len(result["segments"]) == 3 and len(result["segments"][0]["channels"]) == 16
     json.dumps(result, allow_nan=False)
-    assert elapsed < 2.0, f"inspection took {elapsed:.2f} s"
+    assert elapsed < 5.0, f"inspection took {elapsed:.2f} s"
+
+
+# --- review round: low rates, processed signal, units, threshold boundaries -----------------
+
+
+@pytest.mark.parametrize("sfreq", [50.0, 60.0])
+def test_band_pass_beyond_nyquist_leaves_raw_checks_running(sfreq):
+    data = clean(np.random.default_rng(7), 4, sfreq, 30)
+    out = quality.inspect_segment(data, sfreq, ["eeg"] * 4, ["uV"] * 4)
+    psd = out[0]["psd"]
+    assert psd["processed"] is None
+    assert psd["processed_reason"] == f"band-pass 8–30 Hz does not fit below Nyquist at {sfreq:g} Hz"
+    assert psd["raw"] is not None and psd["freqs"][-1] == sfreq / 2
+    for rule in ("flatline", "pinned", "large_deflection", "outlier_amplitude", "outlier_high_frequency"):
+        assert check(out[0], rule)["assessable"], rule
+    assert check(out[0], "mains_line")["reason"] == f"not assessable at {sfreq:g} Hz"
+    json.dumps(out, allow_nan=False)
+
+
+def test_low_rate_recording_through_the_server(tmp_path):
+    import shutil
+    project = tmp_path / "p.bciproj"
+    shutil.copytree(TINY, project)
+    manifest_path = project / "recordings" / recording_id(project) / "recording.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["timing"]["nominalSampleRateHz"] = 50.0
+    manifest_path.write_text(json.dumps(manifest))
+    out = []
+    stdin = Feed()
+    t = threading.Thread(target=worker_main.serve, kwargs={"stdin": stdin, "write": lambda l: out.append(json.loads(l))}, daemon=True)
+    t.start()
+    stdin.push({"v": 1, "id": "q", "method": "inspect_recording",
+                "params": {"project_dir": str(project), "recording_id": recording_id(project)}})
+    deadline = time.monotonic() + 60
+    while not any(m.get("id") == "q" and "ok" in m for m in out) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    stdin.close()
+    t.join(10)
+    resp = next(m for m in out if m.get("id") == "q" and "ok" in m)
+    assert resp["ok"], resp
+    ch = resp["result"]["segments"][0]["channels"][0]
+    assert ch["psd"]["processed"] is None and "does not fit below Nyquist at 50 Hz" in ch["psd"]["processed_reason"]
+
+
+def test_band_passed_psd_is_the_evaluation_signal_with_a_dc_offset():
+    sfreq = 160.0
+    data = clean(np.random.default_rng(8), 3, sfreq, 20) + 500.0
+    out = quality.inspect_segment(data, sfreq, ["eeg"] * 3, ["uV"] * 3)
+    sos = pipeline.BandpassSpec().design(sfreq)
+    expected = pipeline.filter_segment(sos, data)[:, pipeline.settling_samples(sos):]
+    freqs, power = quality.welch_psd(expected, sfreq, int(2 * sfreq))
+    _, bins = quality._reduce_bins(freqs, power)
+    for i in range(3):
+        np.testing.assert_allclose(out[i]["psd"]["processed"], 10 * np.log10(bins[i]), rtol=0, atol=1e-9)
+
+
+@pytest.mark.parametrize("unit,reason", [("", "unit not declared"), ("  ", "unit not declared"),
+                                         ("V", "not assessed (unit V)")])
+def test_unit_reasons(unit, reason):
+    data = clean(np.random.default_rng(9), 4, 160.0, 10)
+    out = quality.inspect_segment(data, 160.0, ["eeg"] * 4, [unit, "uV", "uV", "uV"])
+    assert check(out[0], "flatline")["reason"] == reason
+
+
+@pytest.mark.parametrize("run,flag", [(4, False), (5, True)])
+def test_pinned_boundary(run, flag):
+    x = np.sin(np.arange(400) * 0.37)
+    x[100:100 + run] = 2.0
+    c = quality.check_pinned(x)
+    assert c["flagged"] is flag and c["measured"]["longest_run_samples"] == run
+
+
+def alternating(n, amplitude):
+    """Zero-mean ±amplitude: standard deviation exactly `amplitude`, peak-to-peak 2x."""
+    return amplitude * np.where(np.arange(n) % 2 == 0, 1.0, -1.0)
+
+
+@pytest.mark.parametrize("sd,flag", [(0.49, True), (0.51, False)])
+def test_flatline_boundary(sd, flag):
+    sfreq = 160.0
+    x = np.concatenate([alternating(160, 5.0), alternating(160, sd), alternating(160, 5.0)])
+    c = quality.check_flatline(x, sfreq)
+    assert c["flagged"] is flag and c["measured"]["flat_windows"] == int(flag)
+
+
+@pytest.mark.parametrize("ptp,n_windows,flag", [
+    (199.9, 9, False),   # 1 of 9 windows would be over, but its peak-to-peak is under 200 µV
+    (200.1, 9, True),    # 1 of 9 = 11 % > 10 %
+    (200.1, 10, False),  # 1 of 10 = exactly 10 %, not more
+    (200.1, 5, True),
+])
+def test_large_deflection_boundaries(ptp, n_windows, flag):
+    x = np.concatenate([alternating(160, ptp / 2)] + [alternating(160, 10.0)] * (n_windows - 1))
+    assert quality.check_large_deflection(x, 160.0)["flagged"] is flag
+
+
+def sines(amplitudes, hz=30.0, sfreq=160.0, seconds=10):
+    """Same-frequency sines with whole cycles: variance and band power scale exactly as a²."""
+    t = np.arange(int(seconds * sfreq)) / sfreq
+    return np.array([a * np.sin(2 * np.pi * hz * t) for a in amplitudes])
+
+
+@pytest.mark.parametrize("ratio,flag", [(4.99, False), (5.01, True), (0.201, False), (0.199, True)])
+def test_outlier_amplitude_boundaries(ratio, flag):
+    data = sines([1.0, 1.0, 1.0, 1.0, np.sqrt(ratio)])
+    c = check(quality.inspect_segment(data, 160.0, ["eeg"] * 5, ["uV"] * 5)[4], "outlier_amplitude")
+    assert c["measured"]["ratio"] == pytest.approx(ratio, rel=1e-9)
+    assert c["flagged"] is flag
+
+
+@pytest.mark.parametrize("ratio,flag", [(2.99, False), (3.01, True)])
+def test_outlier_high_frequency_boundary(ratio, flag):
+    data = sines([1.0, 1.0, 1.0, 1.0, np.sqrt(ratio)])
+    c = check(quality.inspect_segment(data, 160.0, ["eeg"] * 5, ["uV"] * 5)[4], "outlier_high_frequency")
+    assert c["measured"]["ratio"] == pytest.approx(ratio, rel=1e-9)
+    assert c["flagged"] is flag
+    assert check(quality.inspect_segment(data, 160.0, ["eeg"] * 5, ["uV"] * 5)[4], "outlier_amplitude")["flagged"] is False
+
+
+@pytest.mark.parametrize("peak,db,flag", [
+    (46.0, 10.0, False),                    # line mean (4·1 + 46) / 5 = 10 → exactly 10 dB, not more
+    (47.0, 10 * np.log10(10.2), True),
+    (1.0, 0.0, False),
+])
+def test_mains_db_on_a_known_spectrum(peak, db, flag):
+    """Flat unit spectrum on 0.5 Hz bins with one raised bin at 60 Hz: the line band
+    (59-61 Hz) holds five bins, both flanks are 1, so dB = 10·log10(line mean)."""
+    freqs = np.arange(0, 80.5, 0.5)
+    power = np.ones_like(freqs)
+    power[freqs == 60.0] = peak
+    c = quality.check_mains(freqs, power, 160.0)
+    line60 = next(e for e in c["measured"]["lines"] if e["hz"] == 60.0)
+    assert line60["db"] == pytest.approx(db, abs=1e-12)
+    assert line60["flagged"] is flag and c["flagged"] is flag
