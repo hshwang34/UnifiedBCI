@@ -42,7 +42,7 @@ struct QualityTabView: View {
                     .progressViewStyle(TrackProgressStyle())
                     .accessibilityLabel(QualityModel.progressLabel)
                     .accessibilityValue(QualityModel.progressText(p))
-                Button("Cancel") { session.cancelInspection() }.buttonStyle(.bordered)
+                Button(QualityModel.cancelButton) { session.cancelInspection() }.buttonStyle(.bordered)
             }
         }
         .card()
@@ -92,6 +92,7 @@ struct QualityTabView: View {
                     // VoiceOver reads the row as one sentence: channel first, then flags.
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(r.accessibilityLabel)
+                    .accessibilityAddTraits(selected == r.id ? .isSelected : [])
             }
             .listStyle(.plain)
             .alternatingRowBackgrounds()
@@ -118,8 +119,7 @@ struct QualityTabView: View {
             } else {
                 SpectrumChart(points: spectrum.series(processed: processed), nyquist: nyquist)
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(spectrum.accessibilitySummary)
-                    .accessibilityValue(processed ? QualityModel.processedTitle : QualityModel.rawTitle)
+                    .accessibilityLabel(spectrum.accessibilitySummary(processed: processed))
             }
         }
         .card()

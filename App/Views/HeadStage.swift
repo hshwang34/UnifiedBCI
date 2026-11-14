@@ -168,7 +168,7 @@ enum HeadDrawing {
         if hovered && !selected, let ring = camera.disc(at: p, radius: 9, lift: 1.2, in: size) {
             g.stroke(polygon(ring), with: .color(style.accent), lineWidth: 2)
         }
-        if flagged, let ring = camera.disc(at: p, radius: reference ? 13 : 9.5, lift: 1.2, in: size) {
+        if flagged, let ring = camera.disc(at: p, radius: reference ? 13 : 11, lift: 1.2, in: size) {
             g.stroke(polygon(ring), with: .color(style.text.opacity(0.85)), lineWidth: style.increasedContrast ? 1.8 : 1.3)
         }
         if reference, let ring = camera.disc(at: p, radius: 10.5, lift: 1.2, in: size) {

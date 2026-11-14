@@ -156,6 +156,57 @@ final class QualityTabTests: XCTestCase {
         XCTAssertEqual(session.qualityState, .running(.segment(2, of: 3)))
     }
 
+    /// Review fix: leaving a pending inspection for another recording and coming back must
+    /// show it running (never stuck on "Starting"), and Cancel must still end it.
+    func testLeavingAndReturningToAPendingInspection_isNotStuck() async throws {
+        let session = try await session(try hangingLaunch(pidFile: scratch.appendingPathComponent("pid")))
+        let a = try XCTUnwrap(session.selectedRecordingID)
+        session.recordingTab = .quality
+        await waitUntil { session.qualityState == .running(.segment(2, of: 3)) }
+        session.recordingTab = .channels
+        session.selectedRecordingID = UUID()          // another recording, not inspected
+        XCTAssertEqual(session.qualityState, .notStarted)
+        session.selectedRecordingID = a
+        XCTAssertEqual(session.qualityState, .running(.segment(2, of: 3)))
+        session.cancelInspection()
+        await session.awaitInspection()
+        XCTAssertEqual(session.qualityState, .cancelled)
+    }
+
+    /// Review fix: switching the Quality tab from a running A to B cancels A, and B never
+    /// shows A's "cancelled" while it waits.
+    func testSwitchingRecordingsMidRun_neverShowsCancelledForTheNewOne() async throws {
+        let session = try await session(try hangingLaunch(pidFile: scratch.appendingPathComponent("pid")))
+        let a = try XCTUnwrap(session.selectedRecordingID)
+        session.recordingTab = .quality
+        await waitUntil { session.qualityState == .running(.segment(2, of: 3)) }
+        var seen: [QualityTabState] = []
+        let sampler = Task { @MainActor in
+            while !Task.isCancelled {
+                if seen.last != session.qualityState { seen.append(session.qualityState) }
+                try? await Task.sleep(for: .milliseconds(1))
+            }
+        }
+        let b = UUID()
+        session.selectedRecordingID = b
+        await waitUntil { session.inspector.state == .running(recordingID: b, .segment(2, of: 3)) }
+        sampler.cancel()
+        XCTAssertEqual(session.inspector.state, .running(recordingID: b, .segment(2, of: 3)))
+        XCTAssertFalse(seen.contains(.cancelled), "\(seen)")
+        XCTAssertFalse(seen.contains(.notStarted), "\(seen)")
+        session.selectedRecordingID = a
+        XCTAssertEqual(session.qualityState, .notStarted, "A was superseded: it offers Inspect again")
+    }
+
+    func testBandPassedSummaryDescribesTheBandPassedSpectrum() throws {
+        let m = QualityModel(report: try QualityModelTests.fixture("inspect_recording_tiny"))
+        let s = try XCTUnwrap(m.spectrum(section: 0, channel: "ch00"))
+        XCTAssertEqual(s.accessibilitySummary(processed: false), s.accessibilitySummary)
+        let top = try XCTUnwrap(s.processed.max { $0.db < $1.db })
+        XCTAssertEqual(s.accessibilitySummary(processed: true), "FC3, band-passed: highest power at \(Fmt.fixed(top.hz, 1)) Hz")
+        XCTAssertTrue(m.sections.allSatisfy { $0.spectra.allSatisfy { ($0.raw + $0.processed).allSatisfy { $0.hz >= 1 } } })
+    }
+
     func testWorkerFailure_isTheAnalysisUnavailableState() async throws {
         let real = try XCTUnwrap(WorkerLaunch.locate())
         let script = scratch.appendingPathComponent("dies.py")
@@ -180,6 +231,7 @@ final class QualityTabTests: XCTestCase {
         XCTAssertFalse(session.inspector.isBusy)
         await waitUntil(.seconds(10)) { kill(pid, 0) != 0 }
         XCTAssertNotEqual(kill(pid, 0), 0, "the inspection worker exited with its project")
+        XCTAssertTrue(session.isClosing)
         session.inspect()
         XCTAssertFalse(session.inspector.isBusy, "nothing starts after shutdown")
     }

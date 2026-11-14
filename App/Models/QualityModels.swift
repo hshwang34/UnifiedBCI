@@ -177,7 +177,7 @@ struct QualityModel: Equatable {
         var out: [Point] = []
         var run = 0
         for (f, v) in zip(freqs, db) {
-            if let f, let v { out.append(Point(hz: f, db: v, run: run)) } else if out.last?.run == run { run += 1 }
+            if let f, let v, f >= 1 { out.append(Point(hz: f, db: v, run: run)) } else if out.last?.run == run { run += 1 }
         }
         return out
     }
@@ -248,6 +248,7 @@ extension QualityModel {
     static let failedTitle = "Inspection failed"
     static let failedMessage = "The analysis worker refused this request; nothing changed. Retrying without a change will fail the same way."
     static let progressLabel = "Inspection progress"
+    static let cancelButton = "Cancel"
     static let legendTitle = "Rules"
     static let spectrumTitle = "Spectrum"
     static let segmentPicker = "Segment"
@@ -283,6 +284,14 @@ extension QualityModel {
 
 extension QualityModel.Spectrum {
     func series(processed: Bool) -> [QualityModel.Point] { processed ? self.processed : raw }
+
+    /// VoiceOver for the spectrum on screen. Raw: the worker's peak summary. Band-passed:
+    /// its highest-power frequency (the worker's peak describes the raw spectrum only).
+    func accessibilitySummary(processed: Bool) -> String {
+        guard processed else { return accessibilitySummary }
+        guard let top = self.processed.max(by: { $0.db < $1.db }) else { return "\(label): no band-passed spectrum" }
+        return "\(label), band-passed: highest power at \(Fmt.fixed(top.hz, 1)) Hz"
+    }
 
     /// "Band-passed (reference pipeline) not available · <worker reason>", nil when it has points.
     func unavailableText(processed: Bool) -> String? {

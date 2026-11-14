@@ -53,7 +53,8 @@ public final class InspectionRunner {
     private var runTask: Task<Void, Never>?
     /// The request in flight; internal so tests can deliver events for it.
     private(set) var currentRequestID: String?
-    private var lastRecordingID: UUID?
+    /// The recording of the last run started; the terminal states describe it.
+    public private(set) var lastRecordingID: UUID?
     /// Asked for while a cancelled run was still winding down; started when it ends.
     private var queuedRecordingID: UUID?
     private var cancelRequested = false
@@ -69,6 +70,10 @@ public final class InspectionRunner {
     public func report(for recordingID: UUID) -> InspectionReport? { cache[recordingID] }
 
     public var isBusy: Bool { runTask != nil }
+
+    /// The recording the runner is working towards: the queued one behind a cancelled run,
+    /// else the one running; nil when idle.
+    public var pendingRecordingID: UUID? { runTask == nil ? nil : (queuedRecordingID ?? lastRecordingID) }
 
     /// Inspects a recording, or reports the cached result at once. A run in flight is left
     /// alone, unless it was cancelled: then this request starts as soon as that run ends.

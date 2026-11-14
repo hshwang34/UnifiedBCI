@@ -106,11 +106,7 @@ final class ProjectSession: Identifiable {
     /// Recordings whose Quality tab has been shown: inspection starts on its own only the
     /// first time, so a cancel or a failure is not undone by switching tabs.
     @ObservationIgnored private var autoInspected: Set<UUID> = []
-    /// The recording the last Inspect / Retry asked for, which the runner's terminal states describe.
-    private(set) var inspectedRecordingID: UUID?
     @ObservationIgnored private var qualityModels: [UUID: QualityModel] = [:]
-    @ObservationIgnored private var inspectTask: Task<Void, Never>?
-    @ObservationIgnored private var inspectGeneration = 0
     /// Results whose reruns the user folded away in the list (all start expanded).
     var collapsedResults: Set<UUID> = []
 
@@ -368,17 +364,22 @@ final class ProjectSession: Identifiable {
 
     // MARK: Quality (brief 002)
 
-    /// The Quality tab's state for the selected recording.
+    /// The Quality tab's state for the selected recording, derived from the runner alone:
+    /// a pending request wins over the previous run's terminal state, and terminal states
+    /// count only for the recording that run was for.
     var qualityState: QualityTabState {
         guard let id = selectedRecordingID else { return .notStarted }
         if let model = qualityModel(for: id) { return .ready(model) }
-        let mine = inspectedRecordingID == id
+        if inspector.pendingRecordingID == id {
+            if case .running(let rid, let p) = inspector.state, rid == id { return .running(p) }
+            return .running(.starting)
+        }
+        guard !inspector.isBusy, inspector.lastRecordingID == id else { return .notStarted }
         switch inspector.state {
-        case .running(let rid, let p): return rid == id ? .running(p) : (mine ? .running(.starting) : .notStarted)
-        case .analysisUnavailable(let d) where mine: return .unavailable(details: d)
-        case .failed(let d) where mine: return .failed(details: d)
-        case .cancelled where mine: return .cancelled
-        default: return mine && inspectTask != nil ? .running(.starting) : .notStarted
+        case .analysisUnavailable(let d): return .unavailable(details: d)
+        case .failed(let d): return .failed(details: d)
+        case .cancelled: return .cancelled
+        default: return .notStarted
         }
     }
 
@@ -392,31 +393,24 @@ final class ProjectSession: Identifiable {
     }
 
     private func inspectIfFirstShown() {
-        guard recordingTab == .quality, let id = selectedRecordingID, !isShutDown, autoInspected.insert(id).inserted else { return }
+        guard recordingTab == .quality, let id = selectedRecordingID, !isClosing, autoInspected.insert(id).inserted else { return }
         inspect()
     }
 
     /// Inspects the selected recording (Inspect, Retry, first show). A run for another
-    /// recording is cancelled first: only the one on screen matters.
+    /// recording is cancelled and this one queued behind it (`InspectionRunner.inspect`).
     func inspect() {
-        guard let id = selectedRecordingID, !isShutDown else { return }
-        inspectedRecordingID = id
-        if case .running(let rid, _) = inspector.state, rid != id { inspector.cancel() }
-        let previous = inspectTask
-        inspectGeneration += 1
-        let generation = inspectGeneration
-        inspectTask = Task { [weak self] in
-            await previous?.value
-            guard let self, self.selectedRecordingID == id, !self.isShutDown else { return }
-            await self.inspector.inspectAndWait(recordingID: id)
-            if self.inspectGeneration == generation { self.inspectTask = nil }
-        }
+        guard let id = selectedRecordingID, !isClosing, inspector.report(for: id) == nil else { return }
+        if inspector.isBusy, inspector.pendingRecordingID != id { inspector.cancel() }
+        inspector.inspect(recordingID: id)
     }
 
     func cancelInspection() { inspector.cancel() }
 
-    /// Waits for the current inspection request to finish (tests, snapshots).
-    func awaitInspection() async { await inspectTask?.value }
+    /// Waits until the runner is idle (tests, snapshots).
+    func awaitInspection() async {
+        while inspector.isBusy { try? await Task.sleep(for: .milliseconds(20)) }
+    }
 
     // MARK: Export
 
@@ -433,6 +427,9 @@ final class ProjectSession: Identifiable {
         announce(noticeText(notice!))
     }
 
+    /// Set as `shutdown()` begins: nothing starts an inspection afterwards.
+    private(set) var isClosing = false
+
     /// True once `shutdown()` has finished: no run, no worker, nothing loading.
     private(set) var isShutDown = false
 
@@ -443,9 +440,12 @@ final class ProjectSession: Identifiable {
         defaultsTask?.cancel()
         resultLoad?.cancel()
         recipesTask?.cancel()
+        isClosing = true
+        // The inspection worker stops alongside the evaluation, inside the same budget.
+        async let inspection: Void = inspector.shutdown()
         await runner.stop(within: Self.stopLimit)
         await runner.shutdown()
-        await inspector.shutdown()
+        await inspection
         isShutDown = true
     }
 
