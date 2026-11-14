@@ -256,3 +256,40 @@ struct StatusChip: View {
         .accessibilityElement(children: .combine)
     }
 }
+
+/// Brief 003: a glass panel that morphs into the panel with the same `id` on the next intro
+/// step (`glassEffectID` inside a `GlassGroup`, macOS 26). On macOS 15, and whenever
+/// `morphs` is false (Reduce Motion), it is the ordinary glass surface and the step change
+/// is a cross-fade or instant. Reduce Transparency / Increase Contrast make it solid.
+struct MorphingGlass: ViewModifier {
+    let id: String
+    let namespace: Namespace.ID
+    let cornerRadius: CGFloat
+    var style: GlassStyle = .hero
+    var morphs = true
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.colorScheme) private var scheme
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if reduceTransparency || contrast == .increased {
+            content.glassSurface(cornerRadius: cornerRadius, style: style).transition(.opacity)
+        } else if #available(macOS 26, *) {
+            let glass: Glass = style.tint.map { .regular.tint($0.opacity(scheme == .dark ? style.tintOpacity.dark : style.tintOpacity.light)) } ?? .regular
+            content
+                .background(Theme.surface1.opacity(style.scrim.map { scheme == .dark ? $0.dark : $0.light } ?? 0), in: shape)
+                .glassEffect(glass, in: shape)
+                .glassEffectID(id, in: namespace)
+                .glassEffectTransition(morphs ? .matchedGeometry : .identity)
+        } else {
+            content.glassSurface(cornerRadius: cornerRadius, style: style).transition(.opacity)
+        }
+    }
+}
+
+extension View {
+    func morphingGlass(id: String, in namespace: Namespace.ID, cornerRadius: CGFloat, style: GlassStyle = .hero, morphs: Bool = true) -> some View {
+        modifier(MorphingGlass(id: id, namespace: namespace, cornerRadius: cornerRadius, style: style, morphs: morphs))
+    }
+}

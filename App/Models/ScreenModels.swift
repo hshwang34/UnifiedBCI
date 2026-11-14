@@ -157,6 +157,27 @@ struct RecordingDetailModel {
         var kindSortKey: String { kind ?? "" }
     }
 
+    /// A channel table row. `id` is the channel id, except for a repeat of an id the manifest
+    /// already used, which gets a suffix so the table's identity never collides; selecting
+    /// such a row highlights nothing (MontageLayout lists the repeat as unplaced).
+    struct ChannelTableRow: Identifiable, Equatable {
+        let row: ChannelRow
+        let id: String
+
+        static func rows(_ channels: [ChannelRow]) -> [ChannelTableRow] {
+            var used = Set(channels.map(\.id)), seen = Set<String>()
+            return channels.map { ch in
+                guard seen.insert(ch.id).inserted else {
+                    var n = 2, key = "\(ch.id) (\(n))"
+                    while used.contains(key) { n += 1; key = "\(ch.id) (\(n))" }
+                    used.insert(key)
+                    return ChannelTableRow(row: ch, id: key)
+                }
+                return ChannelTableRow(row: ch, id: ch.id)
+            }
+        }
+    }
+
     struct SegmentRow: Identifiable, Equatable {
         let index: Int
         let runID: String
@@ -187,7 +208,14 @@ struct RecordingDetailModel {
     let citations: [Citation]
     let derivations: [String]
     let montage: String
+    /// The stored montage and reference strings, verbatim, for `MontageLayout` (brief 003).
+    let montageRaw: String
+    let referenceRaw: String
     let channels: [ChannelRow]
+    /// `channels` with identities the table can't confuse (see `ChannelTableRow`).
+    let channelTableRows: [ChannelTableRow]
+    /// Built once per model, so hover and selection re-renders never rebuild it (brief 003).
+    let montageLayout: MontageLayout
     let segments: [SegmentRow]
     let events: [EventRow]
     let isPublicDataset: Bool
@@ -213,10 +241,14 @@ struct RecordingDetailModel {
         citations = (s.attribution ?? []).map { Citation(text: $0.text, doi: $0.doi) }
         derivations = s.derivations ?? []
         montage = Self.declared(m.montage) ?? Self.undeclared
+        montageRaw = m.montage
+        referenceRaw = m.reference
 
         channels = m.channels.map {
             ChannelRow(id: $0.id, label: Self.declared($0.label), unit: Self.declared($0.unit), kind: Self.declared($0.kind))
         }
+        channelTableRows = ChannelTableRow.rows(channels)
+        montageLayout = MontageLayout(montage: m.montage, reference: m.reference, channels: channels)
 
         let rate = m.timing.nominalSampleRateHz
         segments = m.segments.sorted { $0.index < $1.index }.map { seg in

@@ -115,6 +115,31 @@ final class ScreenModelTests: XCTestCase {
         XCTAssertEqual(model.montage, "unspecified")
     }
 
+    /// Review fix (PR 4): a manifest repeating a channel id builds without trapping, the
+    /// montage places the id once, and the table rows keep unique identities.
+    func testRepeatedChannelID_neitherTrapsNorCollides() async throws {
+        var (m, _) = try await tinyRecording()
+        m.channels = [("ch1", "C3"), ("ch2", "C4"), ("ch1", "Cz"), ("ch1", "FC3"), ("ch1 (2)", "CPz")].map {
+            ChannelSpec(id: $0.0, label: $0.1, kind: "eeg", unit: "uV", sourceRow: 0)
+        }
+        m.montage = "10-10"
+        let model = RecordingDetailModel(manifest: m, events: [])
+        let layout = MontageLayout(model)
+        XCTAssertEqual(layout, model.montageLayout, "the view reads the layout built once with the model")
+        XCTAssertEqual(layout.placed.map(\.channelID), ["ch1", "ch2", "ch1 (2)"])
+        XCTAssertEqual(layout.placed.first?.label, "C3", "the first occurrence wins")
+        XCTAssertEqual(layout.unplaced.map(\.label), ["Cz", "FC3"])
+        XCTAssertTrue(layout.unplaced.allSatisfy { $0.reason == .duplicateChannelID })
+        XCTAssertEqual(layout.placedCount + layout.unplaced.count, layout.eegCount)
+        XCTAssertEqual(layout.eegCount, 5)
+        XCTAssertEqual(Set(layout.placed.map(\.id)).count, layout.placed.count)
+        XCTAssertEqual(Set(layout.unplaced.map(\.id)).count, layout.unplaced.count)
+        let rows = model.channelTableRows
+        XCTAssertEqual(rows.map(\.row), model.channels)
+        XCTAssertEqual(Set(rows.map(\.id)).count, rows.count, "table identity never collides")
+        XCTAssertEqual(rows.map(\.id), ["ch1", "ch2", "ch1 (3)", "ch1 (4)", "ch1 (2)"])
+    }
+
     // MARK: Criterion 10 — attribution
 
     func testExampleInfo_includesAttribution() async throws {

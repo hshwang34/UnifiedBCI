@@ -62,6 +62,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         LaunchArguments.applyAppearance()
+        HeadGlassWarmUp.start()
+        // Lead default 6, decided before the Welcome window's first frame (no welcome-then-
+        // intro flash). The flag is set when the window appears (Workspace.welcomeAppeared).
+        workspace.presentIntroIfFirstRun(FirstRun(defaults: .standard), reset: LaunchArguments.resetFirstRun,
+                                         introStep: LaunchArguments.introStep)
     }
 
     /// Closing the last project window leaves the app running; Welcome stays reachable.
@@ -76,6 +81,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Finder double-click / "Open With" on a `.bciproj`: through `Workspace.open`, so the
     /// one-window-per-project rule and recents apply exactly as for Open….
     func application(_ application: NSApplication, open urls: [URL]) {
+        // A first launch by "Open With" skips the intro this launch (flag left unset).
+        workspace.openingDocuments()
         Task { await route(urls) }
     }
 
@@ -146,6 +153,10 @@ struct WorkspaceCommands: Commands {
             Button("Cancel Evaluation") { session?.cancel() }
                 .keyboardShortcut(".")
                 .disabled(!(session?.isRunning ?? false))
+        }
+        // Brief 003: the app has no help book, so the Help item is the tour.
+        CommandGroup(replacing: .help) {
+            Button("Show Welcome Tour") { workspace.showWelcomeTour(open: openWindow) }
         }
         #if DEBUG
         CommandMenu("Debug") {
