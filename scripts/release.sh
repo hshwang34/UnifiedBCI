@@ -19,7 +19,8 @@
 #                          (App Store Connect API key for notarytool; default ~/.appstoreconnect/config.env)
 #   BCI_KEYCHAIN_DIR       parent folder for the throwaway keychain (default $TMPDIR)
 # The login keychain is never touched: the identity lives in a throwaway keychain that is
-# removed, and the original keychain search list restored, on every exit path.
+# removed, and the original keychain search list restored, on normal exit, error or Ctrl-C
+# (not on SIGKILL; recovery in docs/RELEASING.md).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -51,6 +52,7 @@ mkdir -p "$WORK"
 
 # --- temporary keychain -------------------------------------------------------------------
 KC_PARENT="${BCI_KEYCHAIN_DIR:-${TMPDIR:-/tmp}}"   # where the throwaway keychain lives
+[[ "$KC_PARENT" != *[[:space:]]* ]] || { echo "error: keychain folder must not contain spaces: $KC_PARENT" >&2; exit 1; }
 KC="$(mktemp -d "$KC_PARENT/bci-release.XXXXXX")/signing.keychain-db"
 KC_PASS="$(uuidgen)"
 ORIG_KEYCHAINS=()
@@ -59,13 +61,14 @@ while IFS= read -r line; do
   [[ -n "$line" ]] && ORIG_KEYCHAINS+=("$line")
 done < <(security list-keychains -d user)
 
+WORKER_BUILT=0
 cleanup() {
-  security list-keychains -d user -s "${ORIG_KEYCHAINS[@]}" 2>/dev/null || true
+  security list-keychains -d user -s ${ORIG_KEYCHAINS[@]+"${ORIG_KEYCHAINS[@]}"} 2>/dev/null || true
   security delete-keychain "$KC" 2>/dev/null || true
   rm -rf "$(dirname "$KC")"
   # The signed worker is embedded by now; leaving build/worker-dist would make the next
   # Debug build embed it too, and the tests expect the dev venv.
-  rm -rf "$ROOT/build/worker-dist"
+  if [[ $WORKER_BUILT -eq 1 ]]; then rm -rf "$ROOT/build/worker-dist"; fi
 }
 trap cleanup EXIT
 
@@ -76,9 +79,9 @@ security unlock-keychain -p "$KC_PASS" "$KC"
 security import "$P12" -k "$KC" -f pkcs12 -P "$(cat "$P12_PASS_FILE")" \
   -T /usr/bin/codesign -T /usr/bin/security >/dev/null
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KC" >/dev/null
-security list-keychains -d user -s "$KC" "${ORIG_KEYCHAINS[@]}"
+security list-keychains -d user -s "$KC" ${ORIG_KEYCHAINS[@]+"${ORIG_KEYCHAINS[@]}"}
 
-IDENTITY_LINE="$(security find-identity -v -p codesigning "$KC" | grep "Developer ID Application: .*($TEAM_ID)" | head -1)"
+IDENTITY_LINE="$(security find-identity -v -p codesigning "$KC" | grep "Developer ID Application: .*($TEAM_ID)" | head -1 || true)"
 [[ -n "$IDENTITY_LINE" ]] || { echo "error: no Developer ID Application identity for team $TEAM_ID in the .p12" >&2; exit 1; }
 IDENTITY_HASH="$(awk '{print $2}' <<<"$IDENTITY_LINE")"
 IDENTITY_NAME="$(sed -E 's/^[^"]*"(.*)"$/\1/' <<<"$IDENTITY_LINE")"
@@ -86,6 +89,7 @@ echo "   identity: $IDENTITY_NAME"
 
 # --- build --------------------------------------------------------------------------------
 echo "==> bundle the worker, signing every Mach-O"
+WORKER_BUILT=1
 "$ROOT/scripts/bundle_worker.sh" --sign "$IDENTITY_HASH"
 
 echo "==> xcodegen"
@@ -109,7 +113,7 @@ echo "==> verify signatures"
 codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 | tail -2
 FAILED=0; CHECKED=0
 while IFS= read -r -d '' f; do
-  file -b "$f" | grep -q 'Mach-O' || continue
+  [[ "$(file -b "$f")" == *Mach-O* ]] || continue
   CHECKED=$((CHECKED + 1))
   info="$(codesign -dvvv "$f" 2>&1 || true)"
   if ! grep -q "^Authority=Developer ID Application: .*($TEAM_ID)" <<<"$info" \
@@ -152,14 +156,18 @@ mkdir -p "$STAGE"
 ditto "$APP" "$STAGE/$APP_NAME.app"
 ln -s /Applications "$STAGE/Applications"
 hdiutil create -volname "BCI Workspace $VERSION" -srcfolder "$STAGE" -fs APFS -format UDZO -ov "$DMG" >/dev/null
+security unlock-keychain -p "$KC_PASS" "$KC"   # the app notarization wait can outlast the lock timeout
 codesign --force --timestamp --sign "$IDENTITY_HASH" --keychain "$KC" "$DMG"
 notarize "$DMG" dmg
 xcrun stapler staple "$DMG"
 xcrun stapler validate "$DMG"
 
 echo "==> Gatekeeper"
-spctl -a -vvv -t install "$DMG"
-spctl -a -vvv "$APP"
+for target in "$DMG" "$APP"; do
+  if [[ "$target" == "$DMG" ]]; then out="$(spctl -a -vvv -t install "$target" 2>&1)"; else out="$(spctl -a -vvv "$target" 2>&1)"; fi
+  echo "$out"
+  grep -q 'source=Notarized Developer ID' <<<"$out" || { echo "error: Gatekeeper did not report a notarized Developer ID source for $target" >&2; exit 1; }
+done
 
 (cd "$OUT" && shasum -a 256 "$(basename "$DMG")" >"$(basename "$DMG").sha256")
 echo

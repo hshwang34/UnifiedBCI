@@ -18,8 +18,9 @@ Output in `build/release/`:
 
 1. Creates a throwaway keychain, imports the Developer ID Application identity into it,
    and puts it at the front of the user keychain search list. The login keychain is never
-   modified; a `trap` restores the original search list and deletes the keychain on every
-   exit path.
+   modified; a `trap` restores the original search list and deletes the keychain on normal
+   exit, error or Ctrl-C. If the script is killed hard (SIGKILL, crash), restore the list by
+   hand: `security list-keychains -d user -s ~/Library/Keychains/login.keychain-db`.
 2. `scripts/bundle_worker.sh --sign <identity>` builds the arm64 Python worker and signs
    every Mach-O in it (interpreter, `.so`, `.dylib`) one file at a time with
    `--options runtime --timestamp`.
@@ -33,8 +34,8 @@ Output in `build/release/`:
 5. Notarizes a zip of the app with `notarytool submit --wait` (App Store Connect API key,
    no Apple ID password), staples the app, builds the DMG with `hdiutil`, signs it,
    notarizes and staples it too. A rejected submission prints the notary log and stops.
-6. Runs `spctl` on both; each must say `source=Notarized Developer ID`.
-7. On exit, deletes `build/worker-dist` so the next Debug build goes back to the dev venv
+6. Runs `spctl` on both and stops unless each reports `source=Notarized Developer ID`.
+7. On exit (once the worker step has started), deletes `build/worker-dist` so the next Debug build goes back to the dev venv
    (the copy phase also removes a previously embedded worker when the dist is absent;
    tests expect the dev venv).
 
