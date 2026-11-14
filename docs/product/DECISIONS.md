@@ -64,3 +64,18 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #20 · 2026-10-30 · Montage head look = "glass over a ghost head" (study A4): a thick-glass scalp dome with the faint 10-10 grid, cup electrodes and leader-line labels, over a faint glowing outline of a head for orientation. No sculpted or shaded face. The intro's scalp map uses the same look. Supersedes the placeholder primitives (sphere/cone/cylinder).
 *Why:* PM choice after two rounds of live sketches (docs/product/briefs/003-head-styles.html, 003-glass-studies.html); the mannequin head was rejected and the plain dome lacked orientation. Brief 003.
+
+#21 · 2026-11-14 · Signal-quality inspection lives as a Quality tab on the Recording screen, next to Channels / Segments / Events.
+*Why:* lead default while the PM was away (PM delegated "execute on your own"); quality is a recording property, like the montage view (#16). PM may reverse. Brief 002 Q1.
+
+#22 · 2026-11-14 · No overall quality verdict or score: per-rule flags only, each naming its rule and measured value; an unflagged channel reads "None of these rules fired"; the tab footer says the checks can't show a signal comes from the brain.
+*Why:* lead default; PRD §5 forbids presenting "good quality" as proof of neural origin. Brief 002 Q2.
+
+#23 · 2026-11-14 · Quality thresholds are fixed v1 constants shown on screen, not user-editable.
+*Why:* lead default; editable thresholds change reproducibility and need storage. Brief 002 Q3.
+
+#24 · 2026-11-14 · Quality flags never exclude channels or time from evaluation; exclusion is a later brief with its own provenance.
+*Why:* lead default; no silent change to what is evaluated. Brief 002 Q4.
+
+#25 · 2026-11-14 · Keep the 200 µV large-deflection rule even though it fires on 15 of 16 channels of the bundled example; show the measured share of 1 s windows with each flag.
+*Why:* lead default; the example really is high-amplitude (channel SD ≈ 38–56 µV), so the flag is a true measurement. Retuning would fit the rule to one recording. PM may reverse. Brief 002.
