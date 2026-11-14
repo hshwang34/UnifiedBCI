@@ -121,7 +121,7 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
 
 /// Which table the recording detail shows.
 enum RecordingTab: String, CaseIterable, Identifiable {
-    case channels = "Channels", segments = "Segments", events = "Events"
+    case channels = "Channels", segments = "Segments", events = "Events", quality = "Quality"
     var id: String { rawValue }
 }
 

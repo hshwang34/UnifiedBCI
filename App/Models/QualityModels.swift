@@ -62,6 +62,8 @@ struct QualityModel: Equatable {
         let summary: String
         let rows: [ChannelRow]
         let spectra: [Spectrum]
+        /// The chart's upper frequency bound (brief: 1 Hz to Nyquist).
+        var nyquistHz: Double = 0
     }
 
     struct LegendRow: Identifiable, Equatable {
@@ -91,7 +93,7 @@ struct QualityModel: Equatable {
                 id: seg.index,
                 title: "Segment \(number) · \(seg.runId) · \(Self.num(seg.durationS)) s at \(Fmt.hertz(seg.sfreq))",
                 summary: "Flags on \(flagged) of \(rows.count) channels in segment \(number)",
-                rows: rows, spectra: seg.channels.map(Self.spectrum))
+                rows: rows, spectra: seg.channels.map(Self.spectrum), nyquistHz: seg.sfreq / 2)
         }
         summary = sections.map(\.summary).joined(separator: "; ")
     }
@@ -218,5 +220,74 @@ struct QualityModel: Equatable {
     static func unitName(_ unit: String) -> String {
         if unit.trimmingCharacters(in: .whitespaces).isEmpty { return "unit not declared" }
         return ["uv", "µv", "μv", "microvolt", "microvolts"].contains(unit.lowercased()) ? "µV" : unit
+    }
+}
+
+// MARK: - Quality tab (brief 002 PR 4)
+
+/// What the Quality tab shows for the selected recording (`ProjectSession.qualityState`).
+enum QualityTabState: Equatable {
+    /// Not inspected in this session (or another recording's run is in the way): an Inspect button.
+    case notStarted
+    case running(InspectionRunner.Progress)
+    case ready(QualityModel)
+    /// The worker could not start, died or timed out: the "analysis unavailable" banner with Retry.
+    case unavailable(details: String)
+    /// The worker refused: a banner without Retry, as for evaluation.
+    case failed(details: String)
+    case cancelled
+}
+
+extension QualityModel {
+    static let tabTitle = "Quality"
+    static let inspectButton = "Inspect"
+    static let notStartedText = "Run the six quality checks on every channel and segment of this recording."
+    static let cancelledText = "Inspection cancelled. Nothing was kept."
+    static let unavailableTitle = "Analysis unavailable"
+    static let unavailableMessage = "The analysis worker stopped. Your recording is unchanged."
+    static let failedTitle = "Inspection failed"
+    static let failedMessage = "The analysis worker refused this request; nothing changed. Retrying without a change will fail the same way."
+    static let progressLabel = "Inspection progress"
+    static let legendTitle = "Rules"
+    static let spectrumTitle = "Spectrum"
+    static let segmentPicker = "Segment"
+    static let flagsColumn = "Flags"
+    static let channelColumn = "Channel"
+    static let kindUnitColumn = "Kind · unit"
+    /// Montage caption while the Quality tab is open (decision #17: a shape, not a colour scale).
+    static let ringCaption = "Ringed electrodes have at least one flag in this segment."
+    static let electrodeFlagged = "has quality flags"
+
+    static func progressText(_ p: InspectionRunner.Progress) -> String {
+        switch p {
+        case .starting: return "Starting the analysis worker…"
+        case .loading: return "Reading the recording…"
+        case .segment(let k, let of): return "Checking segment \(k) of \(of)…"
+        }
+    }
+
+    /// The selected channel's spectrum, or the segment's first when none (or another
+    /// segment's channel) is selected, so the chart is never empty while data exists.
+    func spectrum(section: Int, channel: String?) -> Spectrum? {
+        guard sections.indices.contains(section) else { return nil }
+        let spectra = sections[section].spectra
+        return spectra.first { $0.id == channel } ?? spectra.first
+    }
+
+    /// Channel ids with at least one flag in a segment (the montage rings).
+    func flaggedChannels(section: Int) -> Set<String> {
+        guard sections.indices.contains(section) else { return [] }
+        return Set(sections[section].rows.filter { !$0.flags.isEmpty }.map(\.id))
+    }
+}
+
+extension QualityModel.Spectrum {
+    func series(processed: Bool) -> [QualityModel.Point] { processed ? self.processed : raw }
+
+    /// "Band-passed (reference pipeline) not available · <worker reason>", nil when it has points.
+    func unavailableText(processed: Bool) -> String? {
+        guard series(processed: processed).isEmpty else { return nil }
+        let title = processed ? QualityModel.processedTitle : QualityModel.rawTitle
+        return "\(title) not available · \((processed ? processedNote : rawNote) ?? "no spectrum")"
     }
 }

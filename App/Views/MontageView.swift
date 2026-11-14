@@ -11,6 +11,9 @@ struct MontageView: View {
     @Binding var hovered: String?
     /// Called when an electrode is chosen, so the page can show the channel table.
     var onChoose: () -> Void = {}
+    /// Brief 002 (decision #17): channels with a quality flag get one uniform ring, a shape
+    /// rather than a colour scale; empty outside the Quality tab.
+    var flagged: Set<String> = []
 
     @State private var orbit: Orbit
     @State private var dragBase: Orbit?
@@ -21,8 +24,9 @@ struct MontageView: View {
     static let target = SIMD3<Double>(0, -6, 6)
     static let distance = 820.0
 
-    init(layout: MontageLayout, selected: Binding<String?>, hovered: Binding<String?>, initialOrbit: Orbit? = nil, onChoose: @escaping () -> Void = {}) {
+    init(layout: MontageLayout, selected: Binding<String?>, hovered: Binding<String?>, initialOrbit: Orbit? = nil, flagged: Set<String> = [], onChoose: @escaping () -> Void = {}) {
         self.layout = layout
+        self.flagged = flagged
         _selected = selected
         _hovered = hovered
         self.onChoose = onChoose
@@ -49,6 +53,11 @@ struct MontageView: View {
             stage
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
                 Text(layout.caption).font(.callout).foregroundStyle(Theme.textSecondary)
+                if !flagged.isEmpty {
+                    Label { Text(QualityModel.ringCaption) } icon: { FlagRingGlyph().frame(width: 12, height: 12) }
+                        .font(.callout)
+                        .foregroundStyle(Theme.textSecondary)
+                }
                 Label {
                     Text(layout.referenceCaption)
                 } icon: {
@@ -91,8 +100,8 @@ struct MontageView: View {
     private var stage: some View {
         HeadStage(orbit: orbit, target: Self.target, distance: Self.distance) { camera, size in
             ZStack {
-                MontageMarks(layout: layout, camera: camera, size: size, selected: selected, hovered: hovered)
-                ElectrodeButtons(layout: layout, camera: camera, size: size, selected: $selected, hovered: $hovered, onChoose: onChoose)
+                MontageMarks(layout: layout, camera: camera, size: size, selected: selected, hovered: hovered, flagged: flagged)
+                ElectrodeButtons(layout: layout, camera: camera, size: size, selected: $selected, hovered: $hovered, flagged: flagged, onChoose: onChoose)
             }
         }
         .frame(height: Self.stageHeight)
@@ -121,6 +130,7 @@ private struct MontageMarks: View {
     let size: CGSize
     let selected: String?
     let hovered: String?
+    let flagged: Set<String>
     @Environment(\.colorScheme) private var scheme
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -144,7 +154,7 @@ private struct MontageMarks: View {
                 case .site(let p): HeadDrawing.site(&gc, at: p, camera: camera, size: size, style: style)
                 case .cup(let e, let p):
                     HeadDrawing.cup(&gc, at: p, camera: camera, size: size, style: style,
-                                    selected: selected == e.channelID, hovered: hovered == e.channelID, reference: e.isReference)
+                                    selected: selected == e.channelID, hovered: hovered == e.channelID, reference: e.isReference, flagged: flagged.contains(e.channelID))
                 }
             }
             HeadDrawing.labels(&gc, labels, texts: texts, style: style)
@@ -193,6 +203,7 @@ private struct ElectrodeButtons: View {
     let size: CGSize
     @Binding var selected: String?
     @Binding var hovered: String?
+    let flagged: Set<String>
     let onChoose: () -> Void
 
     var body: some View {
@@ -214,7 +225,7 @@ private struct ElectrodeButtons: View {
                     }
                     .help(e.isReference ? "\(e.label) (reference)" : e.label)
                     .accessibilityLabel(e.label)
-                    .accessibilityValue(e.isReference ? "reference" : "")
+                    .accessibilityValue([e.isReference ? "reference" : nil, flagged.contains(e.channelID) ? QualityModel.electrodeFlagged : nil].compactMap { $0 }.joined(separator: ", "))
                     .accessibilityAddTraits(selected == e.channelID ? [.isSelected] : [])
                     .accessibilityHint("Selects its row in the channel table")
                     .position(pt)
@@ -222,6 +233,13 @@ private struct ElectrodeButtons: View {
             }
         }
         .frame(width: size.width, height: size.height)
+    }
+}
+
+/// The flag mark in the caption: the same thin solid ring the head draws.
+struct FlagRingGlyph: View {
+    var body: some View {
+        Circle().strokeBorder(Theme.textPrimary, lineWidth: 1.4).accessibilityHidden(true)
     }
 }
 

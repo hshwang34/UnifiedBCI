@@ -57,6 +57,8 @@ final class ProjectSession: Identifiable {
     nonisolated let url: URL
     let store: ProjectStore
     let runner: EvaluationRunner
+    /// Brief 002: the Quality tab's inspections, on a worker of their own.
+    let inspector: InspectionRunner
     nonisolated var id: URL { url }
 
     private(set) var name: String
@@ -85,7 +87,9 @@ final class ProjectSession: Identifiable {
     var section: SidebarSection = .recordings {
         didSet { if section != oldValue, let n = notice, !n.isPersistent { notice = nil } }
     }
-    var selectedRecordingID: UUID?
+    var selectedRecordingID: UUID? {
+        didSet { if selectedRecordingID != oldValue { inspectIfFirstShown() } }
+    }
     var selectedResultID: UUID? {
         didSet { if selectedResultID != oldValue { loadSelectedResult() } }
     }
@@ -96,7 +100,17 @@ final class ProjectSession: Identifiable {
     private(set) var recipes: [EvaluationDefaults.Recipe] = []
     @ObservationIgnored private var recipesTask: Task<Void, Never>?
     var showInspector = true
-    var recordingTab: RecordingTab = .channels
+    var recordingTab: RecordingTab = .channels {
+        didSet { if recordingTab != oldValue { inspectIfFirstShown() } }
+    }
+    /// Recordings whose Quality tab has been shown: inspection starts on its own only the
+    /// first time, so a cancel or a failure is not undone by switching tabs.
+    @ObservationIgnored private var autoInspected: Set<UUID> = []
+    /// The recording the last Inspect / Retry asked for, which the runner's terminal states describe.
+    private(set) var inspectedRecordingID: UUID?
+    @ObservationIgnored private var qualityModels: [UUID: QualityModel] = [:]
+    @ObservationIgnored private var inspectTask: Task<Void, Never>?
+    @ObservationIgnored private var inspectGeneration = 0
     /// Results whose reruns the user folded away in the list (all start expanded).
     var collapsedResults: Set<UUID> = []
 
@@ -107,6 +121,7 @@ final class ProjectSession: Identifiable {
         self.url = url
         self.store = store
         self.runner = EvaluationRunner(store: store, launch: launch)
+        self.inspector = InspectionRunner(projectDirectory: url, launch: launch)
         self.name = name
     }
 
@@ -351,6 +366,58 @@ final class ProjectSession: Identifiable {
         AccessibilityNotification.Announcement(text).post()
     }
 
+    // MARK: Quality (brief 002)
+
+    /// The Quality tab's state for the selected recording.
+    var qualityState: QualityTabState {
+        guard let id = selectedRecordingID else { return .notStarted }
+        if let model = qualityModel(for: id) { return .ready(model) }
+        let mine = inspectedRecordingID == id
+        switch inspector.state {
+        case .running(let rid, let p): return rid == id ? .running(p) : (mine ? .running(.starting) : .notStarted)
+        case .analysisUnavailable(let d) where mine: return .unavailable(details: d)
+        case .failed(let d) where mine: return .failed(details: d)
+        case .cancelled where mine: return .cancelled
+        default: return mine && inspectTask != nil ? .running(.starting) : .notStarted
+        }
+    }
+
+    /// Built once per report: hover and selection re-renders never rebuild it.
+    func qualityModel(for id: UUID) -> QualityModel? {
+        if let m = qualityModels[id] { return m }
+        guard let report = inspector.report(for: id) else { return nil }
+        let m = QualityModel(report: report)
+        qualityModels[id] = m
+        return m
+    }
+
+    private func inspectIfFirstShown() {
+        guard recordingTab == .quality, let id = selectedRecordingID, !isShutDown, autoInspected.insert(id).inserted else { return }
+        inspect()
+    }
+
+    /// Inspects the selected recording (Inspect, Retry, first show). A run for another
+    /// recording is cancelled first: only the one on screen matters.
+    func inspect() {
+        guard let id = selectedRecordingID, !isShutDown else { return }
+        inspectedRecordingID = id
+        if case .running(let rid, _) = inspector.state, rid != id { inspector.cancel() }
+        let previous = inspectTask
+        inspectGeneration += 1
+        let generation = inspectGeneration
+        inspectTask = Task { [weak self] in
+            await previous?.value
+            guard let self, self.selectedRecordingID == id, !self.isShutDown else { return }
+            await self.inspector.inspectAndWait(recordingID: id)
+            if self.inspectGeneration == generation { self.inspectTask = nil }
+        }
+    }
+
+    func cancelInspection() { inspector.cancel() }
+
+    /// Waits for the current inspection request to finish (tests, snapshots).
+    func awaitInspection() async { await inspectTask?.value }
+
     // MARK: Export
 
     /// Writes the export folder for `resultID` at `destination`; the outcome is a notice.
@@ -378,6 +445,7 @@ final class ProjectSession: Identifiable {
         recipesTask?.cancel()
         await runner.stop(within: Self.stopLimit)
         await runner.shutdown()
+        await inspector.shutdown()
         isShutDown = true
     }
 
