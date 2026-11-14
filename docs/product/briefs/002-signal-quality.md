@@ -1,6 +1,6 @@
 # 002 — Signal-quality inspection
 
-**Status:** approved (lead defaults, PM delegated 2026-11-14) · **Owner:** PM · **PR:** — · **Updated:** 2026-11-14
+**Status:** building (lead defaults, PM delegated 2026-11-14; PRs #8, #9) · **Owner:** PM · **PR:** — · **Updated:** 2026-11-14
 
 ## Problem
 A developer who opens a recording today can see its channels, segments and events, and can run
