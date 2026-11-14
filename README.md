@@ -7,22 +7,43 @@ with CSP + shrinkage LDA. Recorded-data workflows come before hardware.
 Product requirements and architecture: see the PRD this repo was started from
 (`docs/PRD.md`). This README tracks what is actually built.
 
-## Status — Phase 1 data path (brief 001, PR 2)
+## Download
 
-Phase 0 proved the app can link BrainFlow natively, drain a board stream with sequence
-accounting, and drive an isolated, pinned Python analysis worker over local IPC
-([docs/phase-0-results.md](docs/phase-0-results.md)); the feasibility checklist is still
-the only UI. Brief 001 ("replay to report") now has its complete data path behind that
-window: a `.bciproj` project store with atomic chunk commits, a bundled public recording
-(PhysioNet EEGMMIDB S001, three motor-imagery runs, 16 channels, ODC-BY), the worker's
-`fit_evaluate_project` method, an evaluation coordinator that stores byte-identical
-reproductions, and a documented export. The screens arrive in PR 3.
+[**BCI Workspace 0.1.0**](https://github.com/hshwang34/UnifiedBCI/releases/latest): a
+Developer ID-signed, notarized DMG for Apple Silicon Macs on macOS 15 or later. Open it and
+drag the app to Applications.
+
+## Status — Phase 1 "replay to report" (brief 001, shipped)
+
+What a user can do today, with no hardware and no terminal:
+
+- **Explore the bundled example**: PhysioNet EEGMMIDB S001, three motor-imagery runs,
+  16 sensorimotor channels, ODC-BY, with its citation shown and exported.
+- **Inspect a recording**: source and provenance, channels with their montage and
+  reference, continuous segments and gaps, and the event table.
+- **Evaluate** the reference pipeline (causal 8–30 Hz band-pass → CSP → shrinkage LDA)
+  against a frozen, run-level holdout: balanced accuracy, accuracy with a trial-level
+  95 % interval, confusion matrix, class counts, exclusions, the simpler log-variance
+  baseline, and the seed that reproduces the split.
+- **Reproduce and export**: every result stores its full configuration and reproduction
+  links; File ▸ Export Result writes a documented folder readable outside the app
+  ([docs/export-format.md](docs/export-format.md)).
+
+Under the hood: a `.bciproj` project store with atomic, hash-verified chunk commits, a
+pinned Python analysis worker bundled inside the app, and a native BrainFlow bridge proven
+in phase 0 ([docs/phase-0-results.md](docs/phase-0-results.md)); the phase-0 feasibility
+checks stay available in their own window.
+
+In progress: a first-run intro and a 3D montage view of the declared electrode positions
+(brief 003), and signal-quality inspection: spectra, flatline, clipping, mains and
+outlier checks that each name their rule (brief 002). Live Cyton + Daisy acquisition,
+cued protocols and live feedback are phase 2.
 
 ## Layout
 
 ```
 project.yml                 XcodeGen spec (the .xcodeproj is generated, not committed)
-App/                        SwiftUI app target (phase-0 feasibility UI)
+App/                        SwiftUI app: welcome, project window (recordings, results), export, feasibility window
   Resources/ExampleProject/ S001-motor-imagery.bciproj — bundled example (7.9 MB, folder reference)
 Sources/BrainFlowBridge/    actor-owned Swift wrapper over BrainFlow's C ABI
 Sources/WorkerClient/       JSON-lines IPC client that owns the Python worker process
