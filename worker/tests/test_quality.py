@@ -9,6 +9,7 @@ its variance from a slow drift, which leaves 1 s peak-to-peak and 20-45 Hz power
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -449,3 +450,59 @@ def test_mains_db_on_a_known_spectrum(peak, db, flag):
     line60 = next(e for e in c["measured"]["lines"] if e["hz"] == 60.0)
     assert line60["db"] == pytest.approx(db, abs=1e-12)
     assert line60["flagged"] is flag and c["flagged"] is flag
+
+
+def test_swift_fixtures_match_the_worker():
+    """The Swift contract tests decode these files; regenerate them when the worker's
+    output changes (`uv run python tools/make_quality_fixtures.py`)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("make_quality_fixtures", REPO / "worker" / "tools" / "make_quality_fixtures.py")
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    for name, build in (("inspect_recording_tiny.json", tool.tiny), ("inspect_recording_faults.json", tool.faults)):
+        committed = json.loads((REPO / "Tests" / "Fixtures" / name).read_text(encoding="utf-8"))
+        assert _rounded(json.loads(tool.dumps(build()))) == _rounded(committed), f"{name} is stale"
+
+
+def _rounded(x):
+    """Floats to 6 significant digits, so a BLAS or libm difference between machines
+    does not count as drift."""
+    if isinstance(x, float):
+        return float(f"{x:.6g}")
+    if isinstance(x, list):
+        return [_rounded(v) for v in x]
+    if isinstance(x, dict):
+        return {k: _rounded(v) for k, v in x.items()}
+    return x
+
+
+VERDICT = re.compile(r"(?<![-\w])(pass|passed|passes|fail|failed|fails|good|clean|healthy|neural)\b", re.IGNORECASE)
+
+
+def _strings(x):
+    if isinstance(x, str):
+        yield x
+    elif isinstance(x, list):
+        for v in x:
+            yield from _strings(v)
+    elif isinstance(x, dict):
+        for k, v in x.items():
+            if k in ("reason", "processed_reason", "title", "rule", "flag_when"):
+                yield from _strings(v)
+            elif isinstance(v, (list, dict)):
+                yield from _strings(v)
+
+
+def test_no_rule_or_reason_text_reads_as_a_verdict():
+    """The app shows these verbatim (decision #22). "band-pass" names the filter and is
+    allowed; a free-standing pass/fail/good/clean/neural is not."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("make_quality_fixtures", REPO / "worker" / "tools" / "make_quality_fixtures.py")
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    low = quality.inspect_segment(clean(np.random.default_rng(3), 4, 50.0, 2), 50.0, ["eeg", "eeg", "emg", "eeg"], ["", "V", "uV", "uV"])
+    texts = list(_strings([quality.rules(), tool.tiny(), tool.faults(), low]))
+    assert len(texts) > 100
+    assert any("band-pass" in t for t in texts), "the exemption is exercised"
+    for t in texts:
+        assert not VERDICT.search(t), t
