@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import BCIWorkspace
 
@@ -62,9 +63,74 @@ final class IntroTests: XCTestCase {
         XCTAssertEqual(workspace.welcomeFlow.mode, .welcome)
     }
 
+    /// Review fix (PR 4): decided before the window exists, so its first frame is step 0;
+    /// the flag is set when the window appears.
+    func testFirstRun_decidedBeforeTheWindowFlagSetOnAppear() {
+        let workspace = Workspace(recents: InMemoryRecentDocuments(), launch: nil)
+        XCTAssertTrue(workspace.presentIntroIfFirstRun(FirstRun(defaults: defaults)))
+        XCTAssertEqual(workspace.welcomeFlow.mode, .intro(step: 0), "the first frame is the intro, no welcome-then-fade")
+        XCTAssertFalse(defaults.bool(forKey: FirstRun.key), "not yet shown")
+        workspace.welcomeAppeared()
+        XCTAssertTrue(defaults.bool(forKey: FirstRun.key))
+        XCTAssertEqual(workspace.welcomeFlow.mode, .intro(step: 0))
+    }
+
+    /// A first launch by Finder "Open With": no intro this launch, flag unset for a later one.
+    func testFirstRun_launchOpeningADocumentSkipsTheIntroAndLeavesTheFlag() {
+        let workspace = Workspace(recents: InMemoryRecentDocuments(), launch: nil)
+        workspace.presentIntroIfFirstRun(FirstRun(defaults: defaults))
+        workspace.openingDocuments()
+        XCTAssertEqual(workspace.welcomeFlow.mode, .welcome)
+        workspace.welcomeAppeared()
+        XCTAssertFalse(defaults.bool(forKey: FirstRun.key))
+        XCTAssertTrue(FirstRun(defaults: defaults).shouldPresent(), "a later plain launch shows it")
+        // Once shown, a later document open doesn't unset anything.
+        let next = Workspace(recents: InMemoryRecentDocuments(), launch: nil)
+        next.presentIntroIfFirstRun(FirstRun(defaults: defaults))
+        next.welcomeAppeared()
+        next.openingDocuments()
+        XCTAssertTrue(defaults.bool(forKey: FirstRun.key))
+    }
+
+    /// E6 behaves like E2: closing the Welcome window mid-intro ends the intro, so a Dock
+    /// reopen in the same launch shows the welcome screen.
+    func testE6_closingWelcomeMidIntroEndsIt() {
+        let workspace = Workspace(recents: InMemoryRecentDocuments(), launch: nil)
+        workspace.presentIntroIfFirstRun(FirstRun(defaults: defaults))
+        workspace.welcomeAppeared()
+        workspace.welcomeFlow.apply(.next); workspace.welcomeFlow.apply(.next)
+        workspace.welcomeDisappeared()
+        XCTAssertEqual(workspace.welcomeFlow.mode, .welcome)
+        XCTAssertNil(workspace.welcomeFlow.focus, "no focus request left pending for a closed window")
+        workspace.welcomeAppeared()
+        XCTAssertEqual(workspace.welcomeFlow.mode, .welcome, "reopen shows welcome, not step 3")
+        XCTAssertTrue(defaults.bool(forKey: FirstRun.key))
+        XCTAssertFalse(workspace.presentIntroIfFirstRun(FirstRun(defaults: defaults), reset: true))
+    }
+
+    /// E7: a project window opening by any route ends the intro (its timelines stop).
+    func testE7_projectWindowEndsTheIntro() {
+        let workspace = Workspace(recents: InMemoryRecentDocuments(), launch: nil)
+        workspace.showWelcomeTour()
+        XCTAssertTrue(workspace.welcomeFlow.isIntro)
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 10, height: 10), styleMask: [], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let url = URL(fileURLWithPath: "/tmp/e7-\(UUID().uuidString).bciproj")
+        workspace.attach(window, to: url)
+        XCTAssertEqual(workspace.welcomeFlow.mode, .welcome)
+        XCTAssertTrue(workspace.hasProjectWindows)
+        // E3: a replay with that project open plays; the same window re-reporting itself
+        // (it moved between views) is not a new project window.
+        workspace.showWelcomeTour()
+        workspace.attach(window, to: url)
+        XCTAssertEqual(workspace.welcomeFlow.mode, .intro(step: 0))
+        window.close()
+    }
+
     func testReplay_restartsAtStepZeroAndKeepsTheFlag() {
         let workspace = Workspace(recents: InMemoryRecentDocuments(), launch: nil)
         workspace.presentIntroIfFirstRun(FirstRun(defaults: defaults))
+        workspace.welcomeAppeared()
         workspace.welcomeFlow.apply(.next); workspace.welcomeFlow.apply(.next)
         let generation = workspace.welcomeFlow.generation
         // Help > Show Welcome Tour, mid-intro (E4) and after it (E5).

@@ -11,7 +11,7 @@ struct RecordingDetailView: View {
     @State private var showInfo = false
     @State private var showCitations = false
     @State private var tableWidth: CGFloat = 0
-    @State private var channelSort = [KeyPathComparator(\RecordingDetailModel.ChannelRow.id)]
+    @State private var channelSort = [KeyPathComparator(\RecordingDetailModel.ChannelTableRow.row.id)]
     @State private var segmentSort = [KeyPathComparator(\RecordingDetailModel.SegmentRow.index)]
     @State private var eventSort: [KeyPathComparator<RecordingDetailModel.EventRow>] = []
     /// Brief 003 cross-highlight: shared by the montage head and the channel table, by channel id.
@@ -36,7 +36,7 @@ struct RecordingDetailView: View {
                 }
                 sourceCard
                 // Decision #16: the montage head sits above the channel table.
-                MontageView(layout: MontageLayout(model), selected: $selectedChannel, hovered: $hoveredChannel) {
+                MontageView(layout: model.montageLayout, selected: $selectedChannel, hovered: $hoveredChannel) {
                     tab = .channels
                 }
                 tablePicker
@@ -157,11 +157,12 @@ struct RecordingDetailView: View {
     @ViewBuilder private var table: some View {
         switch tab {
         case .channels:
-            Table(model.channels.sorted(using: channelSort), selection: $selectedChannel, sortOrder: $channelSort) {
-                TableColumn("ID", value: \.id) { row in channelCell(row) { Text(row.id).font(Theme.Fonts.mono) } }.width(min: 40, ideal: 56)
-                TableColumn("Label", value: \.labelSortKey) { row in channelCell(row) { DeclaredText(value: row.label ?? RecordingDetailModel.undeclared, declared: row.label != nil) } }.width(min: 40, ideal: 72)
-                TableColumn("Unit", value: \.unitSortKey) { row in channelCell(row) { DeclaredText(value: row.unit ?? RecordingDetailModel.undeclared, declared: row.unit != nil) } }.width(min: 32, ideal: 52)
-                TableColumn("Kind", value: \.kindSortKey) { row in channelCell(row) { DeclaredText(value: row.kind ?? RecordingDetailModel.undeclared, declared: row.kind != nil) } }.width(min: 32, ideal: 52)
+            // Rows by `ChannelTableRow.id`, unique even when the manifest repeats a channel id.
+            Table(model.channelTableRows.sorted(using: channelSort), selection: $selectedChannel, sortOrder: $channelSort) {
+                TableColumn("ID", value: \.row.id) { r in channelCell(r.row) { Text(r.row.id).font(Theme.Fonts.mono) } }.width(min: 40, ideal: 56)
+                TableColumn("Label", value: \.row.labelSortKey) { r in channelCell(r.row) { DeclaredText(value: r.row.label ?? RecordingDetailModel.undeclared, declared: r.row.label != nil) } }.width(min: 40, ideal: 72)
+                TableColumn("Unit", value: \.row.unitSortKey) { r in channelCell(r.row) { DeclaredText(value: r.row.unit ?? RecordingDetailModel.undeclared, declared: r.row.unit != nil) } }.width(min: 32, ideal: 52)
+                TableColumn("Kind", value: \.row.kindSortKey) { r in channelCell(r.row) { DeclaredText(value: r.row.kind ?? RecordingDetailModel.undeclared, declared: r.row.kind != nil) } }.width(min: 32, ideal: 52)
             }
             .alternatingRowBackgrounds()
         case .segments:

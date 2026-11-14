@@ -28,17 +28,13 @@ struct WelcomeView: View {
         .onAppear {
             if workspace.openWindow == nil { workspace.openWindow = openWindow }
             workspace.refreshRecents()
-            presentIntroIfFirstRun()
+            // The intro-or-welcome decision was made before this window's first frame
+            // (AppDelegate.applicationWillFinishLaunching); appearing sets the flag.
+            workspace.welcomeAppeared()
         }
+        .onDisappear { workspace.welcomeDisappeared() }
         .onChange(of: workspace.welcomeFlow.isIntro) { _, isIntro in if !isIntro { takeFocusAfterIntro() } }
         .task { await LaunchArguments.runOnce(workspace) }
-    }
-
-    /// Lead default 6: the flag is set the moment the intro is first presented (Workspace
-    /// makes the decision once per launch).
-    private func presentIntroIfFirstRun() {
-        workspace.presentIntroIfFirstRun(FirstRun(defaults: .standard), reset: LaunchArguments.resetFirstRun,
-                                         introStep: LaunchArguments.introStep)
     }
 
     /// After the intro: "Explore an example" takes keyboard and VoiceOver focus.

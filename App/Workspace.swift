@@ -220,6 +220,7 @@ final class Workspace {
         }
         guard windows[key]?.window !== window else { return }
         windows[key] = WeakWindow(window: window)
+        projectWindowOpened()
         let closeGuard = CloseGuard(window: window) { [weak self] in self?.sessions[key] }
         closeGuards[key] = closeGuard
         let closingID = ObjectIdentifier(window)
@@ -336,13 +337,50 @@ final class Workspace {
     /// Whether this run has already made its first-run decision: the Welcome window can close
     /// and reopen, but the intro is considered once per launch.
     private(set) var checkedFirstRun = false
+    /// The decided-but-not-yet-shown first run: the flag is set when the Welcome window first
+    /// appears in intro mode, so a launch that opens a document first leaves it unset.
+    @ObservationIgnored private var pendingFirstRun: FirstRun?
 
-    /// The first-run gate (lead default 6), once per launch. Returns whether it presented.
+    /// The first-run gate (lead default 6), once per launch, before any window exists
+    /// (`applicationWillFinishLaunching`), so the Welcome window's first frame is already the
+    /// intro's step 0 with no cross-fade. Returns whether the intro is to be presented; the
+    /// flag is set by `welcomeAppeared()`.
     @discardableResult
     func presentIntroIfFirstRun(_ firstRun: FirstRun, reset: Bool = false, introStep: Int? = nil) -> Bool {
         guard !checkedFirstRun else { return false }
         checkedFirstRun = true
-        return firstRun.presentIfNeeded(flow: &welcomeFlow, reset: reset, introStep: introStep)
+        guard firstRun.decide(flow: &welcomeFlow, reset: reset, introStep: introStep) else { return false }
+        pendingFirstRun = firstRun
+        return true
+    }
+
+    /// The Welcome window appeared: a first-run intro now counts as presented (flag set).
+    func welcomeAppeared() {
+        guard let firstRun = pendingFirstRun else { return }
+        pendingFirstRun = nil
+        if welcomeFlow.isIntro { firstRun.markPresented() }
+    }
+
+    /// The Welcome window closed. Mid-intro, the intro ends (E6 behaves like E2): a Dock
+    /// reopen in the same launch shows the welcome screen, not the step it closed on.
+    func welcomeDisappeared() {
+        welcomeFlow.dismiss()
+    }
+
+    /// The app was launched (or asked) to open documents. If the first-run intro hasn't been
+    /// shown yet, it isn't shown this launch and the flag stays unset, so a Finder "Open
+    /// With" first launch doesn't stack the intro behind the project; a later plain launch
+    /// shows it.
+    func openingDocuments() {
+        guard pendingFirstRun != nil else { return }
+        pendingFirstRun = nil
+        welcomeFlow.dismiss()
+    }
+
+    /// A project window opened by any route (Finder, Open…, Open Recent, the example) while
+    /// the intro plays: the intro ends, so its timelines stop (E7).
+    func projectWindowOpened() {
+        welcomeFlow.dismiss()
     }
 
     func exploreExamplePanel() {

@@ -22,6 +22,8 @@ enum MontageStandard: String, Equatable, Sendable {
 /// nothing or a descriptive suffix opening with "(", ",", ";" or ":", e.g.
 /// "international 10-10 (BCI2000 64-ch subset), cropped to 16". No substring match: "not
 /// 10-20" or "roughly 10-20 but modified" stay undeclared, and so does "10-10x" or "10-5".
+/// A suffix that says the cap departs from the standard ("10-20, modified", "10-10 (custom
+/// cap)") is undeclared too: the table's positions would be a guess.
 enum MontageRecognizer {
     /// Lower-case names, longest first so "international 10-10 system" wins over "…10-10".
     static let names: [(String, MontageStandard)] = {
@@ -37,14 +39,28 @@ enum MontageRecognizer {
 
     static let suffixOpeners: Set<Character> = ["(", ",", ";", ":"]
 
+    /// Words in a suffix that say the cap departs from the standard ("10-20, modified"), so
+    /// its positions can't be taken from the table. Matched as whole words, any case.
+    static let departureWords: Set<String> = ["modified", "custom", "approx", "approximately", "non-standard",
+                                              "nonstandard", "roughly", "adapted", "variant"]
+
     static func recognize(_ montage: String) -> MontageStandard? {
         // Collapse runs of whitespace so "international  10-10" still reads as the name.
         let text = montage.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
         for (name, standard) in names where text.hasPrefix(name) {
             let rest = text.dropFirst(name.count).drop { $0 == " " }
-            if rest.isEmpty || suffixOpeners.contains(rest.first!) { return standard }
+            if rest.isEmpty { return standard }
+            guard suffixOpeners.contains(rest.first!) else { continue }
+            return departs(String(rest)) ? nil : standard
         }
         return nil
+    }
+
+    /// Whether a suffix names a departure from the standard. Words split on anything but
+    /// letters and "-", so "approx." and "(custom)" match and "non-standard" stays one word.
+    static func departs(_ suffix: String) -> Bool {
+        let words = suffix.split { !($0.isLetter || $0 == "-") }.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "-")) }
+        return words.contains { departureWords.contains($0) }
     }
 }
 
@@ -89,12 +105,15 @@ struct MontageLayout: Equatable {
     }
 
     struct Unplaced: Identifiable, Equatable {
-        enum Reason: Equatable { case montageUndeclared, labelUndeclared, notInStandard, duplicateSite }
+        enum Reason: Equatable { case montageUndeclared, labelUndeclared, notInStandard, duplicateSite, duplicateChannelID }
         let channelID: String
         /// The stored label, or nil when the manifest declares none.
         let label: String?
         let reason: Reason
-        var id: String { channelID }
+        /// Position among the recording's EEG channels: unique even when a manifest repeats a
+        /// channel id, so list identity never collides.
+        var ordinal = 0
+        var id: Int { ordinal }
         var displayLabel: String { label ?? "\(channelID) (no label)" }
     }
 
@@ -122,21 +141,20 @@ struct MontageLayout: Equatable {
         var placed: [Electrode] = []
         var unplaced: [Unplaced] = []
         var taken = Set<String>()
-        for ch in eeg {
-            guard let label = ch.label else {
-                unplaced.append(Unplaced(channelID: ch.id, label: nil, reason: .labelUndeclared)); continue
+        var seenIDs = Set<String>()
+        for (ordinal, ch) in eeg.enumerated() {
+            func skip(_ label: String?, _ reason: Unplaced.Reason) {
+                unplaced.append(Unplaced(channelID: ch.id, label: label, reason: reason, ordinal: ordinal))
             }
-            guard let standard else {
-                unplaced.append(Unplaced(channelID: ch.id, label: label, reason: .montageUndeclared)); continue
-            }
-            guard let site = ElectrodeLabel.site(for: label, in: standard) else {
-                unplaced.append(Unplaced(channelID: ch.id, label: label, reason: .notInStandard)); continue
-            }
+            // Selection and hover go by channel id, so an id the manifest repeats can't be
+            // told apart: every occurrence after the first is listed, never placed.
+            guard seenIDs.insert(ch.id).inserted else { skip(ch.label, .duplicateChannelID); continue }
+            guard let label = ch.label else { skip(nil, .labelUndeclared); continue }
+            guard let standard else { skip(label, .montageUndeclared); continue }
+            guard let site = ElectrodeLabel.site(for: label, in: standard) else { skip(label, .notInStandard); continue }
             // One point per site: a second channel naming the same site (a repeated label, or
             // T3 beside T7 under 10-20) is listed, not stacked.
-            guard taken.insert(site.label).inserted else {
-                unplaced.append(Unplaced(channelID: ch.id, label: label, reason: .duplicateSite)); continue
-            }
+            guard taken.insert(site.label).inserted else { skip(label, .duplicateSite); continue }
             placed.append(Electrode(channelID: ch.id, label: label, site: site, isReference: false))
         }
         // Lead default 5: the reference is marked only when its declared text, under the same
@@ -150,8 +168,9 @@ struct MontageLayout: Equatable {
         self.unplaced = unplaced
     }
 
+    /// The model's layout, computed once when the model was built.
     init(_ model: RecordingDetailModel) {
-        self.init(montage: model.montageRaw, reference: model.referenceRaw, channels: model.channels)
+        self = model.montageLayout
     }
 
     // MARK: Strings

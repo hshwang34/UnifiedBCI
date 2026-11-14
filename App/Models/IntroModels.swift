@@ -132,6 +132,14 @@ struct WelcomeFlow: Equatable {
         focus = .exploreExample
     }
 
+    /// Ends the intro without moving focus: the Welcome window closed, or a project window
+    /// took over. Nothing happens on the welcome screen.
+    mutating func dismiss() {
+        guard isIntro else { return }
+        mode = .welcome
+        focus = nil
+    }
+
     mutating func consumeFocus() { focus = nil }
 }
 
@@ -148,9 +156,8 @@ struct FirstRun {
     func markPresented() { defaults.set(true, forKey: Self.key) }
 
     /// Starts the intro in `flow` if this is a first run (or Debug asks for a step or a
-    /// reset), and sets the flag in the same moment. Returns whether it presented.
-    @discardableResult
-    func presentIfNeeded(flow: inout WelcomeFlow, reset: Bool = false, introStep: Int? = nil) -> Bool {
+    /// reset), without setting the flag. Returns whether it started.
+    func decide(flow: inout WelcomeFlow, reset: Bool = false, introStep: Int? = nil) -> Bool {
         if let introStep {
             flow.start(at: introStep)
         } else if shouldPresent(reset: reset) {
@@ -158,6 +165,13 @@ struct FirstRun {
         } else {
             return false
         }
+        return true
+    }
+
+    /// `decide`, and sets the flag in the same moment. Returns whether it presented.
+    @discardableResult
+    func presentIfNeeded(flow: inout WelcomeFlow, reset: Bool = false, introStep: Int? = nil) -> Bool {
+        guard decide(flow: &flow, reset: reset, introStep: introStep) else { return false }
         markPresented()
         return true
     }

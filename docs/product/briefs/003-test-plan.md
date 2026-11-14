@@ -45,13 +45,16 @@ brief's "Engineering decisions" section.
 
 ### B1. Recognizer adversarial cases
 - Montage: `unspecified` in any case/whitespace, empty → undeclared. Free text mentioning 10-20
-  (`"custom cap, roughly 10-20 but modified"`, `"not 10-20"`) → undeclared. Example string → 10-10.
+  (`"custom cap, roughly 10-20 but modified"`, `"not 10-20"`) → undeclared. A recognized name with a suffix
+  naming a departure (`"10-20, modified"`, `"10-10 (custom cap)"`; words: modified, custom, approx,
+  approximately, non-standard, nonstandard, roughly, adapted, variant) → undeclared. Example string → 10-10.
   `international 10-5`, `10-10x` → not recognized. Full 10-20 label set under `unspecified` → still
   undeclared (never inferred from channel count). Recognized montage, 0 channels → "0 of 0", no crash.
 - Labels: case variants, trailing dots (`Fc3.`, `Cz..`), outer whitespace per the rule; interior
   whitespace, `C3x`, `FC30`, `CP`, Cyrillic/full-width lookalikes → unplaced. `EOG`, `ECG1`, `X1` →
   unplaced, never snapped to nearest. FC3 under a 10-20 declaration → per the rule. T3/T7 resolve to one
   point. Non-EEG kinds excluded from M consistently. Duplicates: placed + unplaced == M (property test).
+  Repeated channel ids: placed once (first occurrence), the rest unplaced, no trap; table rows stay unique.
 - Reference: equals a recorded placed label → marked; label not recorded, free text (`average`,
   `linked mastoids`), `A1+A2`, empty, or montage unspecified → no mark, caption shows declared text.
 
@@ -59,9 +62,11 @@ brief's "Engineering decisions" section.
 E1 skip mid-step sets flag · E2 quit mid-intro then relaunch (flag set on first presentation → no replay) ·
 E3 replay with a project open: sessions unchanged, no duplicate welcome window · E4 replay during intro
 restarts at step 0, no overlapping timelines · E5 replay never clears flag · E6 closing welcome mid-intro
-behaves like E2 · E7 opening the example cancels intro timelines (CPU idle) · E8 garbage defaults value
+behaves like E2 (intro ends; a same-launch reopen shows welcome) · E7 any project window opening (example,
+Finder, Open…, Open Recent) ends the intro and its timelines (CPU idle) · E8 garbage defaults value
 doesn't crash · E9 welcome stays 760×460 in both modes · E10 minimized/occluded pauses animation ·
-E11 Low Power Mode reduces particle count.
+E11 Low Power Mode reduces particle count · E12 first frame is intro step 0, no welcome flash · E13 first
+launch by opening a document: no intro that launch, flag unset.
 
 ## Bundle-size measurement
 Build Release from the base commit and from the branch with the same `-derivedDataPath`-separated

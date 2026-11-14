@@ -129,7 +129,8 @@ private struct MontageMarks: View {
         let style = HeadStyle(scheme: scheme, contrast: contrast, reduceTransparency: reduceTransparency)
         let placedSites = Set(layout.placed.map(\.site.label))
         let labels = Self.labels(layout: layout, camera: camera, size: size, selected: selected)
-        let texts = Dictionary(uniqueKeysWithValues: layout.placed.map { ($0.channelID, $0.label) })
+        // Placed ids are unique (MontageLayout lists repeats as unplaced); keep the first anyway.
+        let texts = Dictionary(layout.placed.map { ($0.channelID, $0.label) }, uniquingKeysWith: { first, _ in first })
         Canvas { gc, size in
             HeadDrawing.grid(&gc, camera: camera, size: size, style: style)
             HeadDrawing.notch(&gc, camera: camera, size: size, style: style)

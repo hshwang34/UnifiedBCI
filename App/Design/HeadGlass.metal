@@ -37,7 +37,7 @@ float env(float3 r, Cam cam) {
     return smoothstep(0.88, 0.975, dot(r, k1)) + 0.5 * smoothstep(0.93, 0.985, dot(r, k2)) + 0.06 * clamp(r.z, 0.0, 1.0);
 }
 
-float sdEll(float3 p, float3 r) { float k0 = length(p / r); float k1 = length(p / (r * r)); return k0 * (k0 - 1.0) / k1; }
+float sdEll(float3 p, float3 r) { float k0 = length(p / r); float k1 = length(p / (r * r)); return k0 * (k0 - 1.0) / max(k1, 1e-6); }  // guard p at the centre
 float smin(float a, float b, float k) { float h = max(k - abs(a - b), 0.0) / k; return min(a, b) - h * h * k * 0.25; }
 float smax(float a, float b, float k) { return -smin(-a, -b, k); }
 float sdCap(float3 p, float3 a, float3 b, float r) {

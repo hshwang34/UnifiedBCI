@@ -23,7 +23,10 @@ struct HeadStage<Overlay: View>: View, @preconcurrency Animatable {
         let camera = HeadCamera(orbit: orbit, target: target, distance: distance)
         GeometryReader { geo in
             ZStack {
+                // Equatable on camera and size: a hover or selection change re-renders only the
+                // overlay (marks and buttons), never the raymarched layer.
                 HeadGlassView(camera: camera, size: geo.size)
+                    .equatable()
                     .accessibilityHidden(true)
                 overlay(camera, geo.size)
             }
@@ -71,9 +74,12 @@ extension Color {
 }
 
 /// The dome and ghost head: one full-size rectangle whose every pixel is raymarched.
-private struct HeadGlassView: View {
+/// Its environment inputs (appearance, contrast, transparency) still invalidate it as usual.
+private struct HeadGlassView: View, Equatable {
     let camera: HeadCamera
     let size: CGSize
+
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.camera == b.camera && a.size == b.size }
     @Environment(\.colorScheme) private var scheme
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency

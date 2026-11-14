@@ -85,6 +85,34 @@ final class MontageTests: XCTestCase {
         }
     }
 
+    /// Review fix (PR 4): a suffix that says the cap departs from the standard is undeclared.
+    func testRecognizer_departureWordsInTheSuffixAreUndeclared() {
+        for word in ["modified", "custom", "approx", "approximately", "non-standard", "nonstandard", "roughly", "adapted", "variant"] {
+            for s in ["10-20, \(word)", "International 10-10 (\(word.uppercased()) cap)", "10/20; \(word.capitalized) spacing",
+                      "10-10 system: \(word)."] {
+                XCTAssertNil(MontageRecognizer.recognize(s), s)
+            }
+        }
+        XCTAssertNil(MontageRecognizer.recognize("10-20 (approx. positions)"))
+        // Words that only contain one of them, and the example, still recognize.
+        XCTAssertEqual(MontageRecognizer.recognize(Self.exampleMontage), .tenTen)
+        for s in ["10-10 (customary Easycap layout)", "10-20, unmodified cap", "10-10: standard variants table v2"] {
+            XCTAssertNotNil(MontageRecognizer.recognize(s), s)
+        }
+    }
+
+    func testRepeatedChannelIDs_placeOnceAndCountAll() {
+        let channels = ["C3", "C4", "Cz", "T3"].enumerated().map { i, l in
+            RecordingDetailModel.ChannelRow(id: i == 0 || i == 2 ? "dup" : "ch\(i)", label: l, unit: "uV", kind: "eeg")
+        }
+        let l = MontageLayout(montage: "10-20", reference: "Cz", channels: channels)
+        XCTAssertEqual(l.placed.map(\.channelID), ["dup", "ch1", "ch3"])
+        XCTAssertEqual(l.unplaced.map(\.label), ["Cz"])
+        XCTAssertEqual(l.unplaced.first?.reason, .duplicateChannelID)
+        XCTAssertNil(l.referenceElectrode, "the repeat carrying the reference label is unplaced, so nothing is marked")
+        XCTAssertEqual(l.placedCount + l.unplaced.count, l.eegCount)
+    }
+
     func testRecognizer_rejectsEverythingElse() {
         for s in ["", "   ", "unspecified", "UNSPECIFIED", "  Unspecified ", "undeclared",
                   "custom cap, roughly 10-20 but modified", "not 10-20", "10-20 but modified",
@@ -194,6 +222,13 @@ final class MontageTests: XCTestCase {
             for montage in ["10-10", "10-20", "unspecified"] {
                 let l = layout(montage, labels)
                 XCTAssertEqual(l.placedCount + l.unplaced.count, labels.count)
+                // Repeated channel ids too: still M, and every id placed at most once.
+                let repeated = labels.map { lab in
+                    RecordingDetailModel.ChannelRow(id: "ch\(Int.random(in: 0...5, using: &rng))", label: RecordingDetailModel.declared(lab), unit: "uV", kind: "eeg")
+                }
+                let r = MontageLayout(montage: montage, reference: "", channels: repeated)
+                XCTAssertEqual(r.placedCount + r.unplaced.count, labels.count)
+                XCTAssertEqual(Set(r.placed.map(\.channelID)).count, r.placedCount)
                 XCTAssertEqual(l.eegCount, labels.count)
                 XCTAssertEqual(Set(l.placed.map(\.site.label)).count, l.placedCount)
             }
