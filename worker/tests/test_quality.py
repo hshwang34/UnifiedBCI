@@ -449,3 +449,27 @@ def test_mains_db_on_a_known_spectrum(peak, db, flag):
     line60 = next(e for e in c["measured"]["lines"] if e["hz"] == 60.0)
     assert line60["db"] == pytest.approx(db, abs=1e-12)
     assert line60["flagged"] is flag and c["flagged"] is flag
+
+
+def test_swift_fixtures_match_the_worker():
+    """The Swift contract tests decode these files; regenerate them when the worker's
+    output changes (`uv run python tools/make_quality_fixtures.py`)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("make_quality_fixtures", REPO / "worker" / "tools" / "make_quality_fixtures.py")
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    for name, build in (("inspect_recording_tiny.json", tool.tiny), ("inspect_recording_faults.json", tool.faults)):
+        committed = json.loads((REPO / "Tests" / "Fixtures" / name).read_text(encoding="utf-8"))
+        assert _rounded(json.loads(tool.dumps(build()))) == _rounded(committed), f"{name} is stale"
+
+
+def _rounded(x):
+    """Floats to 6 significant digits, so a BLAS or libm difference between machines
+    does not count as drift."""
+    if isinstance(x, float):
+        return float(f"{x:.6g}")
+    if isinstance(x, list):
+        return [_rounded(v) for v in x]
+    if isinstance(x, dict):
+        return {k: _rounded(v) for k, v in x.items()}
+    return x

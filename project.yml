@@ -153,6 +153,11 @@ targets:
       - path: Tests/Fixtures/tiny.bciproj
         type: folder
         buildPhase: resources
+      # inspect_recording results captured from the worker (worker/tools/make_quality_fixtures.py).
+      - path: Tests/Fixtures/inspect_recording_tiny.json
+        buildPhase: resources
+      - path: Tests/Fixtures/inspect_recording_faults.json
+        buildPhase: resources
     dependencies:
       - target: BCIWorkspace
       - target: BCIStoreCrashHelper
