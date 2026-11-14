@@ -94,6 +94,18 @@ Non-EEG channel kinds are inspected but excluded from the cross-channel medians.
   (all copy) + tests; (4) Swift — Quality tab (table + PSD chart, Swift Charts); (5) worker +
   Swift — signal window method and trace view.
 
+- Worker PR (#8) calls, which the Swift side matches: "amplitude rules" = flatline, large
+  deflections and both outliers (non-µV → "not assessed (unit X)"); pinned and mains run for any
+  unit. Non-EEG kinds get every check but the outliers ("not compared (kind X)"). Mains is one
+  check with a 50 Hz and a 60 Hz entry; it flags when any assessable line is > 10 dB. Spectra are
+  reduced to ≤ 256 bins by averaging neighbouring bins (keeps line power), in dB, zero → null.
+  Peak frequency is the most prominent raw-spectrum peak and is not described as a brain rhythm.
+  Channels with non-finite samples are not assessed and leave the medians.
+- **Large deflections fires on 15 of 16 channels of the bundled example** (channel SD ≈ 38–56 µV,
+  median 1 s peak-to-peak ≈ 200 µV; a 1 Hz high-pass doesn't change it). Lead default (decision
+  #25): keep the 200 µV rule — it is a true statement about this recording — and show the
+  measured share of windows with each flag, so a flag reads as a measurement, not a verdict.
+
 ## Risks / what could go wrong for users
 - A user reads "no flags" as "good data". Mitigated by the footer and the "none of these rules
   fired" wording.
