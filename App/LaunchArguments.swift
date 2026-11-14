@@ -13,6 +13,9 @@ import Foundation
 ///     -BCISnapshotDir /path/dir                render each step's windows to PNG there
 ///                                              (the app draws its own windows, so no
 ///                                              Screen Recording permission is needed)
+///     -BCIRecordingTab quality                 then show that Recording tab (channels, segments,
+///                                              events, quality); quality waits for the
+///                                              inspection and snapshots "quality"
 ///     -BCIQuitWhenDone YES                     quit after the last step
 ///     -BCIAppearance light|dark                force an appearance (screenshots)
 ///     -BCISnapshotProgress YES                 snapshot the progress panel mid-run
@@ -72,6 +75,16 @@ enum LaunchArguments {
     static var montagePreset: Orbit.Preset? {
         #if DEBUG
         return UserDefaults.standard.string(forKey: "BCIMontageView").flatMap(Orbit.Preset.init(rawValue:))
+        #else
+        return nil
+        #endif
+    }
+
+    /// `-BCIRecordingTab`: the Recording tab to show (and scroll to) for snapshots.
+    static var recordingTab: RecordingTab? {
+        #if DEBUG
+        guard let raw = UserDefaults.standard.string(forKey: "BCIRecordingTab") else { return nil }
+        return RecordingTab.allCases.first { $0.rawValue.lowercased() == raw.lowercased() }
         #else
         return nil
         #endif
@@ -173,6 +186,13 @@ enum LaunchArguments {
             session.recordingTab = .segments
             await snap("segments")
             session.recordingTab = .channels
+        }
+        if let tab = recordingTab {
+            session.recordingTab = tab
+            if tab == .quality {
+                await session.awaitInspection()
+                await snap("quality")
+            }
         }
         let evaluations = max(0, defaults.integer(forKey: "BCIAutoEvaluate"))
         for n in 0..<evaluations {

@@ -334,7 +334,7 @@ private struct DetailColumn: View {
         case .recordings:
             if let handle = session.selectedRecording {
                 RecordingDetailView(model: RecordingDetailModel(manifest: handle.manifest, events: session.eventsByRecording[handle.id] ?? []),
-                                    info: ExampleInfo(manifest: handle.manifest),
+                                    info: ExampleInfo(manifest: handle.manifest), session: session,
                                     tab: Binding(get: { session.recordingTab }, set: { session.recordingTab = $0 }))
                     .id(handle.id)
             } else {
@@ -460,7 +460,7 @@ private struct ProgressPanel: View {
 
 /// A 6 pt determinate track in accentInk (§2.5): the system linear style has a fixed
 /// thickness and animates toward each value, so a fast run read as nearly empty.
-private struct TrackProgressStyle: ProgressViewStyle {
+struct TrackProgressStyle: ProgressViewStyle {
     func makeBody(configuration: Configuration) -> some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
@@ -473,10 +473,13 @@ private struct TrackProgressStyle: ProgressViewStyle {
     }
 }
 
-/// Solid, never glass, never auto-dismissed (§2.5).
-private struct ErrorBanner: View {
-    let banner: ProjectSession.Banner
-    let retry: () -> Void
+/// Solid, never glass, never auto-dismissed (§2.5). Also the Quality tab's failure state.
+struct ErrorBanner: View {
+    let title: String
+    let message: String
+    let details: String
+    /// Nil hides Retry: a refusal would fail the same way.
+    let retry: (() -> Void)?
     @State private var showDetails = false
 
     var body: some View {
@@ -486,7 +489,7 @@ private struct ErrorBanner: View {
                     Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(Theme.danger)
                     Text(title).font(.headline).foregroundStyle(Theme.textPrimary)
                     Spacer()
-                    if case .analysisUnavailable = banner {
+                    if let retry {
                         Button("Retry", action: retry).appProminentButton()
                     }
                 }
@@ -533,21 +536,29 @@ private struct ErrorBanner: View {
         .accessibilityElement(children: .contain)
     }
 
-    private var title: String {
+}
+
+extension ErrorBanner {
+    init(banner: ProjectSession.Banner, retry: @escaping () -> Void) {
+        let isUnavailable = if case .analysisUnavailable = banner { true } else { false }
+        self.init(title: Self.title(banner), message: Self.message(banner), details: Self.details(banner), retry: isUnavailable ? retry : nil)
+    }
+
+    private static func title(_ banner: ProjectSession.Banner) -> String {
         switch banner {
         case .analysisUnavailable: return "Analysis unavailable"
         case .failed: return "Evaluation failed"
         }
     }
 
-    private var message: String {
+    private static func message(_ banner: ProjectSession.Banner) -> String {
         switch banner {
         case .analysisUnavailable: return "The analysis worker stopped. Your recording is unchanged."
         case .failed: return "The analysis worker refused this request; nothing was saved. Retrying without a change will fail the same way."
         }
     }
 
-    private var details: String {
+    private static func details(_ banner: ProjectSession.Banner) -> String {
         switch banner {
         case .analysisUnavailable(let d), .failed(let d): return d
         }

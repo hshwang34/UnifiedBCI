@@ -6,6 +6,7 @@ import SwiftUI
 struct RecordingDetailView: View {
     let model: RecordingDetailModel
     let info: ExampleInfo?
+    let session: ProjectSession
     @Binding var tab: RecordingTab
 
     @State private var showInfo = false
@@ -17,8 +18,11 @@ struct RecordingDetailView: View {
     /// Brief 003 cross-highlight: shared by the montage head and the channel table, by channel id.
     @State private var selectedChannel: String?
     @State private var hoveredChannel: String?
+    /// The Quality tab's segment (an index into its sections).
+    @State private var qualitySegment = 0
 
     static let tableHeight: CGFloat = 360
+    private static let tabsAnchor = "tabs"
     /// Below this table width the Segments and Events tables drop their low-value columns
     /// (named under the table) rather than scroll sideways.
     static let narrowTable: CGFloat = 580
@@ -28,6 +32,7 @@ struct RecordingDetailView: View {
         // its content's ideal width (the 4-column grid's) up to the split view, which then
         // lays the window out wider than it is.
         GeometryReader { geo in
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.l) {
                 Text(model.title).font(Theme.Fonts.title).foregroundStyle(Theme.textPrimary)
@@ -36,10 +41,13 @@ struct RecordingDetailView: View {
                 }
                 sourceCard
                 // Decision #16: the montage head sits above the channel table.
-                MontageView(layout: model.montageLayout, selected: $selectedChannel, hovered: $hoveredChannel) {
-                    tab = .channels
+                MontageView(layout: model.montageLayout, selected: $selectedChannel, hovered: $hoveredChannel, flagged: flaggedChannels) {
+                    if tab != .quality { tab = .channels }
                 }
-                tablePicker
+                tablePicker.id(Self.tabsAnchor)
+                if tab == .quality {
+                    QualityTabView(session: session, segment: $qualitySegment, selected: $selectedChannel)
+                } else {
                 VStack(alignment: .leading, spacing: Theme.Space.s) {
                     table
                         .scrollContentBackground(.hidden)
@@ -50,12 +58,24 @@ struct RecordingDetailView: View {
                         Text(hidden).font(.caption).foregroundStyle(Theme.textSecondary)
                     }
                 }
+                }
             }
             .padding(Theme.Space.pageMargin)
             .frame(width: geo.size.width, alignment: .leading)
         }
+        // Debug `-BCIRecordingTab`: bring the tabs to the top for snapshots.
+        .onChange(of: [tab.rawValue, "\(flaggedChannels.count)"], initial: true) {
+            if LaunchArguments.recordingTab != nil { proxy.scrollTo(Self.tabsAnchor, anchor: .top) }
+        }
+        }
         }
         .frame(minWidth: 0, minHeight: 0)
+    }
+
+    /// Brief 002: ringed on the head while the Quality tab shows a report.
+    private var flaggedChannels: Set<String> {
+        guard tab == .quality, case .ready(let m) = session.qualityState else { return [] }
+        return m.flaggedChannels(section: qualitySegment)
     }
 
     private var narrow: Bool { tableWidth > 0 && tableWidth < Self.narrowTable }
@@ -63,7 +83,7 @@ struct RecordingDetailView: View {
     private var hiddenColumnsNote: String? {
         guard narrow else { return nil }
         switch tab {
-        case .channels: return nil
+        case .channels, .quality: return nil
         case .segments: return "Segment, Session and End reason appear in a wider window."
         case .events: return "Trial appears in a wider window."
         }
@@ -74,6 +94,7 @@ struct RecordingDetailView: View {
                 Text("Channels \(model.channels.count)").tag(RecordingTab.channels)
                 Text("Segments \(model.segments.count)").tag(RecordingTab.segments)
                 Text("Events \(model.events.count)").tag(RecordingTab.events)
+                Text(QualityModel.tabTitle).tag(RecordingTab.quality)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -187,6 +208,8 @@ struct RecordingDetailView: View {
                 }
                 .alternatingRowBackgrounds()
             }
+        case .quality:
+            EmptyView()
         case .events:
             let rows = eventSort.isEmpty ? model.events : model.events.sorted(using: eventSort)
             if narrow {

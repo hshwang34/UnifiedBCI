@@ -147,9 +147,10 @@ enum HeadDrawing {
 
     /// A cup electrode: a light ring with an accent core. Selected: filled accent with a
     /// white core. Hovered: an accent ring around it. Every cup looks the same otherwise
-    /// (decision #17). The reference gets a dashed outer ring: a shape, not a colour.
+    /// (decision #17). The reference gets a dashed outer ring and a channel with a quality
+    /// flag (brief 002) a thin solid one: shapes, not colours.
     static func cup(_ gc: inout GraphicsContext, at p: SIMD3<Double>, camera: HeadCamera, size: CGSize, style: HeadStyle,
-                    selected: Bool = false, hovered: Bool = false, reference: Bool = false) {
+                    selected: Bool = false, hovered: Bool = false, reference: Bool = false, flagged: Bool = false) {
         let front = camera.faces(p)
         let opacity = front ? 1 : style.backOpacity
         guard opacity > 0,
@@ -166,6 +167,9 @@ enum HeadDrawing {
         g.fill(polygon(inner), with: .color(selected ? .white : style.accent))
         if hovered && !selected, let ring = camera.disc(at: p, radius: 9, lift: 1.2, in: size) {
             g.stroke(polygon(ring), with: .color(style.accent), lineWidth: 2)
+        }
+        if flagged, let ring = camera.disc(at: p, radius: reference ? 13 : 11, lift: 1.2, in: size) {
+            g.stroke(polygon(ring), with: .color(style.text.opacity(0.85)), lineWidth: style.increasedContrast ? 1.8 : 1.3)
         }
         if reference, let ring = camera.disc(at: p, radius: 10.5, lift: 1.2, in: size) {
             g.stroke(polygon(ring), with: .color(style.text.opacity(0.85)), style: StrokeStyle(lineWidth: 1.4, dash: [3, 2.5]))
