@@ -48,9 +48,10 @@ is C++ (`enum class`), and Swift's C++ interop has documented limits.
   are proven **only for the synthetic board**; Daisy steps by 2 and has not been
   exercised. Non-decreasing receipt timestamps were an observation on that run, not a
   guarantee — the row is wall clock.
-- `ENABLE_HARDENED_RUNTIME` is `NO` for ad-hoc dev signing. Release signing with the
-  personal Developer ID must re-enable it and sign the dylib with the same team, or library
-  validation will refuse to load it. This is an open phase-0 gate.
+- `ENABLE_HARDENED_RUNTIME` is `NO` for Debug. Release signs with the personal Developer
+  ID, hardened runtime `YES`, and Xcode signs the embedded dylib with the same team, so
+  library validation loads it with no entitlement exception (closed 2026-11-14,
+  [RELEASING.md](../RELEASING.md)).
 - DataHandler/MLModule are deliberately not linked; filtering lives in the worker so the
   offline and online transforms are literally the same code.
 - A native **acquisition helper process** (PRD: "native acquisition/recording helper") is

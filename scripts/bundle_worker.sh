@@ -80,7 +80,7 @@ find "$OUT/site/brainflow/lib" -type f -name 'libonnxruntime*' ! -name '*arm64*'
 echo "==> thin universal Mach-O files to arm64"
 THINNED=0
 while IFS= read -r -d '' f; do
-  file -b "$f" | grep -q 'Mach-O' || continue
+  [[ "$(file -b "$f")" == *Mach-O* ]] || continue
   archs="$(lipo -archs "$f" 2>/dev/null || true)"
   if [[ "$archs" == *x86_64* && "$archs" == *arm64* ]]; then
     lipo "$f" -thin arm64 -output "$f.arm64" && mv -f "$f.arm64" "$f"
@@ -99,7 +99,7 @@ find "$OUT/site" -maxdepth 1 -type d -name '*.dist-info' -exec sh -c 'rm -f "$1"
 echo "==> verify every Mach-O is darwin/arm64 only"
 BAD_ARCH=0
 while IFS= read -r -d '' f; do
-  file -b "$f" | grep -q 'Mach-O' || continue
+  [[ "$(file -b "$f")" == *Mach-O* ]] || continue
   if ! lipo -archs "$f" 2>/dev/null | grep -qw arm64; then
     echo "   not arm64: ${f#$OUT/}" >&2; BAD_ARCH=1
   fi
@@ -110,7 +110,7 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
   echo "==> sign every Mach-O with '$SIGN_IDENTITY' (hardened runtime, timestamp, no --deep)"
   COUNT=0
   while IFS= read -r -d '' f; do
-    if file -b "$f" | grep -q 'Mach-O'; then
+    if [[ "$(file -b "$f")" == *Mach-O* ]]; then
       codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$f"
       COUNT=$((COUNT + 1))
     fi

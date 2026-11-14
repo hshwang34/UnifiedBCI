@@ -39,6 +39,9 @@ Totals at phase-0 close: 10/10 XCTest, 9/9 pytest. After the 2026-10-20 correcti
    runtime re-enabled (`ENABLE_HARDENED_RUNTIME: YES`), and the result notarized. Mach-O
    files inside `Resources/` are fine where they are once signed; python-build-standalone
    ships an unsigned interpreter.
+   **Closed 2026-11-14** for 0.1.0: `scripts/release.sh` signs all of this, Release has
+   hardened runtime on with no entitlement exceptions, and the app and DMG are notarized
+   and stapled ([RELEASING.md](RELEASING.md)).
 2. **Clean-machine launch.** Install the signed build on a Mac without Xcode, Homebrew, or
    uv and run all four checks. Required by PRD section 5 P0 ("without hardware or terminal
    setup").
