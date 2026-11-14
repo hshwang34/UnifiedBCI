@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BCI Workspace</title>
+<meta name="description" content="A native macOS app for inspecting, evaluating and reproducing a brain-computer interface experiment. Free, for Apple Silicon Macs on macOS 15 or later.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F3F6FA" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E1116" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/png" href="assets/favicon.png">
+<style>
+/* Tokens borrowed from the app (scripts/make_theme_assets.py, brief 001 visual spec §1.1). */
+:root {
+  --canvas: #F3F6FA;
+  --surface1: #FFFFFF;
+  --surface2: #EAEFF5;
+  --hairline: rgba(0, 0, 0, .08);
+  --text: #0F1722;
+  --text2: #4A5565;
+  --text3: #5D697B;
+  --accent-fill: #0A5FCF;
+  --accent-ink: #0A5FCF;
+  --aurora: #1CA7C4;
+  --warning: #B25E00;
+  --warning-fill: #FFF1DA;
+  --positive: #1B7F4B;
+  --glow-a: rgba(10, 95, 207, .14);
+  --glow-b: rgba(28, 167, 196, .10);
+  --shadow: 0 8px 20px rgba(15, 23, 34, .10), 0 1px 2px rgba(0, 0, 0, .06);
+  --rim: linear-gradient(135deg, rgba(255,255,255,.9), rgba(255,255,255,.2));
+
+  --font-display: ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --r-control: 8px;
+  --r-card: 20px;
+  --r-hero: 28px;
+  --gutter: clamp(16px, 4vw, 48px);
+  --max: 1180px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --canvas: #0E1116;
+    --surface1: #171B22;
+    --surface2: #1E232C;
+    --hairline: rgba(255, 255, 255, .10);
+    --text: #F2F5F9;
+    --text2: #A7B0BD;
+    --text3: #8892A2;
+    --accent-fill: #2A74D6;
+    --accent-ink: #5AA9FF;
+    --aurora: #58E0D6;
+    --warning: #FFB340;
+    --warning-fill: rgba(255, 179, 64, .14);
+    --positive: #5BD08A;
+    --glow-a: rgba(90, 169, 255, .20);
+    --glow-b: rgba(88, 224, 214, .14);
+    --shadow: 0 12px 24px rgba(0, 0, 0, .35);
+    --rim: linear-gradient(135deg, rgba(255,255,255,.35), rgba(255,255,255,.05));
+  }
+}
+@media (prefers-contrast: more) {
+  :root { --text2: #2F3948; --hairline: rgba(0,0,0,.3); --accent-ink: #0847A0; }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :root { --text2: #C5CCD6; --hairline: rgba(255,255,255,.3); --accent-ink: #8EC5FF; }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--text);
+  font: 17px/1.55 var(--font-body);
+  overflow-x: hidden;
+}
+img { max-width: 100%; height: auto; display: block; }
+a { color: var(--accent-ink); text-underline-offset: .18em; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 3px solid var(--accent-ink); outline-offset: 3px; border-radius: 6px; }
+.wrap { max-width: var(--max); margin: 0 auto; padding: 0 var(--gutter); }
+.skip { position: absolute; left: -999px; top: 8px; background: var(--surface1); padding: 8px 12px; border-radius: var(--r-control); z-index: 10; }
+.skip:focus { left: 8px; }
+
+h1, h2, h3 { font-family: var(--font-display); font-weight: 600; letter-spacing: -.01em; margin: 0; }
+h2 { font-size: clamp(28px, 3.4vw, 40px); line-height: 1.15; }
+h3 { font-size: 21px; line-height: 1.3; }
+p { margin: 0 0 1em; }
+.lede { color: var(--text2); font-size: 19px; max-width: 60ch; }
+code, .mono { font-family: var(--font-mono); font-size: .88em; }
+
+/* Header */
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 0; }
+.brand { display: flex; align-items: center; gap: 12px; color: var(--text); text-decoration: none; font-family: var(--font-display); font-weight: 600; font-size: 18px; }
+.brand img { width: 36px; height: 36px; border-radius: 9px; }
+.top nav { display: flex; gap: 22px; font-size: 15px; }
+.top nav a { color: var(--text2); text-decoration: none; }
+.top nav a:hover { color: var(--text); }
+
+/* Hero: the app's static ambient backdrop, then a trace that draws itself once. */
+.hero { position: relative; isolation: isolate; padding: clamp(32px, 6vw, 72px) 0 clamp(48px, 7vw, 96px); }
+.hero::before {
+  content: ""; position: absolute; inset: -120px 0 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(520px 420px at 12% 10%, var(--glow-a), transparent 70%),
+    radial-gradient(460px 360px at 88% 6%, var(--glow-b), transparent 70%);
+}
+.hero-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: clamp(32px, 5vw, 64px); align-items: center; }
+.hero h1 { font-size: clamp(44px, 6.4vw, 76px); line-height: 1.02; letter-spacing: -.025em; }
+.hero .what { font-size: clamp(19px, 1.8vw, 22px); color: var(--text2); margin: 20px 0 32px; max-width: 34ch; line-height: 1.45; }
+.trace { display: block; width: min(360px, 100%); height: 44px; margin: 0 0 20px; overflow: visible; }
+.trace path { fill: none; stroke: url(#traceInk); stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
+.trace circle { fill: var(--aurora); }
+@media (prefers-reduced-motion: no-preference) {
+  .trace path { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw 2.4s cubic-bezier(.3,.1,.2,1) .2s forwards; }
+  .trace circle { opacity: 0; animation: appear .3s ease-out 2.5s forwards; }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  @keyframes appear { to { opacity: 1; } }
+}
+
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 22px; }
+.btn {
+  display: inline-flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 26px;
+  border-radius: 999px; background: var(--accent-fill); color: #fff; text-decoration: none;
+  font-family: var(--font-display); font-weight: 600; font-size: 17px;
+  box-shadow: 0 1px 0 rgba(255,255,255,.25) inset, 0 6px 16px rgba(10, 95, 207, .28);
+}
+.btn:hover { filter: brightness(1.08); text-decoration: none; }
+.btn svg { width: 18px; height: 18px; }
+.textlink { font-weight: 500; }
+.small { font-size: 14px; color: var(--text3); margin-top: 14px; }
+.small span { white-space: nowrap; }
+
+.shot { margin: 0; }
+.shot img { border-radius: 14px; filter: drop-shadow(0 18px 36px rgba(15, 23, 34, .18)); }
+@media (prefers-color-scheme: dark) { .shot img { filter: drop-shadow(0 18px 40px rgba(0, 0, 0, .55)); } }
+.shot figcaption { font-size: 14px; color: var(--text3); margin-top: 14px; max-width: 70ch; }
+
+/* Sections */
+section { padding: clamp(56px, 8vw, 104px) 0; }
+.band { background: var(--surface1); border-block: 1px solid var(--hairline); }
+.section-head { max-width: 720px; margin-bottom: clamp(32px, 5vw, 56px); }
+.section-head p { margin-top: 16px; }
+
+/* Workflow: a real sequence, so it is numbered. */
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: clamp(56px, 8vw, 96px); }
+.step { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 7fr); gap: clamp(24px, 4vw, 56px); align-items: start; }
+.step:nth-child(even) { grid-template-columns: minmax(0, 7fr) minmax(0, 4fr); }
+.step:nth-child(even) .step-text { order: 2; }
+.step-n {
+  display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 50%;
+  border: 1.5px solid var(--accent-ink); color: var(--accent-ink);
+  font-family: var(--font-display); font-weight: 600; font-size: 16px; margin-bottom: 16px;
+}
+.step h3 { margin-bottom: 12px; font-size: clamp(22px, 2.2vw, 26px); }
+.step p, .step li { color: var(--text2); }
+.step ul { padding-left: 1.15em; margin: 0 0 1em; }
+.step li { margin-bottom: 6px; }
+.step-media { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; min-width: 0; }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 0; font-size: 15px; }
+.facts dt { color: var(--text3); }
+.facts dd { margin: 0; color: var(--text); }
+.card { background: var(--surface1); border: 1px solid var(--hairline); border-radius: var(--r-card); padding: 22px 24px; box-shadow: var(--shadow); }
+.band .card { background: var(--canvas); }
+.tree { font-family: var(--font-mono); font-size: 13.5px; line-height: 1.7; white-space: pre; overflow-x: auto; margin: 0; color: var(--text); }
+.tree .c { color: var(--text3); }
+
+/* Science rules */
+.rules { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 clamp(32px, 5vw, 72px); margin: 0; }
+.rule { padding: 22px 0; border-top: 1px solid var(--hairline); }
+.rule dt { font-family: var(--font-display); font-weight: 600; font-size: 19px; margin-bottom: 6px; }
+.rule dd { margin: 0; color: var(--text2); }
+
+/* Roadmap */
+.road { display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 5fr); gap: clamp(32px, 5vw, 64px); align-items: center; }
+.road ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.road li { padding: 18px 20px; border-radius: 16px; border: 1px dashed var(--hairline); background: color-mix(in srgb, var(--surface1) 60%, transparent); }
+.road li h3 { font-size: 18px; margin-bottom: 4px; }
+.road li p { margin: 0; color: var(--text2); font-size: 15px; }
+.status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px; margin-bottom: 8px; border: 1px solid currentColor; }
+.status.wip { color: var(--accent-ink); }
+.status.later { color: var(--text3); }
+.status svg { width: 12px; height: 12px; }
+
+/* Footer */
+footer { padding: 56px 0 64px; font-size: 14px; color: var(--text2); border-top: 1px solid var(--hairline); }
+.foot-grid { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 4fr); gap: 40px; }
+footer h2 { font-size: 16px; margin-bottom: 10px; color: var(--text); letter-spacing: 0; }
+footer ol { margin: 0; padding-left: 1.2em; }
+footer li { margin-bottom: 8px; overflow-wrap: anywhere; }
+footer ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.notmed { margin-top: 20px; font-weight: 600; color: var(--text); }
+
+@media (max-width: 900px) {
+  .hero-grid, .step, .road, .foot-grid { grid-template-columns: minmax(0, 1fr); }
+  .step:nth-child(even) { grid-template-columns: minmax(0, 1fr); }
+  .step:nth-child(even) .step-text { order: 0; }
+  .rules { grid-template-columns: minmax(0, 1fr); }
+  .top nav { display: none; }
+}
+@media (max-width: 480px) {
+  body { font-size: 16px; }
+  .btn { width: 100%; justify-content: center; }
+  .facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .facts dd { margin-bottom: 8px; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="#top" aria-label="BCI Workspace, top of page">
+      <img src="assets/icon.png" width="36" height="36" alt="">
+      BCI Workspace
+    </a>
+    <nav aria-label="Sections">
+      <a href="#today">What it does</a>
+      <a href="#science">Method</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="https://github.com/hshwang34/UnifiedBCI">GitHub</a>
+    </nav>
+  </header>
+</div>
+
+<main id="main">
+  <div class="hero" id="top">
+    <div class="wrap hero-grid">
+      <div>
+        <svg class="trace" viewBox="0 0 360 44" aria-hidden="true" focusable="false">
+          <defs>
+            <linearGradient id="traceInk" x1="0" x2="1" y1="0" y2="0">
+              <stop offset="0" style="stop-color:var(--accent-ink);stop-opacity:.45"/>
+              <stop offset="1" style="stop-color:var(--aurora)"/>
+            </linearGradient>
+          </defs>
+          <path pathLength="1" d="M2 24 C 14 6, 22 40, 34 22 S 52 8, 62 26 S 80 38, 92 18 S 108 4, 120 24 S 136 40, 148 20 S 162 10, 172 26 S 186 36, 198 22 S 210 12, 222 24 S 236 34, 248 20 S 262 8, 274 24 S 288 40, 300 18 S 318 6, 330 22 S 344 30, 352 12"/>
+          <circle cx="352" cy="12" r="4"/>
+        </svg>
+        <h1>BCI Workspace</h1>
+        <p class="what">A native Mac app for inspecting, evaluating and reproducing a brain-computer interface experiment, with the uncertainty shown next to every number.</p>
+        <div class="actions">
+          <a class="btn" href="https://github.com/hshwang34/UnifiedBCI/releases/latest">
+            <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path fill="currentColor" d="M10 2a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 1.4-1.42L9 11.6V3a1 1 0 0 1 1-1ZM4 16a1 1 0 0 0 0 2h12a1 1 0 1 0 0-2H4Z"/></svg>
+            Download for Mac
+          </a>
+          <a class="textlink" href="https://github.com/hshwang34/UnifiedBCI">Source on GitHub</a>
+        </div>
+        <p class="small"><span>Apple Silicon</span> · <span>macOS 15 or later</span> · <span>signed and notarized</span> · <span>free</span></p>
+      </div>
+      <figure class="shot">
+        <picture>
+          <source srcset="assets/intro-dark.avif" type="image/avif" media="(prefers-color-scheme: dark)">
+          <source srcset="assets/intro-dark.png" media="(prefers-color-scheme: dark)">
+          <source srcset="assets/intro-light.avif" type="image/avif">
+          <img src="assets/intro-light.png" width="1520" height="984" fetchpriority="high"
+               alt="The app's first-run intro: a glass scalp dome with electrode positions beside the text 'Experiments you can reproduce' and four steps, Import, Inspect, Evaluate and Reproduce.">
+        </picture>
+      </figure>
+    </div>
+  </div>
+
+  <section class="band" id="today" aria-labelledby="today-h">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="today-h">What you can do today</h2>
+        <p class="lede">Version 0.1 covers recorded data from start to finish. It needs no EEG hardware and no terminal: the app ships with a public recording and its own analysis engine.</p>
+      </div>
+
+      <ol class="steps">
+        <li class="step">
+          <div class="step-text">
+            <span class="step-n" aria-hidden="true">1</span>
+            <h3>Open the bundled example</h3>
+            <p>Choose “Explore an example” and the app creates a project from a public motor-imagery recording: subject S001 of the PhysioNet EEG Motor Movement/Imagery dataset, three imagery runs with left-fist and right-fist cues.</p>
+            <p>The recording is labelled for what it is. It was not made on OpenBCI hardware, it is one person, and it has about 22 trials per class.</p>
+          </div>
+          <div class="step-media">
+            <div class="card">
+              <dl class="facts">
+                <dt>Dataset</dt><dd>PhysioNet EEG Motor Movement/Imagery v1.0.0</dd>
+                <dt>Runs</dt><dd><span class="mono">S001R04</span>, <span class="mono">S001R08</span>, <span class="mono">S001R12</span></dd>
+                <dt>Channels</dt><dd>16 sensorimotor channels, cropped from 64, international 10-10 positions</dd>
+                <dt>Sample rate</dt><dd>160 Hz, as recorded, not resampled</dd>
+                <dt>Events</dt><dd>Left-fist cue, right-fist cue and rest, from the file’s annotations</dd>
+                <dt>License</dt><dd>ODC-BY 1.0, citations shown in the app and in every export</dd>
+              </dl>
+            </div>
+          </div>
+        </li>
+
+        <li class="step">
+          <div class="step-text">
+            <span class="step-n" aria-hidden="true">2</span>
+            <h3>Inspect a recording</h3>
+            <p>Before anything is fitted, check what you are fitting on.</p>
+            <ul>
+              <li>Source and provenance: dataset, DOI, runs, device, license and every conversion step.</li>
+              <li>Channels with their declared montage and reference, placed on a 3D head you can turn.</li>
+              <li>Continuous segments and the gaps between them.</li>
+              <li>The event table, with each event’s onset sample.</li>
+            </ul>
+            <p>The side panel says what the evaluation will change and what could make its result misleading.</p>
+          </div>
+          <div class="step-media">
+            <figure class="shot">
+              <picture>
+                <source srcset="assets/recording-dark.avif" type="image/avif" media="(prefers-color-scheme: dark)">
+                <source srcset="assets/recording-dark.png" media="(prefers-color-scheme: dark)">
+                <source srcset="assets/recording-light.avif" type="image/avif">
+                <img src="assets/recording-light.png" width="1600" height="1000" loading="lazy"
+                     alt="The Recording screen for S001: a warning that this is a public dataset not recorded on OpenBCI hardware, a Source card listing dataset, DOI, runs, sample rate, device, license and montage, and a side panel listing what would make the result misleading.">
+              </picture>
+            </figure>
+            <figure class="shot">
+              <picture>
+                <source srcset="assets/montage-dark.avif" type="image/avif" media="(prefers-color-scheme: dark)">
+                <source srcset="assets/montage-dark.png" media="(prefers-color-scheme: dark)">
+                <source srcset="assets/montage-light.avif" type="image/avif">
+                <img src="assets/montage-light.png" width="1440" height="1012" loading="lazy"
+                     alt="The Montage card: a glass head with 16 labelled electrode positions from FC3 to CP4, Top, Left, Right, Front and Reset view buttons, and the note that 16 of 16 EEG channels are placed in the international 10-10 system.">
+              </picture>
+              <figcaption>The head shows declared positions and the reference only. A recording without a declared montage is marked “undeclared”; the app never guesses positions from the channel count.</figcaption>
+            </figure>
+          </div>
+        </li>
+
+        <li class="step">
+          <div class="step-text">
+            <span class="step-n" aria-hidden="true">3</span>
+            <h3>Evaluate against a frozen holdout</h3>
+            <p>The reference pipeline is a causal 8–30 Hz band-pass, CSP and shrinkage LDA. Whole runs are held out before anything is fitted. The result page shows:</p>
+            <ul>
+              <li>Balanced accuracy on the held-out run.</li>
+              <li>Accuracy with a 95 % interval computed over trials (trial-level), with the number of trials it rests on.</li>
+              <li>A run-level interval for balanced accuracy only when two or more runs are held out; otherwise it says “unavailable”.</li>
+              <li>The confusion matrix and class counts.</li>
+              <li>A simpler log-variance baseline to compare against.</li>
+              <li>Trials excluded for filter warm-up, each one listed.</li>
+              <li>The seed that chooses the held-out runs.</li>
+            </ul>
+          </div>
+          <div class="step-media">
+            <figure class="shot">
+              <picture>
+                <source srcset="assets/result-dark.avif" type="image/avif" media="(prefers-color-scheme: dark)">
+                <source srcset="assets/result-dark.png" media="(prefers-color-scheme: dark)">
+                <source srcset="assets/result-light.avif" type="image/avif">
+                <img src="assets/result-light.png" width="1600" height="1278" loading="lazy"
+                     alt="A result page for the bundled example: balanced accuracy, the note 'Balanced-accuracy interval: unavailable (one held-out run)', accuracy with a trial-level 95 percent interval over 15 held-out trials, a range bar marking the larger-class rate, and a two-by-two confusion matrix.">
+              </picture>
+              <figcaption>A result for the bundled example, shown as the app draws it. One held-out run is only 15 trials, so the interval is wide; that is the honest answer for this data, not a measure of what the method can do.</figcaption>
+            </figure>
+          </div>
+        </li>
+
+        <li class="step">
+          <div class="step-text">
+            <span class="step-n" aria-hidden="true">4</span>
+            <h3>Reproduce and export</h3>
+            <p>Every result stores its full configuration, seed and worker versions. Run it again with the same recording, settings and seed and the evaluation record comes out byte-identical on the same machine with the same bundled worker. The rerun is saved as a reproduction linked to the original.</p>
+            <p>File ▸ Export Result writes a documented folder you can read without the app: flat binary samples, JSON and JSON Lines, and one <code>.npz</code> of plain arrays.</p>
+          </div>
+          <div class="step-media">
+            <div class="card">
+<pre class="tree" aria-label="Contents of an exported result folder">result/
+  recording.json      <span class="c">manifest and sample layout</span>
+  segment-&lt;run&gt;.f64   <span class="c">float64 samples, one file per segment</span>
+  events.jsonl        <span class="c">one event per line, as stored</span>
+  channels.json       <span class="c">rate, reference, montage, channels</span>
+  pipeline.json       <span class="c">configuration, seed, hashes</span>
+  model.npz           <span class="c">fitted arrays, model and baseline</span>
+  evaluation.json     <span class="c">byte-identical to the stored record</span>
+  result.meta.json    <span class="c">versions, durations, reproduction link</span>
+  ATTRIBUTION.md      <span class="c">dataset source, license, citations</span></pre>
+            </div>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="science" aria-labelledby="science-h">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="science-h">How results are kept honest</h2>
+        <p class="lede">A motor-imagery classifier can look good for the wrong reasons. These rules are built into the app rather than left to the person running it.</p>
+      </div>
+      <dl class="rules">
+        <div class="rule">
+          <dt>Everything is fitted on training data only</dt>
+          <dd>CSP, the classifier and any normalisation are fitted inside the training fold. The held-out data never informs a fitted value.</dd>
+        </div>
+        <div class="rule">
+          <dt>Splits are by run, never by window</dt>
+          <dd>Overlapping windows from one trial are not independent, so whole runs go to training or to the holdout. The holdout is frozen before fitting starts.</dd>
+        </div>
+        <div class="rule">
+          <dt>Offline filtering replays the live path</dt>
+          <dd>The band-pass is causal and runs once over each continuous segment from a zero state, as it would live. Trials are cut afterwards, and trials inside the filter warm-up are excluded and listed.</dd>
+        </div>
+        <div class="rule">
+          <dt>Uncertainty and a baseline come with every number</dt>
+          <dd>The interval is reported at the trial level and labelled as such, beside a simpler log-variance baseline. A wide interval or a negative result is a valid outcome.</dd>
+        </div>
+        <div class="rule">
+          <dt>Channel positions are declared, never guessed</dt>
+          <dd>Montages come from an explicit channel map. Sixteen channels do not imply a 10-20 layout; missing positions are shown as undeclared.</dd>
+        </div>
+        <div class="rule">
+          <dt>Raw data is never altered</dt>
+          <dd>Samples are not interpolated, and bursty arrival times are not treated as an irregular sampling clock. Gaps are recorded as gaps.</dd>
+        </div>
+        <div class="rule">
+          <dt>Two classes do not mean “no intent”</dt>
+          <dd>A left-versus-right classifier always picks one of the two. Recognising rest or idle needs its own data; holding back an answer below a confidence level is a policy, not evidence of idle detection.</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="band" id="roadmap" aria-labelledby="roadmap-h">
+    <div class="wrap road">
+      <div>
+        <div class="section-head">
+          <h2 id="roadmap-h">Coming later</h2>
+          <p class="lede">None of this is in version 0.1. The app says so too: “Connect hardware” on the welcome screen is disabled until phase 2.</p>
+        </div>
+        <ol>
+          <li>
+            <span class="status wip"><svg viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M6 1.5a4.5 4.5 0 0 1 0 9Z" fill="currentColor"/></svg>In progress, not yet available</span>
+            <h3>Signal-quality inspection</h3>
+            <p>Spectra, flatline, clipping, mains and outlier checks, each naming the rule it applied. A clean signal will not be presented as proof of neural origin.</p>
+          </li>
+          <li>
+            <span class="status later"><svg viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>Phase 2, not yet available</span>
+            <h3>Live OpenBCI Cyton + Daisy acquisition</h3>
+            <p>Sixteen channels through the USB dongle, with sequence numbers, gaps and reconnects recorded explicitly and every session written to disk as it arrives.</p>
+          </li>
+          <li>
+            <span class="status later"><svg viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>Phase 2, not yet available</span>
+            <h3>Cued protocols and live feedback</h3>
+            <p>A seeded, cued two-class protocol, then the same frozen pipeline run live, with abstention, stale data and disconnection shown as explicit states.</p>
+          </li>
+        </ol>
+      </div>
+      <figure class="shot">
+        <picture>
+          <source srcset="assets/intro-hardware-dark.avif" type="image/avif" media="(prefers-color-scheme: dark)">
+          <source srcset="assets/intro-hardware-dark.png" media="(prefers-color-scheme: dark)">
+          <source srcset="assets/intro-hardware-light.avif" type="image/avif">
+          <img src="assets/intro-hardware-light.png" width="1520" height="984" loading="lazy"
+               alt="The last step of the app's intro: 'Live hardware arrives in phase 2. Recording from an OpenBCI Cyton + Daisy board comes in phase 2. Until then, every screen works on recorded data.'">
+        </picture>
+      </figure>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot-grid">
+    <div>
+      <h2>Bundled example data</h2>
+      <p>The example project is PhysioNet EEG Motor Movement/Imagery Dataset v1.0.0, subject S001, cropped to 16 channels and three runs. Licensed under the <a href="https://opendatacommons.org/licenses/by/1-0/">Open Data Commons Attribution License v1.0</a> (ODC-BY 1.0). Please cite:</p>
+      <ol>
+        <li>Schalk, G., McFarland, D.J., Hinterberger, T., Birbaumer, N., Wolpaw, J.R. (2009). EEG Motor Movement/Imagery Dataset (version 1.0.0). PhysioNet. <a href="https://doi.org/10.13026/C28G6P">https://doi.org/10.13026/C28G6P</a></li>
+        <li>Schalk, G., McFarland, D.J., Hinterberger, T., Birbaumer, N., Wolpaw, J.R. (2004). BCI2000: A General-Purpose Brain-Computer Interface (BCI) System. IEEE Transactions on Biomedical Engineering 51(6):1034-1043. <a href="https://doi.org/10.1109/TBME.2004.827072">doi:10.1109/TBME.2004.827072</a></li>
+        <li>Goldberger, A.L., Amaral, L.A.N., Glass, L., Hausdorff, J.M., Ivanov, P.C., Mark, R.G., Mietus, J.E., Moody, G.B., Peng, C.-K., Stanley, H.E. (2000). PhysioBank, PhysioToolkit, and PhysioNet: Components of a New Research Resource for Complex Physiologic Signals. Circulation 101(23):e215-e220. <a href="https://doi.org/10.1161/01.CIR.101.23.e215">doi:10.1161/01.CIR.101.23.e215</a></li>
+      </ol>
+    </div>
+    <div>
+      <h2>Project</h2>
+      <ul>
+        <li><a href="https://github.com/hshwang34/UnifiedBCI">Source code on GitHub</a></li>
+        <li><a href="https://github.com/hshwang34/UnifiedBCI/releases/latest">Latest release</a></li>
+        <li><a href="https://github.com/hshwang34/UnifiedBCI/blob/main/docs/export-format.md">Export format</a></li>
+        <li><a href="https://github.com/hshwang34/UnifiedBCI/blob/main/docs/data-contracts.md">Data contracts</a></li>
+      </ul>
+      <p class="notmed">Not a medical device.</p>
+      <p>For research and development. Not for diagnosis, treatment or assistive control.</p>
+      <p>This page loads no scripts, sets no cookies and collects nothing.</p>
+    </div>
+  </div>
+</footer>
+</body>
+</html>
