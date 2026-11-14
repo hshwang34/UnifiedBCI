@@ -34,10 +34,12 @@ pinned Python analysis worker bundled inside the app, and a native BrainFlow bri
 in phase 0 ([docs/phase-0-results.md](docs/phase-0-results.md)); the phase-0 feasibility
 checks stay available in their own window.
 
-In progress: a first-run intro and a 3D montage view of the declared electrode positions
-(brief 003), and signal-quality inspection: spectra, flatline, clipping, mains and
-outlier checks that each name their rule (brief 002). Live Cyton + Daisy acquisition,
-cued protocols and live feedback are phase 2.
+Also shipped since 0.1.0 (on main, in the next release): a first-run intro and a 3D
+montage view of the declared electrode positions (brief 003), and a **Quality** tab on each
+recording with per-channel spectra (raw and band-passed) and flatline, clipping, large
+deflection, mains and outlier checks that each name their rule and measured value (brief 002).
+Next: a raw / band-passed signal trace view. Live Cyton + Daisy acquisition, cued protocols
+and live feedback are phase 2.
 
 ## Layout
 
