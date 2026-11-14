@@ -1,6 +1,6 @@
 # 002 — Signal-quality inspection
 
-**Status:** building (lead defaults, PM delegated 2026-11-14; PRs #8, #9) · **Owner:** PM · **PR:** — · **Updated:** 2026-11-14
+**Status:** building — PRs #8, #11, #12 merged (checks, spectra, Quality tab); PR 5 (signal trace view) next · **Owner:** PM · **PR:** #8 #11 #12 · **Updated:** 2026-11-14
 
 ## Problem
 A developer who opens a recording today can see its channels, segments and events, and can run
@@ -111,6 +111,12 @@ Non-EEG channel kinds are inspected but excluded from the cross-channel medians.
   median 1 s peak-to-peak ≈ 200 µV; a 1 Hz high-pass doesn't change it). Lead default (decision
   #25): keep the 200 µV rule — it is a true statement about this recording — and show the
   measured share of windows with each flag, so a flag reads as a measurement, not a verdict.
+
+## Follow-ups (from review, not blocking)
+- A recording whose inspection was cancelled implicitly by switching recordings shows the
+  Inspect button on return rather than restarting; cancelling a queued recording shows "not
+  started" rather than "cancelled".
+- Untested by hand: Reduce Transparency / Increase Contrast on the Quality tab; VoiceOver walk.
 
 ## Risks / what could go wrong for users
 - A user reads "no flags" as "good data". Mitigated by the footer and the "none of these rules
