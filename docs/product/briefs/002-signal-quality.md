@@ -101,6 +101,12 @@ Non-EEG channel kinds are inspected but excluded from the cross-channel medians.
   reduced to ≤ 256 bins by averaging neighbouring bins (keeps line power), in dB, zero → null.
   Peak frequency is the most prominent raw-spectrum peak and is not described as a brain rhythm.
   Channels with non-finite samples are not assessed and leave the medians.
+- Short segments: when filter warm-up leaves under 2 s, both spectra and the mains/HF checks
+  use the shorter window (coarser resolution, same frequency grid for raw and band-passed).
+- A constant channel fires flatline, pinned and outlier-amplitude together; the screen lists
+  all three rather than picking one.
+- Sample rates ≤ 60 Hz can't hold the 8–30 Hz band-pass: the band-passed spectrum says so and
+  every raw check still runs.
 - **Large deflections fires on 15 of 16 channels of the bundled example** (channel SD ≈ 38–56 µV,
   median 1 s peak-to-peak ≈ 200 µV; a 1 Hz high-pass doesn't change it). Lead default (decision
   #25): keep the 200 µV rule — it is a true statement about this recording — and show the
