@@ -17,8 +17,9 @@ settings:
     # Apple Silicon only for v0.x (brief 001, decision #5): the bundled worker is arm64-only.
     ARCHS: arm64
     ONLY_ACTIVE_ARCH: YES
-    # Ad-hoc signing for local development. Release builds use a Developer ID identity
-    # and must re-enable hardened runtime (see docs/adr/0002-native-boundary.md).
+    # Ad-hoc signing by default (CI overrides Debug to this too). Release signs with the
+    # personal Developer ID and the hardened runtime; scripts/release.sh drives it
+    # (docs/RELEASING.md).
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
     DEVELOPMENT_TEAM: ""
@@ -29,6 +30,9 @@ settings:
     # Where WorkerLaunch.locate finds worker/.venv. Debug only; Release leaves it empty so a
     # shipped app can never reach outside its bundle for an interpreter.
     BCI_WORKER_DEV_ROOT: ""
+    # Info.plist versions; scripts/release.sh overrides both on the command line.
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
   configs:
     Debug:
       BCI_WORKER_DEV_ROOT: $(SRCROOT)/worker
@@ -37,6 +41,15 @@ settings:
       # Ad-hoc ("-") changes the cdhash every build and re-prompts. Personal team only.
       CODE_SIGN_IDENTITY: "Apple Development"
       DEVELOPMENT_TEAM: V56DG94ZL5
+    Release:
+      # Developer ID distribution outside the App Store: hardened runtime, secure timestamp,
+      # no get-task-allow. The bundled worker's Mach-Os are signed the same way by
+      # scripts/bundle_worker.sh --sign before the copy phase embeds them. Personal team only.
+      CODE_SIGN_IDENTITY: "Developer ID Application"
+      DEVELOPMENT_TEAM: V56DG94ZL5
+      ENABLE_HARDENED_RUNTIME: YES
+      OTHER_CODE_SIGN_FLAGS: "--timestamp"
+      CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
 
 targets:
   BCIWorkspace:
@@ -72,8 +85,8 @@ targets:
       properties:
         CFBundleName: BCI Workspace
         CFBundleDisplayName: BCI Workspace
-        CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: ""
@@ -100,8 +113,9 @@ targets:
         codeSign: true
     postCompileScripts:
       - name: Copy bundled worker if built
-        # scripts/bundle_worker.sh produces build/worker-dist; skip silently when absent (dev
-        # builds) and skip the rsync when nothing under it changed since the last copy (stamp).
+        # scripts/bundle_worker.sh produces build/worker-dist; skip the rsync when nothing under
+        # it changed since the last copy (stamp). When it is absent (dev builds), remove any
+        # copy an earlier build left, so the app falls back to the dev venv as tests expect.
         script: |
           SRC="$SRCROOT/build/worker-dist"
           DST="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/worker"
@@ -112,6 +126,8 @@ targets:
               rsync -a --delete "$SRC/" "$DST/"
               touch "$STAMP"
             fi
+          elif [ -d "$DST" ]; then
+            rm -rf "$DST" "$STAMP"
           fi
         basedOnDependencyAnalysis: false
 

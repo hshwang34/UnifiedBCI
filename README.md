@@ -73,6 +73,10 @@ Mach-O individually. The interpreter is launched isolated (`-I`, or `-s -P` when
 bundled site needs `PYTHONPATH`) with a scrubbed environment; the app never falls back to
 a system Python.
 
+Release builds are signed with the personal Developer ID under the hardened runtime and
+notarized: `scripts/release.sh <version>` produces a stapled DMG in `build/release/`
+([docs/RELEASING.md](docs/RELEASING.md)).
+
 ## Design rules carried from the PRD
 
 - One owner for acquisition; UI and training never block draining the device.
