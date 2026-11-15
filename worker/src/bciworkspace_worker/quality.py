@@ -89,6 +89,13 @@ def _rate(sfreq: float) -> str:
     return f"{sfreq:g}"
 
 
+def bandpass_unavailable(spec: pipeline.BandpassSpec, sfreq: float) -> str | None:
+    """Why the reference band-pass can't run at this rate, else None."""
+    if spec.high_hz < sfreq / 2.0:
+        return None
+    return f"band-pass {spec.low_hz:g}–{spec.high_hz:g} Hz does not fit below Nyquist at {_rate(sfreq)} Hz"
+
+
 def is_microvolt(unit: str) -> bool:
     return unit.strip().lower() in MICROVOLT_UNITS
 
@@ -234,11 +241,9 @@ def inspect_segment(data: np.ndarray, sfreq: float, kinds: Sequence[str], units:
 
     nperseg = min(int(round(PSD_WINDOW_S * sfreq)), n)
     spec = pipeline.BandpassSpec()
-    processed_reason = None
-    if spec.high_hz >= sfreq / 2.0:
+    processed_reason = bandpass_unavailable(spec, sfreq)
+    if processed_reason is not None:
         processed = None
-        processed_reason = (f"band-pass {spec.low_hz:g}–{spec.high_hz:g} Hz does not fit below "
-                            f"Nyquist at {_rate(sfreq)} Hz")
     else:
         # Same processed signal as evaluation: the unmodified samples, one causal pass from
         # zero state, warm-up dropped. The mean is removed for the raw spectrum only.

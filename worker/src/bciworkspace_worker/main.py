@@ -36,7 +36,7 @@ from typing import Any, Callable, Iterable, TextIO  # noqa: E402
 import numpy as np  # noqa: E402
 import threadpoolctl  # noqa: E402
 
-from . import pipeline, project_io, quality  # noqa: E402
+from . import pipeline, project_io, quality, signal_window  # noqa: E402
 from .protocol import (  # noqa: E402
     CONTROL_METHODS,
     PROTOCOL_VERSION,
@@ -319,11 +319,58 @@ def handle_inspect_recording(req: Request, ctx: Context) -> dict[str, Any]:
     return {"rules": quality.rules(), "segments": out}
 
 
+def handle_signal_window(req: Request, ctx: Context) -> dict[str, Any]:
+    """A bounded raw and/or band-passed view of one segment for the trace view (brief 002).
+
+    params: project_dir, recording_id, segment (index), start_s, duration_s (more than 0,
+    at most 30), which ("raw" | "bandpassed" | "both", default both), max_points (2-2000,
+    default 2000). The window slides back inside the segment when it runs past an end.
+    result: `signal_window.window` (start_s and duration_s as kept, t_s per point, band-pass
+    warm-up end, per channel min/max envelopes with null where no finite sample) plus
+    recording_id, segment, run_id and channels' id, label, kind, unit. Nothing is written.
+    """
+    p = req.params
+    try:
+        project_dir = str(p["project_dir"])
+        recording_id = str(p["recording_id"])
+        index = p["segment"]
+        start_s = float(p.get("start_s", 0.0))
+        duration_s = float(p.get("duration_s", 10.0))
+        which = str(p.get("which", "both"))
+        max_points = p.get("max_points", signal_window.MAX_POINTS)
+    except KeyError as exc:
+        raise ProtocolError("bad_request", f"missing parameter {exc}", req.id) from exc
+    except (TypeError, ValueError) as exc:
+        raise ProtocolError("bad_request", f"bad parameter: {exc}", req.id) from exc
+    if isinstance(index, bool) or not isinstance(index, int) or isinstance(max_points, bool) or not isinstance(max_points, int):
+        raise ProtocolError("bad_request", "segment and max_points must be integers", req.id)
+    try:
+        rec = project_io.open_recording(project_dir, recording_id)
+        segments = project_io.load_segments(rec, None, only=index)
+    except project_io.IntegrityError as exc:
+        raise ProtocolError("integrity", str(exc), req.id) from exc
+    except project_io.ProjectError as exc:
+        raise ProtocolError("bad_request", str(exc), req.id) from exc
+    if not segments:
+        raise ProtocolError("bad_request", f"recording {recording_id} has no segment {index}", req.id)
+    ctx.check_cancelled()
+    seg = segments[0]
+    try:
+        out = signal_window.window(seg.data, seg.sfreq, start_s, duration_s, which, max_points)
+    except ValueError as exc:
+        raise ProtocolError("bad_request", str(exc), req.id) from exc
+    meta = rec.manifest["channels"]
+    out["channels"] = [{"id": str(c["id"]), "label": str(c.get("label", c["id"])), "kind": str(c.get("kind", "")),
+                        "unit": str(c.get("unit", "")), **out["channels"][i]} for i, c in enumerate(meta)]
+    return {"recording_id": recording_id, "segment": index, "run_id": seg.run_id, **out}
+
+
 HANDLERS: dict[str, Handler] = {
     "fit_evaluate_synthetic": handle_fit_evaluate_synthetic,
     "fit_evaluate_project": handle_fit_evaluate_project,
     "fit_evaluate_defaults": handle_fit_evaluate_defaults,
     "inspect_recording": handle_inspect_recording,
+    "signal_window": handle_signal_window,
 }
 
 

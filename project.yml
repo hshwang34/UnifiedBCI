@@ -158,6 +158,11 @@ targets:
         buildPhase: resources
       - path: Tests/Fixtures/inspect_recording_faults.json
         buildPhase: resources
+      # signal_window results, from the same tool.
+      - path: Tests/Fixtures/signal_window_tiny.json
+        buildPhase: resources
+      - path: Tests/Fixtures/signal_window_low_rate.json
+        buildPhase: resources
     dependencies:
       - target: BCIWorkspace
       - target: BCIStoreCrashHelper
