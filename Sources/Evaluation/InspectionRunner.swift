@@ -208,8 +208,40 @@ public final class InspectionRunner {
         ["worker_exited", "launch_failed", "ready_timeout", "protocol_mismatch", "bad_state", "write_failed", "timeout"].contains(code)
     }
 
-    /// The running worker, or a fresh one. Only `run` calls this, and runs never overlap.
+    // MARK: Signal windows (trace view)
+
+    /// One `signal_window` call on this runner's worker (`SignalWindowRunner` queues them).
+    /// The worker answers requests in order, so a window asked for during an inspection
+    /// waits behind it; a worker that has gone is dropped so the next call starts a fresh one.
+    public func signalWindow(params: [String: JSONValue], requestID: String) async throws -> SignalWindow {
+        let client = try await readyClient()
+        do {
+            return try SignalWindow.decode(try await client.call("signal_window", params: params, timeout: callTimeout, requestID: requestID))
+        } catch let error as WorkerError {
+            if Self.isWorkerGone(error.code) { discardClient(client, force: error.code == "timeout") }
+            throw error
+        }
+    }
+
+    public func cancelSignalWindow(requestID: String) {
+        guard let client else { return }
+        Task { _ = try? await client.cancel(requestID: requestID) }
+    }
+
+    /// A worker start in progress, shared by an inspection and a signal window asked for
+    /// at the same time, so neither discards the other's half-started worker.
+    private var starting: Task<WorkerClient, Error>?
+
     private func readyClient() async throws -> WorkerClient {
+        if let starting { return try await starting.value }
+        let start = Task { try await self.startOrReuseClient() }
+        starting = start
+        defer { starting = nil }
+        return try await start.value
+    }
+
+    /// The running worker, or a fresh one. Only `readyClient` calls this, one at a time.
+    private func startOrReuseClient() async throws -> WorkerClient {
         guard !isShutDown else { throw WorkerError(code: "launch_failed", message: Self.shutDownMessage) }
         if let client, await client.state == .ready { return client }
         discardClient()

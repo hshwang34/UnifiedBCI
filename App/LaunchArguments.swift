@@ -16,6 +16,10 @@ import Foundation
 ///     -BCIRecordingTab quality                 then show that Recording tab (channels, segments,
 ///                                              events, quality); quality waits for the
 ///                                              inspection and snapshots "quality"
+///     -BCIQualityTrace YES                     with -BCIRecordingTab quality: scroll to the signal
+///                                              view, snapshot "quality-trace" (raw) and
+///                                              "quality-trace-bandpassed"
+///     -BCITraceStart 20                        the signal view's window start (s)
 ///     -BCIQuitWhenDone YES                     quit after the last step
 ///     -BCIAppearance light|dark                force an appearance (screenshots)
 ///     -BCISnapshotProgress YES                 snapshot the progress panel mid-run
@@ -87,6 +91,14 @@ enum LaunchArguments {
         return RecordingTab.allCases.first { $0.rawValue.lowercased() == raw.lowercased() }
         #else
         return nil
+        #endif
+    }
+
+    static var qualityTrace: Bool {
+        #if DEBUG
+        return UserDefaults.standard.bool(forKey: "BCIQualityTrace")
+        #else
+        return false
         #endif
     }
 
@@ -192,6 +204,13 @@ enum LaunchArguments {
             if tab == .quality {
                 await session.awaitInspection()
                 await snap("quality")
+                if qualityTrace, case .ready(let model) = session.qualityState, let first = model.sections.first {
+                    session.traceStartS = defaults.double(forKey: "BCITraceStart")
+                    _ = await session.traces.loadAndWait(.init(recordingID: session.selectedRecordingID!, segment: first.id, startS: session.traceStartS))
+                    await snap("quality-trace")
+                    session.traceBandpassed = true
+                    await snap("quality-trace-bandpassed")
+                }
             }
         }
         let evaluations = max(0, defaults.integer(forKey: "BCIAutoEvaluate"))
