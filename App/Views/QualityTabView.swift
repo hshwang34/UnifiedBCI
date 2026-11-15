@@ -2,8 +2,8 @@ import Charts
 import SwiftUI
 
 /// The Recording screen's Quality tab (brief 002, decisions #21–#25): per segment, a channel
-/// table of the rules that fired, the selected channel's spectrum, the rules legend and the
-/// footer. No overall verdict anywhere. Every string comes from `QualityModel`.
+/// table of the rules that fired, the selected channel's spectrum, the signal traces, the
+/// rules legend and the footer. No overall verdict anywhere. Every string comes from `QualityModel`.
 struct QualityTabView: View {
     let session: ProjectSession
     /// Index into `QualityModel.sections`; owned by the page so the montage rings follow it.
@@ -22,7 +22,9 @@ struct QualityTabView: View {
         case .failed(let details):
             ErrorBanner(title: QualityModel.failedTitle, message: QualityModel.failedMessage, details: details, retry: nil)
         case .ready(let model):
-            if model.sections.indices.contains(segment) { content(model, model.sections[segment]) }
+            if model.sections.indices.contains(segment) {
+                content(model, model.sections[segment]).onChange(of: segment) { session.traceStartS = 0 }
+            }
         }
     }
 
@@ -68,6 +70,7 @@ struct QualityTabView: View {
             if let spectrum = model.spectrum(section: segment, channel: selected) {
                 spectrumCard(spectrum, nyquist: section.nyquistHz)
             }
+            SignalTraceCard(session: session, segment: section.id, section: segment, selected: $selected)
             legend(model)
             Text(QualityModel.footer).font(.callout).foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
