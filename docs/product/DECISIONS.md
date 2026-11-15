@@ -79,3 +79,15 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #25 · 2026-11-14 · Keep the 200 µV large-deflection rule even though it fires on 15 of 16 channels of the bundled example; show the measured share of 1 s windows with each flag.
 *Why:* lead default; the example really is high-amplitude (channel SD ≈ 38–56 µV), so the flag is a true measurement. Retuning would fit the rule to one recording. PM may reverse. Brief 002.
+
+#26 · 2026-11-14 · Hardware work is built and tested in CI against BrainFlow's synthetic board and playback-file board; the PM has a Cyton+Daisy board and USB dongle on hand. Each hardware brief ends with a short hand-run checklist on the real board, and a hardware brief is not "shipped" until the PM has run it and recorded the result in the brief. The app, its docs and its PRs never claim hardware was tested when it wasn't.
+*Why:* PM decision; CI has no board, and a playback file proves the code path, not the device. Briefs 004, 005, 006 (appendix checklists).
+
+#27 · 2026-11-14 · Live feedback is a horizontal bar that grows left or right from a centre line with the classifier's confidence. On abstention, stale data, invalid input or disconnection the bar is hidden and the state is named in words.
+*Why:* PM decision; one focal object (decision #19), and a hidden bar plus a named state can't be mistaken for a weak prediction. Brief 006.
+
+#28 · 2026-11-14 · Default cued protocol is Graz-style: left hand vs right hand, 2 s fixation cross, 4 s arrow cue during imagery, random 1.5–2.5 s rest, 20 trials per class per run, seeded shuffled order. Every value is editable per protocol.
+*Why:* PM decision; the standard two-class MI paradigm, and the 4 s cue fits the existing 0.5–4.0 s imagery window. Brief 005.
+
+#29 · 2026-11-14 · No release between phases: phase-2 and phase-3 work merges to main as it is ready, and the PM decides when to publish.
+*Why:* PM decision; avoids release work on half a loop. Briefs 004, 005, 006.
