@@ -59,6 +59,8 @@ final class ProjectSession: Identifiable {
     let runner: EvaluationRunner
     /// Brief 002: the Quality tab's inspections, on a worker of their own.
     let inspector: InspectionRunner
+    /// Brief 002 signal view: trace windows on the inspection worker.
+    let traces: SignalWindowRunner
     nonisolated var id: URL { url }
 
     private(set) var name: String
@@ -88,7 +90,7 @@ final class ProjectSession: Identifiable {
         didSet { if section != oldValue, let n = notice, !n.isPersistent { notice = nil } }
     }
     var selectedRecordingID: UUID? {
-        didSet { if selectedRecordingID != oldValue { inspectIfFirstShown() } }
+        didSet { if selectedRecordingID != oldValue { traceStartS = 0; inspectIfFirstShown() } }
     }
     var selectedResultID: UUID? {
         didSet { if selectedResultID != oldValue { loadSelectedResult() } }
@@ -118,6 +120,7 @@ final class ProjectSession: Identifiable {
         self.store = store
         self.runner = EvaluationRunner(store: store, launch: launch)
         self.inspector = InspectionRunner(projectDirectory: url, launch: launch)
+        self.traces = SignalWindowRunner(inspector: inspector)
         self.name = name
     }
 
@@ -410,6 +413,31 @@ final class ProjectSession: Identifiable {
     /// Waits until the runner is idle (tests, snapshots).
     func awaitInspection() async {
         while inspector.isBusy { try? await Task.sleep(for: .milliseconds(20)) }
+    }
+
+    // MARK: Signal view (brief 002)
+
+    /// The trace window's start (segment seconds) and Raw / Band-passed choice.
+    var traceStartS: Double = 0
+    var traceBandpassed = false
+    @ObservationIgnored private var traceCache: (key: String, model: TraceModel)?
+
+    /// Asks for the window at `traceStartS` in a segment (its worker index).
+    func loadTrace(segment: Int) {
+        guard let id = selectedRecordingID, !isClosing else { return }
+        traces.load(.init(recordingID: id, segment: segment, startS: traceStartS))
+    }
+
+    /// The window on screen for this recording and segment (the last one received, while
+    /// the next loads); nil before the first arrives. Built once per window and mode.
+    func traceModel(segment: Int, section: Int) -> TraceModel? {
+        guard let id = selectedRecordingID, let w = traces.window, w.recordingId == id.uuidString, w.segment == segment,
+              let quality = qualityModel(for: id) else { return nil }
+        let key = "\(w.recordingId)/\(w.segment)/\(w.startS)/\(traceBandpassed)"
+        if let c = traceCache, c.key == key { return c.model }
+        let m = TraceModel(window: w, processed: traceBandpassed, flags: quality.flagTitles(section: section))
+        traceCache = (key, m)
+        return m
     }
 
     // MARK: Export

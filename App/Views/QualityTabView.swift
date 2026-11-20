@@ -2,8 +2,8 @@ import Charts
 import SwiftUI
 
 /// The Recording screen's Quality tab (brief 002, decisions #21–#25): per segment, a channel
-/// table of the rules that fired, the selected channel's spectrum, the rules legend and the
-/// footer. No overall verdict anywhere. Every string comes from `QualityModel`.
+/// table of the rules that fired, the selected channel's spectrum, the signal traces, the
+/// rules legend and the footer. No overall verdict anywhere. Every string comes from `QualityModel`.
 struct QualityTabView: View {
     let session: ProjectSession
     /// Index into `QualityModel.sections`; owned by the page so the montage rings follow it.
@@ -22,7 +22,9 @@ struct QualityTabView: View {
         case .failed(let details):
             ErrorBanner(title: QualityModel.failedTitle, message: QualityModel.failedMessage, details: details, retry: nil)
         case .ready(let model):
-            if model.sections.indices.contains(segment) { content(model, model.sections[segment]) }
+            if model.sections.indices.contains(segment) {
+                content(model, model.sections[segment])
+            }
         }
     }
 
@@ -54,7 +56,9 @@ struct QualityTabView: View {
         VStack(alignment: .leading, spacing: Theme.Space.l) {
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
                 if model.sections.count > 1 {
-                    Picker(QualityModel.segmentPicker, selection: $segment) {
+                    // The trace start resets in the same update as the segment, so the trace view
+                    // asks once, for the new segment's start, not first with the old start.
+                    Picker(QualityModel.segmentPicker, selection: Binding(get: { segment }, set: { session.traceStartS = 0; segment = $0 })) {
                         ForEach(model.sections.indices, id: \.self) { Text(model.sections[$0].title).tag($0) }
                     }
                     .pickerStyle(.menu)
@@ -68,6 +72,7 @@ struct QualityTabView: View {
             if let spectrum = model.spectrum(section: segment, channel: selected) {
                 spectrumCard(spectrum, nyquist: section.nyquistHz)
             }
+            SignalTraceCard(session: session, segment: section.id, section: segment, selected: $selected)
             legend(model)
             Text(QualityModel.footer).font(.callout).foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
