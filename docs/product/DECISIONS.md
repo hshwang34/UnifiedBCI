@@ -79,3 +79,51 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #25 · 2026-11-14 · Keep the 200 µV large-deflection rule even though it fires on 15 of 16 channels of the bundled example; show the measured share of 1 s windows with each flag.
 *Why:* lead default; the example really is high-amplitude (channel SD ≈ 38–56 µV), so the flag is a true measurement. Retuning would fit the rule to one recording. PM may reverse. Brief 002.
+
+#26 · 2026-11-14 · Hardware work is built and tested in CI against BrainFlow's synthetic board and playback-file board; the PM has a Cyton+Daisy board and USB dongle on hand. Each hardware brief ends with a short hand-run checklist on the real board, and a hardware brief is not "shipped" until the PM has run it and recorded the result in the brief. The app, its docs and its PRs never claim hardware was tested when it wasn't.
+*Why:* PM decision; CI has no board, and a playback file proves the code path, not the device. Briefs 004, 005, 006 (appendix checklists).
+
+#27 · 2026-11-14 · Live feedback is a horizontal bar that grows left or right from a centre line with the classifier's confidence. On abstention, stale data, invalid input or disconnection the bar is hidden and the state is named in words.
+*Why:* PM decision; one focal object (decision #19), and a hidden bar plus a named state can't be mistaken for a weak prediction. Brief 006.
+
+#28 · 2026-11-14 · Default cued protocol is Graz-style: left hand vs right hand, 2 s fixation cross, 4 s arrow cue during imagery, random 1.5–2.5 s rest, 20 trials per class per run, seeded shuffled order. Every value is editable per protocol.
+*Why:* PM decision; the standard two-class MI paradigm, and the 4 s cue fits the existing 0.5–4.0 s imagery window. Brief 005.
+
+#29 · 2026-11-14 · No release between phases: phase-2 and phase-3 work merges to main as it is ready, and the PM decides when to publish.
+*Why:* PM decision; avoids release work on half a loop. Briefs 004, 005, 006.
+
+#30 · 2026-11-20 · Connecting to a board happens inside a project: a Connect sheet and a live acquisition screen under Recordings; the welcome screen's "Connect hardware" opens or creates a project first.
+*Why:* PM decision; the project is the unit of work (PRD §4) and every sample must land in one. Brief 004 Q1.
+
+#31 · 2026-11-20 · A recording can start without a confirmed channel map only by an explicit "Record without positions" choice, stored as "undeclared"; names are never defaulted silently.
+*Why:* PM decision; explicit either way (PRD §6) without blocking a quick hardware test. Brief 004 Q2.
+
+#32 · 2026-11-20 · On a disconnect the app retries automatically for 30 s, then shows failed with a Reconnect button; every reconnect starts a new, named segment.
+*Why:* PM decision; a bumped dongle shouldn't end a session, and the new segment keeps the break explicit. Brief 004 Q3.
+
+#33 · 2026-11-20 · Disk guard: warn before Record when free space is under about 1 hour of recording (≈ 120 MB at 16 ch / 125 Hz); stop cleanly, with a named reason, under 100 MB free.
+*Why:* PM decision; a clean, named stop instead of a failed write. Brief 004 Q4.
+
+#34 · 2026-11-20 · An aborted trial is marked aborted and excluded, not re-queued; the seeded order stays as planned and unequal class counts are listed.
+*Why:* PM decision; the plan stays reproducible from the seed. Brief 005 Q1.
+
+#35 · 2026-11-20 · A disconnect during a run aborts the current trial and pauses; Resume is offered after reconnect and continues in a new segment.
+*Why:* PM decision; reconnects are already explicit segments (#32), and losing a run is costly. Brief 005 Q2.
+
+#36 · 2026-11-20 · The participant window opens on a second display when one is connected; with one display it goes full-screen and the operator uses keyboard shortcuts. Start run… has a display picker that remembers the last choice.
+*Why:* PM decision. Brief 005 Q3.
+
+#37 · 2026-11-20 · A session defaults to 4 runs (three for training, one held out).
+*Why:* PM decision; grouped CV gets at least 3 folds. Brief 005 Q4.
+
+#38 · 2026-11-20 · "Freeze for live use" freezes the evaluation's own fit on its training runs, the model whose held-out score is on screen. A refit on all runs may follow later, labelled as having no held-out score.
+*Why:* PM decision; the frozen model's evidence is the result it came from. Brief 006 Q1.
+
+#39 · 2026-11-20 · Default abstention threshold is 0.6 confidence, editable per live run and stored with it.
+*Why:* PM decision; hides near-coin-flip outputs without hiding most predictions of a modest model. Brief 006 Q2.
+
+#40 · 2026-11-20 · The feedback bar shows only for windows lying wholly inside the imagery period; the Freeze sheet suggests evaluating with a 2 s window for live use.
+*Why:* PM decision; earlier windows would be driven by pre-cue data. Brief 006 Q3.
+
+#41 · 2026-11-20 · The live per-trial outcome is the one cue-locked window matching the training window; time on the correct side is a secondary figure.
+*Why:* PM decision; comparable to the offline held-out score with an honest trial-level interval. Brief 006 Q4.
