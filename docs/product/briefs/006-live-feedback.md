@@ -1,6 +1,6 @@
 # 006 — Frozen model, replay parity, and live feedback
 
-**Status:** draft · **Owner:** PM · **PR:** — · **Updated:** 2026-11-14
+**Status:** approved · **Owner:** PM · **PR:** — · **Updated:** 2026-11-20
 
 ## Problem
 The app can evaluate a recording offline and stores the fitted arrays of every evaluation
@@ -157,12 +157,12 @@ Tests
    recording, more data but no held-out evidence of its own). **Recommendation:** A — the
    frozen model's evidence is the result it came from; B can follow as an explicit "Refit on
    all runs" that is labelled as having no held-out score.
-   → *Answer:*
+   → *Answer:* A — the evaluation's fit on its training runs (PM, 2026-11-20; decision #38)
 2. **Default abstention threshold?** — A (0.6 confidence), B (0.7), C (none: always show the
    bar when valid). **Recommendation:** A — hides near-coin-flip outputs without hiding most
    predictions of a modest model; editable per live run and stored. C makes every output look
    like a decision.
-   → *Answer:*
+   → *Answer:* A — 0.6, editable per live run and stored (PM, 2026-11-20; decision #39)
 3. **When does the bar show during a trial?** — A (only for windows lying wholly inside the
    imagery period, i.e. from cue + offset + window length to cue end — with a 0.5 s offset and a
    2 s window that is the last 1.5 s of the 4 s cue; a model trained on the 3.5 s default window
@@ -170,13 +170,13 @@ Tests
    that still contain fixation data), C (one decision at cue end). **Recommendation:** A, and the
    Freeze sheet suggests evaluating with a 2 s window for feedback use; B shows feedback driven
    by pre-cue data.
-   → *Answer:*
+   → *Answer:* A — only windows wholly inside the imagery period; Freeze sheet suggests a 2 s window (PM, 2026-11-20; decision #40)
 4. **What is the live per-trial outcome?** — A (the one cue-locked window that matches the
    training window, so live and offline numbers measure the same thing; time-on-correct-side
    shown as a secondary figure), B (fraction of feedback frames on the correct side as the
    headline). **Recommendation:** A — comparable to the offline held-out score and has an
    honest trial-level interval; B counts correlated windows as if independent.
-   → *Answer:*
+   → *Answer:* A — the cue-locked window matching the training window; time on the correct side secondary (PM, 2026-11-20; decision #41)
 
 ## Engineering decisions (lead)
 - **Worker streaming engine** (`worker/src/bciworkspace_worker/streaming.py`):

@@ -1,6 +1,6 @@
 # 004 — Live acquisition: connect Cyton+Daisy and record durably
 
-**Status:** draft · **Owner:** PM · **PR:** — · **Updated:** 2026-11-14
+**Status:** approved · **Owner:** PM · **PR:** — · **Updated:** 2026-11-20
 
 ## Problem
 Everything the app does today starts from a recording someone else made. The welcome
@@ -172,21 +172,21 @@ closes the segment (`stopped`) before exit.
    device window independent of projects, choose the project when recording starts).
    **Recommendation:** A — the project is the unit of work (PRD §4) and every sample must land
    in one; B adds a second place where state lives.
-   → *Answer:*
+   → *Answer:* A — inside a project (PM, 2026-11-20; decision #30)
 2. **Can a recording start without a declared channel map?** — A (yes, but only by an explicit
    "Record without positions" choice, stored as "undeclared"), B (no, a confirmed map is
    required), C (yes, silently with default names). **Recommendation:** A — explicit either way
    (PRD §6), without blocking a quick hardware test; C breaks "never infer".
-   → *Answer:*
+   → *Answer:* A — yes, only by an explicit "Record without positions" choice, stored as "undeclared" (PM, 2026-11-20; decision #31)
 3. **On a disconnect, does the app reconnect by itself?** — A (automatic retry for 30 s, then
    failed with a Reconnect button; every reconnect is a new segment and is named), B (always
    manual). **Recommendation:** A — a bumped dongle shouldn't end a session, and the new
    segment keeps the break explicit.
-   → *Answer:*
+   → *Answer:* A — automatic retry for 30 s, then failed with Reconnect; every reconnect is a new, named segment (PM, 2026-11-20; decision #32)
 4. **Disk-space guard?** — A (warn before Record when free space is under 1 hour of recording
    ≈ 120 MB at 16 ch / 125 Hz; stop cleanly under 100 MB free), B (only stop on the OS
    error). **Recommendation:** A — the stop is clean and named rather than a failed write.
-   → *Answer:*
+   → *Answer:* A — warn before Record under ~1 h of space (≈ 120 MB), stop cleanly under 100 MB free (PM, 2026-11-20; decision #33)
 
 ## Engineering decisions (lead)
 - **Bridge** (`Sources/BrainFlowBridge/`): `BrainFlowBoard` gains

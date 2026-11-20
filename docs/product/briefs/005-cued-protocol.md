@@ -1,6 +1,6 @@
 # 005 — Cued motor-imagery protocol
 
-**Status:** draft · **Owner:** PM · **PR:** — · **Updated:** 2026-11-14
+**Status:** approved · **Owner:** PM · **PR:** — · **Updated:** 2026-11-20
 
 ## Problem
 After brief 004 a user can record a stream, but a stream without labelled trials can't be
@@ -157,21 +157,21 @@ one-line caveat above.
    the seeded order stays as planned and the class counts may end up unequal), B (re-queued at
    the end of the run). **Recommendation:** A — the plan stays reproducible from the seed and
    the exclusion is listed; B makes the order depend on when aborts happened.
-   → *Answer:*
+   → *Answer:* A — marked aborted and excluded, not re-queued (PM, 2026-11-20; decision #34)
 2. **Disconnect during a run?** — A (abort the current trial, pause, offer Resume after
    reconnect in a new segment), B (end the run). **Recommendation:** A — reconnects are already
    explicit segments (brief 004), and losing a whole run to a bumped dongle is costly.
-   → *Answer:*
+   → *Answer:* A — abort the current trial, pause, offer Resume after reconnect in a new segment (PM, 2026-11-20; decision #35)
 3. **Which display gets the participant window?** — A (a second display when one is
    connected; with one display, the participant window goes full-screen and the operator uses
    the keyboard shortcuts, then sees the summary after), B (always ask). **Recommendation:** A,
    with a display picker in Start run… that remembers the last choice.
-   → *Answer:*
+   → *Answer:* A — second display when connected, else full-screen with operator shortcuts; picker remembers the last choice (PM, 2026-11-20; decision #36)
 4. **Default runs per session?** — A (4 runs ≈ 21 min of trials: one held out, three for
    training), B (3, the minimum the evaluation accepts), C (6). **Recommendation:** A — three
    training runs give grouped CV at least 3 folds; one held-out run is still a single run, which
    the result already labels.
-   → *Answer:*
+   → *Answer:* A — 4 runs (PM, 2026-11-20; decision #37)
 
 ## Engineering decisions (lead)
 - **Contracts** (`Sources/Contracts/Records.swift`): `ProtocolRecord` (protocolID, name,
