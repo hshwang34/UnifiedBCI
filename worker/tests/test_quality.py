@@ -459,7 +459,7 @@ def test_swift_fixtures_match_the_worker():
     spec = importlib.util.spec_from_file_location("make_quality_fixtures", REPO / "worker" / "tools" / "make_quality_fixtures.py")
     tool = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tool)
-    for name, build in (("inspect_recording_tiny.json", tool.tiny), ("inspect_recording_faults.json", tool.faults)):
+    for name, build in tool.BUILDERS:
         committed = json.loads((REPO / "Tests" / "Fixtures" / name).read_text(encoding="utf-8"))
         assert _rounded(json.loads(tool.dumps(build()))) == _rounded(committed), f"{name} is stale"
 
