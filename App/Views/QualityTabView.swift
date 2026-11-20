@@ -23,7 +23,7 @@ struct QualityTabView: View {
             ErrorBanner(title: QualityModel.failedTitle, message: QualityModel.failedMessage, details: details, retry: nil)
         case .ready(let model):
             if model.sections.indices.contains(segment) {
-                content(model, model.sections[segment]).onChange(of: segment) { session.traceStartS = 0 }
+                content(model, model.sections[segment])
             }
         }
     }
@@ -56,7 +56,9 @@ struct QualityTabView: View {
         VStack(alignment: .leading, spacing: Theme.Space.l) {
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
                 if model.sections.count > 1 {
-                    Picker(QualityModel.segmentPicker, selection: $segment) {
+                    // The trace start resets in the same update as the segment, so the trace view
+                    // asks once, for the new segment's start, not first with the old start.
+                    Picker(QualityModel.segmentPicker, selection: Binding(get: { segment }, set: { session.traceStartS = 0; segment = $0 })) {
                         ForEach(model.sections.indices, id: \.self) { Text(model.sections[$0].title).tag($0) }
                     }
                     .pickerStyle(.menu)

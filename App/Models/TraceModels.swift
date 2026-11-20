@@ -13,9 +13,9 @@ struct TraceModel: Equatable {
     static let positionLabel = "Window start"
     static let loading = "Loading the window…"
     static let unavailableTitle = "Signal unavailable"
+    static let unavailableMessage = "The window could not be loaded. The recording is unchanged."
     static let flaggedLegend = "Flagged channels carry a flag and list the rules that fired."
     static let warmupTag = "warm-up"
-    static let timeAxis = "Time in segment (s)"
     /// Why the warm-up is drawn rather than cut: the evaluation skips it, the view says so.
     static func warmupText(_ seconds: Double) -> String {
         "Shaded: band-pass warm-up, the first \(Fmt.fixed(seconds, 2)) s of the segment. Shown here; evaluation leaves out trials that start in it."
@@ -37,22 +37,35 @@ struct TraceModel: Equatable {
         /// Points relative to `center`, in the channel's unit.
         let points: [Point]
         let center: Double
+        /// The lane's full height in the channel's unit: the trace is drawn within
+        /// ± `scale` / 2 of `center` and clipped there, so it never crosses into a neighbour.
+        let scale: Double
         /// Why there is no trace (band-pass can't run, non-finite samples), else nil.
         let note: String?
-        /// Some of the trace runs past the lane's scale and is clipped there.
+        /// Some of the trace runs past ± `scale` / 2 and is clipped at the lane's edge.
         let clipped: Bool
         let accessibilityLabel: String
         var isFlagged: Bool { !flags.isEmpty }
+        var halfScale: Double { scale / 2 }
+    }
+
+    /// One lane height per unit: channels with the same unit share it.
+    struct Scale: Equatable {
+        let unit: String
+        let height: Double
     }
 
     let lanes: [Lane]
     let startS: Double
     let endS: Double
     let segmentDurationS: Double
-    /// Height of one lane in the channels' unit; traces are clipped at ± one lane.
-    let laneScale: Double
+    let scales: [Scale]
     let scaleText: String
+    /// Set when the whole window lies in the band-pass warm-up, so the scale comes from it.
+    let scaleNote: String?
     let rangeText: String
+    /// "Signal · 0.0–10.0 s of 42 s", or just "Signal" before a window arrives.
+    let headerText: String
     /// Warm-up inside this window (band-passed only), in segment seconds.
     let warmup: ClosedRange<Double>?
     let warmupNote: String?
@@ -64,6 +77,7 @@ struct TraceModel: Equatable {
         segmentDurationS = w.segmentDurationS
         let range = "\(Fmt.fixed(startS, 1))–\(Fmt.fixed(endS, 1)) s of \(QualityModel.num(w.segmentDurationS)) s"
         rangeText = range
+        headerText = Self.header(range)
         if processed, let bp = w.bandpass, bp.warmupEndS > startS {
             warmup = startS...min(bp.warmupEndS, endS)
             warmupNote = Self.warmupText(bp.warmupEndS)
@@ -71,27 +85,40 @@ struct TraceModel: Equatable {
             warmup = nil
             warmupNote = nil
         }
-        let settled = warmup?.upperBound ?? -.infinity
         let traces = w.channels.map { processed ? $0.bandpassed : $0.raw }
-        // Scale from the settled part, so a filter transient doesn't flatten every lane.
-        let spans = traces.compactMap { t -> Double? in
-            guard let t else { return nil }
-            let lo = zip(w.tS, t.min).filter { $0.0 >= settled }.compactMap(\.1).min()
-            let hi = zip(w.tS, t.max).filter { $0.0 >= settled }.compactMap(\.1).max()
-            guard let lo, let hi else { return nil }
-            return hi - lo
-        }.sorted()
-        laneScale = Self.nice(spans.isEmpty ? 1 : spans[spans.count / 2])
-        let unit = w.channels.first.map { QualityModel.unitName($0.unit) } ?? ""
-        scaleText = "Lane height \(QualityModel.num(laneScale)) \(unit)"
-        let scale = laneScale
+        // Scale from the settled part, so a filter transient doesn't flatten every lane; a
+        // window wholly inside the warm-up has no settled part, so it scales from all of it.
+        func spans(after settled: Double, unit: String) -> [Double] {
+            zip(w.channels, traces).compactMap { ch, t -> Double? in
+                guard let t, QualityModel.unitName(ch.unit) == unit else { return nil }
+                let kept = zip(w.tS, zip(t.min, t.max)).filter { $0.0 >= settled }.map(\.1)
+                guard let lo = kept.compactMap(\.0).min(), let hi = kept.compactMap(\.1).max() else { return nil }
+                return hi - lo
+            }.sorted()
+        }
+        var units: [String] = []
+        for ch in w.channels where !units.contains(QualityModel.unitName(ch.unit)) { units.append(QualityModel.unitName(ch.unit)) }
+        var inWarmup = false
+        let warm = warmup
+        let built: [Scale] = units.map { unit in
+            var s = spans(after: warm?.upperBound ?? -.infinity, unit: unit)
+            if s.isEmpty, warm != nil {
+                s = spans(after: -.infinity, unit: unit)
+                if !s.isEmpty { inWarmup = true }
+            }
+            return Scale(unit: unit, height: Self.nice(s.isEmpty ? 1 : s[s.count / 2]))
+        }
+        scales = built
+        scaleText = Self.scaleText(built)
+        scaleNote = inWarmup ? Self.insideWarmupText : nil
         lanes = zip(w.channels, traces).map { ch, trace in
             let flagTitles = flags[ch.id] ?? []
             let unit = QualityModel.unitName(ch.unit)
+            let scale = built.first { $0.unit == unit }?.height ?? 1
             let flagText = flagTitles.isEmpty ? "no flags" : "flags: \(flagTitles.joined(separator: ", "))"
             guard let trace else {
                 let note = ch.bandpassedReason ?? "no samples"
-                return Lane(id: ch.id, label: ch.label, flags: flagTitles, points: [], center: 0, note: note, clipped: false,
+                return Lane(id: ch.id, label: ch.label, flags: flagTitles, points: [], center: 0, scale: scale, note: note, clipped: false,
                             accessibilityLabel: "\(ch.label), \(flagText). Not available: \(note).")
             }
             var points: [Point] = []
@@ -101,16 +128,34 @@ struct TraceModel: Equatable {
             }
             let mids = points.map { ($0.lo + $0.hi) / 2 }.sorted()
             let center = mids.isEmpty ? 0 : mids[mids.count / 2]
-            let clipped = points.contains { $0.hi - center > scale || center - $0.lo > scale }
+            let half = scale / 2
+            let clipped = points.contains { $0.hi - center > half || center - $0.lo > half }
             let extent = [trace.lo, trace.hi].allSatisfy { $0 != nil }
                 ? "min \(QualityModel.num(trace.lo)) \(unit), max \(QualityModel.num(trace.hi)) \(unit)" : "no finite samples"
             let kind = processed ? "Band-passed" : "Raw"
             return Lane(id: ch.id, label: ch.label, flags: flagTitles,
                         points: points.map { Point(t: $0.t, lo: $0.lo - center, hi: $0.hi - center, run: $0.run) },
-                        center: center, note: nil, clipped: clipped,
-                        accessibilityLabel: "\(ch.label), \(flagText). \(kind) \(range): \(extent)\(clipped ? ", exceeds the lane scale" : "").")
+                        center: center, scale: scale, note: nil, clipped: clipped,
+                        accessibilityLabel: "\(ch.label), \(flagText). \(kind) \(range): \(extent)\(clipped ? ", exceeds the lane height" : "").")
         }
     }
+
+    static let insideWarmupText = "This whole window lies in the band-pass warm-up, so the lane height comes from warm-up samples."
+
+    static func header(_ range: String?) -> String {
+        [title, range].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    static func scaleText(_ scales: [Scale]) -> String {
+        "Lane height " + scales.map { "\(scaleNumber($0.height)) \($0.unit)" }.joined(separator: " · ")
+    }
+
+    /// A 1-2-5 height with the decimals it needs: 500, 2, 0.05.
+    static func scaleNumber(_ v: Double) -> String {
+        Fmt.fixed(v, v > 0 && v < 1 ? Int(-floor(log10(v))) : 0)
+    }
+
+    static func tickLabel(_ t: Double) -> String { "\(Fmt.fixed(t, 0)) s" }
 
     /// The window start for moving one window earlier or later, inside the segment.
     static func step(_ start: Double, by direction: Double, segment: Double) -> Double {

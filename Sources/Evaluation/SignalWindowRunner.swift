@@ -1,6 +1,16 @@
 import Foundation
 import Observation
 
+/// Where `SignalWindowRunner` gets windows: the inspection worker (tests use a fake).
+@MainActor
+public protocol SignalWindowSource: AnyObject {
+    var projectDirectory: URL { get }
+    func signalWindow(params: [String: JSONValue], requestID: String) async throws -> SignalWindow
+    func cancelSignalWindow(requestID: String)
+}
+
+extension InspectionRunner: SignalWindowSource {}
+
 /// Fetches trace windows for the Quality tab (brief 002) on the inspection worker. One
 /// request at a time; while one runs, a newer request cancels it and waits its turn, so
 /// moving the window quickly never builds a backlog (latest wins). The last window stays
@@ -36,47 +46,65 @@ public final class SignalWindowRunner {
     /// The latest window received, shown until the next one arrives.
     public private(set) var window: SignalWindow?
 
-    private let inspector: InspectionRunner
+    private let inspector: any SignalWindowSource
     private var cache: [Request: SignalWindow] = [:]
     private var cacheOrder: [Request] = []
     private var task: Task<Void, Never>?
     private var currentRequestID: String?
-    private var queued: Request?
+    /// The request the running task is fetching, and whether its cancel was already sent.
+    private var inFlight: Request?
+    private var inFlightCancelled = false
+    /// The latest request asked for: the one that must end up on screen.
+    private var wanted: Request?
 
-    public init(inspector: InspectionRunner) { self.inspector = inspector }
+    public init(inspector: any SignalWindowSource) { self.inspector = inspector }
 
     public var isBusy: Bool { task != nil }
 
+    /// Shows `request`'s window: from the cache at once, else after the running fetch (if
+    /// any) ends. A fetch for anything other than the latest request is cancelled. Asking
+    /// again for a request whose fetch was already cancelled (A, then B, then back to A)
+    /// starts it afresh once the cancelled one returns, so the latest request always loads.
     public func load(_ request: Request) {
+        wanted = request
         if let cached = cache[request] {
-            queued = nil
-            if let id = currentRequestID { inspector.cancelSignalWindow(requestID: id) }
+            cancelInFlight()
             window = cached
             state = .ready(request)
             return
         }
-        if task != nil {
-            if case .loading(let r) = state, r == request { queued = nil; return }
-            queued = request
-            if let id = currentRequestID { inspector.cancelSignalWindow(requestID: id) }
+        state = .loading(request)
+        if let inFlight {
+            if inFlight != request { cancelInFlight() }
             return
         }
-        state = .loading(request)
-        task = Task { [weak self] in
-            await self?.fetch(request)
-            guard let self else { return }
-            self.task = nil
-            if let next = self.queued {
-                self.queued = nil
-                self.load(next)
-            }
-        }
+        start(request)
     }
 
     public func loadAndWait(_ request: Request) async -> State {
         load(request)
         while let t = task { await t.value }
         return state
+    }
+
+    private func start(_ request: Request) {
+        inFlight = request
+        inFlightCancelled = false
+        task = Task { [weak self] in
+            await self?.fetch(request)
+            guard let self else { return }
+            self.task = nil
+            self.inFlight = nil
+            self.inFlightCancelled = false
+            // Still waiting: a newer request, or this one after its fetch was cancelled.
+            if let next = self.wanted, self.state == .loading(next) { self.start(next) }
+        }
+    }
+
+    private func cancelInFlight() {
+        guard inFlight != nil, !inFlightCancelled else { return }
+        inFlightCancelled = true
+        if let id = currentRequestID { inspector.cancelSignalWindow(requestID: id) }
     }
 
     private func fetch(_ request: Request) async {
@@ -89,17 +117,21 @@ public final class SignalWindowRunner {
         do {
             let w = try await inspector.signalWindow(params: params, requestID: id)
             store(w, for: request)
-            // A newer request already shows its cached window: keep that on screen.
-            guard queued == nil, state == .loading(request) else { return }
+            // A newer request is waiting or already shows its cached window: leave it.
+            guard state == .loading(request) else { return }
             window = w
             state = .ready(request)
         } catch let error as WorkerError {
-            guard queued == nil, state == .loading(request) else { return }
-            if error.code == "cancelled" { state = .idle; return }
+            guard state == .loading(request) else { return }
+            // Our own cancel: the completion handler restarts the request if still wanted.
+            if error.code == "cancelled" {
+                if !inFlightCancelled { state = .idle }
+                return
+            }
             let gone = ["worker_exited", "launch_failed", "ready_timeout", "protocol_mismatch", "bad_state", "write_failed", "timeout"].contains(error.code)
             state = gone ? .unavailable(request, reason: error.message) : .failed(request, reason: error.description)
         } catch {
-            guard queued == nil, state == .loading(request) else { return }
+            guard state == .loading(request) else { return }
             state = .failed(request, reason: "unreadable signal_window response: \(error)")
         }
     }

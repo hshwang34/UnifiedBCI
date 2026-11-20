@@ -16,11 +16,12 @@ struct SignalTraceCard: View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
             header(model)
             controls(model)
-            if let model {
+            if let problem {
+                // The latest window failed: say so instead of leaving the last one on screen.
+                problem
+            } else if let model {
                 TraceStack(model: model, selected: $selected)
                 captions(model)
-            } else if let problem {
-                problem
             } else {
                 ProgressView(TraceModel.loading).frame(maxWidth: .infinity, minHeight: 120)
             }
@@ -33,7 +34,7 @@ struct SignalTraceCard: View {
     }
 
     private func header(_ model: TraceModel?) -> some View {
-        let title = Text([TraceModel.title, model?.rangeText].compactMap { $0 }.joined(separator: " · "))
+        let title = Text(model?.headerText ?? TraceModel.header(nil))
             .font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
         @Bindable var session = session
         let toggle = Picker(TraceModel.title, selection: $session.traceBandpassed) {
@@ -69,16 +70,26 @@ struct SignalTraceCard: View {
         .buttonStyle(.bordered)
     }
 
-    private var problem: StatusChip? {
+    /// The analysis-unavailable treatment used elsewhere: Retry when the worker has gone (the
+    /// next call starts a fresh one); a refusal shows its details, and moving the window asks again.
+    private var problem: ErrorBanner? {
         switch session.traces.state {
-        case .unavailable(_, let reason), .failed(_, let reason):
-            return StatusChip(kind: .warning, text: "\(TraceModel.unavailableTitle) · \(reason)")
+        case .unavailable(let r, let reason) where isShown(r):
+            return ErrorBanner(title: TraceModel.unavailableTitle, message: TraceModel.unavailableMessage, details: reason,
+                               retry: { [session, segment] in session.loadTrace(segment: segment) })
+        case .failed(let r, let reason) where isShown(r):
+            return ErrorBanner(title: TraceModel.unavailableTitle, message: TraceModel.unavailableMessage, details: reason, retry: nil)
         default: return nil
         }
     }
 
+    private func isShown(_ r: SignalWindowRunner.Request) -> Bool {
+        r.recordingID == session.selectedRecordingID && r.segment == segment
+    }
+
     private func captions(_ model: TraceModel) -> some View {
         VStack(alignment: .leading, spacing: Theme.Space.xs) {
+            if let note = model.scaleNote { Text(note) }
             HStack {
                 Text(model.scaleText)
                 Spacer()
@@ -170,12 +181,14 @@ private struct TraceStack: View {
                 var grid = Path()
                 grid.move(to: CGPoint(x: x(t), y: 0)); grid.addLine(to: CGPoint(x: x(t), y: plotHeight))
                 ctx.stroke(grid, with: .color(Theme.hairline), lineWidth: 0.5)
-                ctx.draw(Text("\(Int(t.rounded())) s").font(.caption2.monospacedDigit()).foregroundStyle(Theme.textSecondary),
+                ctx.draw(Text(TraceModel.tickLabel(t)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.textSecondary),
                          at: CGPoint(x: x(t), y: plotHeight + 2), anchor: .top)
             }
-            let unit = Self.laneHeight / CGFloat(model.laneScale)
-            let limit = model.laneScale
             for (i, lane) in model.lanes.enumerated() {
+                // The lane's height is `lane.scale`: ± half of it around the centre, clipped
+                // there, so a trace stays inside its own lane (same bound as `lane.clipped`).
+                let unit = Self.laneHeight / CGFloat(lane.scale)
+                let limit = lane.halfScale
                 let mid = Self.laneHeight * (CGFloat(i) + 0.5)
                 func y(_ v: Double) -> CGFloat { mid - CGFloat(min(max(v, -limit), limit)) * unit }
                 var path = Path()
