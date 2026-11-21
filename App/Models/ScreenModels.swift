@@ -74,8 +74,8 @@ struct RecentProject: Identifiable, Equatable {
 
 // MARK: - Sidebar
 
-/// The project window's sidebar, in the spec's order. Protocols and Live Test are
-/// present but empty until phases 2 and 3.
+/// The project window's sidebar, in the spec's order. Live Test is present but empty until
+/// phase 3.
 enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
     case recordings, protocols, pipelines, results, liveTest
 
@@ -107,7 +107,6 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
     /// The `ContentUnavailableView` copy for sections that arrive in later phases.
     var placeholder: String? {
         switch self {
-        case .protocols: return "Protocols arrive in phase 2. Needs a connected board or the cue protocol."
         case .liveTest: return "Live Test arrives in phase 3. Needs a frozen pipeline from phase 2."
         default: return nil
         }

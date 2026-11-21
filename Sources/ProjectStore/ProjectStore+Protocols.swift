@@ -63,11 +63,14 @@ extension ProjectStore {
         }
     }
 
-    /// Gives a project with no readable protocol the default one (decision #28) as v1. New
-    /// projects get it from `create`; an older project gets it when the Protocols section asks.
+    /// Gives a project with no protocol at all the default one (decision #28) as v1. New
+    /// projects get it from `create`; an older project gets it the first time the Protocols
+    /// section is opened (opening a project never writes). A project with an unreadable
+    /// protocol file gets nothing: its protocols exist, they just can't be read here.
     @discardableResult
     public func ensureDefaultProtocol(now: Date = Date()) throws -> ProtocolRecord? {
-        guard try protocols().protocols.isEmpty else { return nil }
+        let list = try protocols()
+        guard list.protocols.isEmpty, list.unreadable == 0 else { return nil }
         return try createProtocolVersion(.grazDefault, basedOn: nil, now: now)
     }
 

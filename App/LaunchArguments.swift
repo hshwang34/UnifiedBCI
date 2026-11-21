@@ -21,6 +21,10 @@ import Foundation
 ///                                              "quality-trace-bandpassed"
 ///     -BCITraceStart 20                        the signal view's window start (s)
 ///     -BCIQuitWhenDone YES                     quit after the last step
+///     -BCIProtocolEditor YES                   with -BCISnapshotDir: the Protocols section, then
+///                                              "New version…" as opened, with broken rules and with
+///                                              the cue warning; saves it and snapshots "protocols-v2"
+///                                              (brief 005 PR 4; writes a version into the project)
 ///     -BCIAppearance light|dark                force an appearance (screenshots)
 ///     -BCISnapshotProgress YES                 snapshot the progress panel mid-run
 ///     -BCIFailingWorker YES                    use a worker that dies before it is ready, to
@@ -281,8 +285,10 @@ enum LaunchArguments {
         }
         for name in ["pipelines", "protocols"] where snapshots != nil {
             session.section = SidebarSection(rawValue: name)!
+            if session.section == .protocols { await session.awaitProtocols() }
             await snap(name)
         }
+        if defaults.bool(forKey: "BCIProtocolEditor") { await protocolEditor(session, snap: snap) }
         if snapshots != nil {
             session.section = .recordings
             await snap("recordings-after")
@@ -294,6 +300,29 @@ enum LaunchArguments {
     }
 
     #if DEBUG
+    /// Brief 005 PR 4: the Protocols section and the "New version…" editor: as opened,
+    /// with broken rules, valid with the cue warning, then saved as the next version.
+    private static func protocolEditor(_ session: ProjectSession, snap: (String, Duration) async -> Void) async {
+        session.section = .protocols
+        await session.awaitProtocols()
+        guard let base = session.selectedProtocol else { return }
+        session.newProtocolVersion(of: base)
+        guard let editor = session.protocolEditor else { return }
+        await snap("protocol-editor", .seconds(1.5))
+        let (fixation, label) = (editor.fixation, editor.classes[1].label)
+        editor.fixation = "0"
+        editor.cue = "4.0005"
+        editor.classes[1].label = "rest"
+        await snap("protocol-editor-invalid", .seconds(1))
+        editor.fixation = fixation
+        editor.classes[1].label = label
+        editor.cue = "3"
+        editor.name = base.name + " (3 s cue)"
+        await snap("protocol-editor-warning", .seconds(1))
+        await session.saveProtocolEditor()
+        await snap("protocols-v2", .seconds(1.5))
+    }
+
     /// Opens the Connect sheet and walks it through its states for snapshots.
     private static func connectSheet(_ session: ProjectSession, source: String?, snap: (String, Duration) async -> Void) async {
         session.showConnectSheet()

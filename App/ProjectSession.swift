@@ -87,8 +87,21 @@ final class ProjectSession: Identifiable {
     private(set) var latestReport: [UUID: EvaluationReport] = [:]
 
     var section: SidebarSection = .recordings {
-        didSet { if section != oldValue, let n = notice, !n.isPersistent { notice = nil } }
+        didSet {
+            if section != oldValue, let n = notice, !n.isPersistent { notice = nil }
+            if section == .protocols, section != oldValue { loadProtocols(addingDefault: true) }
+        }
     }
+
+    // MARK: Protocols (brief 005)
+
+    private(set) var protocolList: ProtocolList?
+    private(set) var protocolUsage: [UUID: Int] = [:]
+    private(set) var protocolsError: String?
+    var selectedProtocolID: UUID?
+    /// The "New version…" sheet's editor while it is open.
+    var protocolEditor: ProtocolEditor?
+    @ObservationIgnored private var protocolsTask: Task<Void, Never>?
     var selectedRecordingID: UUID? {
         didSet { if selectedRecordingID != oldValue { traceStartS = 0; inspectIfFirstShown() } }
     }
@@ -293,6 +306,71 @@ final class ProjectSession: Identifiable {
                 guard self.selectedResultID == id else { return }
                 self.selectedResultError = "\(error)"
             }
+        }
+    }
+
+    /// Lists the protocols and their use. `addingDefault` (only on entering the section)
+    /// first gives a project with no protocol at all the default (decision #28).
+    func loadProtocols(addingDefault: Bool = false) {
+        protocolsTask?.cancel()
+        protocolsTask = Task { [weak self] in
+            guard let self else { return }
+            var error: String?
+            if addingDefault {
+                do { _ = try await self.store.ensureDefaultProtocol() } catch let e {
+                    error = ProtocolCopy.defaultNotSaved(e, writable: FileManager.default.isWritableFile(atPath: self.url.path))
+                }
+            }
+            do {
+                let list = try await self.store.protocols()
+                let usage = try await self.store.protocolUsage()
+                guard !Task.isCancelled else { return }
+                self.protocolList = list
+                self.protocolUsage = usage
+                self.protocolsError = error
+                if self.selectedProtocolID.map({ id in !list.protocols.contains { $0.protocolID == id } }) ?? true {
+                    self.selectedProtocolID = ProtocolListModel(list: list, usage: usage).groups.first?.rows.first?.id
+                }
+            } catch let e {
+                self.protocolsError = ProtocolCopy.unreadableList(e)
+            }
+        }
+    }
+
+    func awaitProtocols() async { await protocolsTask?.value }
+
+    var selectedProtocol: ProtocolRecord? {
+        protocolList?.protocols.first { $0.protocolID == selectedProtocolID }
+    }
+
+    /// Where the default evaluation window ends (offset + length), for the cue warning.
+    var evaluationWindowEndMs: Int {
+        let offset = parameters.windowOffsetSeconds ?? workerDefaults?.params.window.offset_s ?? 0.5
+        let length = parameters.windowLengthSeconds ?? workerDefaults?.params.window.length_s ?? 3.5
+        let end = (offset + length) * 1000
+        return end.isFinite ? Int(min(max(end, 0), 1e9).rounded()) : 4000
+    }
+
+    func newProtocolVersion(of base: ProtocolRecord) {
+        guard let list = protocolList, !list.mislinked.contains(base.protocolID) else { return }
+        let lineage = list.protocols.filter { list.lineage(of: $0) == list.lineage(of: base) }
+        protocolEditor = ProtocolEditor(base: base, lineage: lineage, windowEndMs: evaluationWindowEndMs)
+    }
+
+    /// Saves the editor's draft as a new version and selects it; keeps the sheet open with
+    /// the store's reason when it refuses.
+    func saveProtocolEditor() async {
+        guard let editor = protocolEditor, editor.canSave, let draft = editor.draft else { return }
+        editor.isSaving = true
+        defer { editor.isSaving = false }
+        do {
+            let record = try await store.createProtocolVersion(draft, basedOn: editor.base)
+            protocolEditor = nil
+            selectedProtocolID = record.protocolID
+            loadProtocols()
+            await awaitProtocols()
+        } catch {
+            editor.saveError = ProtocolCopy.notSaved(error)
         }
     }
 
