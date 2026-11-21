@@ -129,6 +129,7 @@ public enum ProjectStoreError: Error, CustomStringConvertible, Sendable {
     case invalidProtocol(String)
     case invalidRunPlan(String)
     case invalidModel(String)
+    case logFull(String)
     case io(String, Int32)
 
     public var description: String {
@@ -146,6 +147,7 @@ public enum ProjectStoreError: Error, CustomStringConvertible, Sendable {
         case .invalidProtocol(let why): return "invalid protocol: \(why)"
         case .invalidRunPlan(let why): return "invalid run plan: \(why)"
         case .invalidModel(let why): return "model: \(why)"
+        case .logFull(let why): return "log full: \(why)"
         case .io(let what, let code): return "\(what): \(String(cString: strerror(code))) (errno \(code))"
         }
     }

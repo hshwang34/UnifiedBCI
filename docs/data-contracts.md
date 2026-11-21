@@ -69,7 +69,8 @@ protocol: write the complete new content to a sibling temp file (`.tmp-<name>`),
 it, `rename(2)` over the target, then `fsync` the directory. A crash leaves either the old
 file or the new file, never a torn one, and at most one temp file, which is deleted on
 open. Append-only files (`events.jsonl`, `predictions.jsonl`, `feedback.jsonl`) are
-appended with one `O_APPEND` `write` per line, fsynced per line, and never rewritten. A
+appended one line at a time with `O_APPEND` (short writes looped; a failed append is
+truncated back to the file's earlier size), fsynced per line, and never rewritten. A
 reader drops a last line cut off mid-write (no newline, not decodable) and says so; any
 other line that fails to decode is an error.
 
@@ -363,11 +364,15 @@ break no reader).
   `pipelines/<sourcePipelineID>/fitted.npz`, whose path is built from the id and never read
   from the record. Freezing requires the worker's `validate_model` summary of that file,
   and the store hashes the bytes again and refuses if they differ; the worker re-checks the
-  hash on every use ("model file changed since it was frozen"). One model per fit and role.
+  hash on every use ("model file changed since it was frozen"). The summary must describe
+the frozen role and LDA classes exactly `[0, 1]` (the evaluation's `left`, `right`), and every
+training run must be in the source recording. One model per fit and role.
 - `live/<uuid>/run.json` (`LiveRunRecord`): `kind` `replay` is written once with its
   predictions and parity report. `kind` `live` is written at start and rewritten once at the
   end (`endedAt`, prediction summary, latency summary, live-vs-replay check), with the atomic
-  rewrite; a live run without `endedAt` ended with the app. Both store the model, recording,
+  rewrite; a live run without `endedAt` ended with the app. Its logs are created empty and
+  fsynced with the directory at start. A log that would pass the 64 MB read cap stops
+  logging instead (`loggingStopped` names why), so it always stays readable. Both store the model, recording,
   runs, hop and abstention threshold (decision #39); a live run also its stale limit.
 - `predictions.jsonl` gets `sequence` (from 0, per run), `validityDetail`,
   `acquisitionReceiptMonotonicNanos`, `workerComputeNanos`, `confidence` (the uncalibrated
