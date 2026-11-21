@@ -18,6 +18,8 @@ MyExperiment.bciproj/
   pipelines/<uuid>/
     pipeline.json              PipelineRecord
     fitted.npz                 explicit arrays only (filters, CSP patterns, LDA weights)
+  montages/<uuid>/
+    montage.json               ChannelMapRecord: a saved channel map (made on first save)
   results/<uuid>/
     evaluation.json            worker evaluation record (verbatim bytes from the worker)
     result.meta.json           ResultMeta: wall clock, durations, worker build, reproduction link
@@ -185,7 +187,11 @@ Three clocks, never mixed:
 ## Channel maps
 
 `ChannelSpec.label` is user-declared. The default for a fresh Cyton+Daisy recording is the
-BrainFlow default name list, flagged `montage: "unspecified"` until the operator confirms it.
+BrainFlow default name list, flagged `montage: "undeclared"` until the operator confirms a map (decision #31).
+Saved maps are immutable `montages/<uuid>/montage.json` (`ChannelMapRecord`: `mapID`,
+`createdAt`, `montage`, `reference`, `channels`); a recording copies the chosen map into its
+manifest, so it never depends on `montages/`. Older readers ignore the directory (no format
+bump). The reference defaults to `SRB2`.
 Scalp positions are never inferred from channel count. Pipelines record
 `expectedChannelIDs`; a recording with a different set or order is rejected, not reordered.
 

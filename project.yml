@@ -166,6 +166,10 @@ targets:
       # BrainFlow playback-file CSV with injected counter faults (worker/tools/make_playback_fixture.py).
       - path: Tests/Fixtures/playback_cyton_daisy_faults.csv
         buildPhase: resources
+      # CONSTRUCTED, not captured from a board: the Cyton+Daisy `?` reply as the firmware
+      # source prints it (OpenBCI_Cyton_Library printAllRegisters / RREGS), default registers.
+      - path: Tests/Fixtures/cyton_daisy_register_dump.constructed.txt
+        buildPhase: resources
     dependencies:
       - target: BCIWorkspace
       - target: BCIStoreCrashHelper

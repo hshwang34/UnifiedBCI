@@ -10,6 +10,8 @@ public protocol AcquisitionBoard: Sendable {
     func prepare() async throws
     func startStream(bufferSize: Int32) async throws
     func readAll() async throws -> SampleChunk
+    /// BrainFlow `config_board`: sends `command`, returns the board's reply ("" if none).
+    func configure(_ command: String) async throws -> String
     func release() async throws
 }
 

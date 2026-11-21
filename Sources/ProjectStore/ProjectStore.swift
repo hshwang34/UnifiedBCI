@@ -21,6 +21,8 @@ public actor ProjectStore {
     public static let resultMetaFileName = "result.meta.json"
 
     public static let stagingLockFileName = ".staging.lock"
+    /// `montages/` holds saved channel maps (brief 004); older readers ignore it.
+    static let childDirectories = ["recordings", "pipelines", "results", "montages"]
 
     public nonisolated let directory: URL
     public private(set) var manifest: ProjectManifest
@@ -60,7 +62,7 @@ public actor ProjectStore {
         let fm = FileManager.default
         guard !fm.fileExists(atPath: url.path) else { throw ProjectStoreError.alreadyExists(url) }
         try fm.createDirectory(at: url, withIntermediateDirectories: true)
-        for child in ["recordings", "pipelines", "results"] {
+        for child in childDirectories {
             try fm.createDirectory(at: url.appendingPathComponent(child, isDirectory: true), withIntermediateDirectories: false)
         }
         let manifest = ProjectManifest(name: name, created: now)
@@ -75,7 +77,7 @@ public actor ProjectStore {
     public static func open(at url: URL) throws -> ProjectStore {
         let fm = FileManager.default
         let manifest = try readManifest(at: url)
-        for child in ["recordings", "pipelines", "results"] {
+        for child in ["recordings", "pipelines", "results"] {   // montages/ is made on first save
             let dir = url.appendingPathComponent(child, isDirectory: true)
             if !fm.fileExists(atPath: dir.path) { try fm.createDirectory(at: dir, withIntermediateDirectories: false) }
         }
@@ -299,6 +301,40 @@ public actor ProjectStore {
         return try ContractJSON.decoder().decode(PipelineRecord.self, from: data)
     }
 
+    // MARK: Channel maps (`montages/`)
+
+    public static let channelMapFileName = "montage.json"
+
+    /// Saves `map` as a new immutable directory (temp → fsync → rename) and returns its id.
+    @discardableResult
+    public func saveChannelMap(_ map: ChannelMapRecord) throws -> UUID {
+        let parent = directory.appendingPathComponent("montages", isDirectory: true)
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        let dir = parent.appendingPathComponent(map.mapID.uuidString, isDirectory: true)
+        let tmp = AtomicFile.tempURL(for: dir)
+        do {
+            try fm.createDirectory(at: tmp, withIntermediateDirectories: false)
+            try AtomicFile.writeAndSync(try ContractJSON.encoder().encode(map), to: tmp.appendingPathComponent(Self.channelMapFileName))
+            try AtomicFile.syncTree(tmp)
+            try AtomicFile.rename(tmp, to: dir)
+            try AtomicFile.syncDirectory(parent)
+        } catch {
+            try? fm.removeItem(at: tmp)
+            throw error
+        }
+        return map.mapID
+    }
+
+    /// Every readable saved map, newest first; an unreadable one is skipped, not fatal.
+    public func channelMaps() throws -> [ChannelMapRecord] {
+        let parent = directory.appendingPathComponent("montages", isDirectory: true)
+        guard fm.fileExists(atPath: parent.path) else { return [] }
+        return try childIDs(in: "montages", requiring: Self.channelMapFileName).compactMap { id in
+            fm.contents(atPath: parent.appendingPathComponent(id.uuidString).appendingPathComponent(Self.channelMapFileName).path)
+                .flatMap { try? ContractJSON.decoder().decode(ChannelMapRecord.self, from: $0) }
+        }.sorted { $0.createdAt > $1.createdAt }
+    }
+
     public func fittedArraysURL(pipelineID: UUID) -> URL {
         directory.appendingPathComponent("pipelines").appendingPathComponent(pipelineID.uuidString).appendingPathComponent(Self.fittedFileName)
     }
@@ -411,7 +447,7 @@ public actor ProjectStore {
             }
         }
         sweep(project)
-        for child in ["recordings", "pipelines", "results"] {
+        for child in childDirectories {
             let childDir = project.appendingPathComponent(child, isDirectory: true)
             sweep(childDir)
             guard !isSymlink(childDir) else { continue }

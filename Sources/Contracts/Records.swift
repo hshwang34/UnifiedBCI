@@ -330,6 +330,24 @@ public struct RecordingManifest: Codable, Sendable, Equatable {
     }
 }
 
+/// A declared channel map, stored per project as immutable `montages/<uuid>/montage.json`
+/// (brief 004). A recording copies the chosen map into its manifest, so it stands alone.
+public struct ChannelMapRecord: Codable, Sendable, Equatable, Identifiable {
+    public var formatVersion: Int = ContractVersion.format
+    public var mapID: UUID
+    public var createdAt: Date
+    /// "undeclared" unless the operator names a montage; positions come only from a name.
+    public var montage: String
+    public var reference: String
+    public var channels: [ChannelSpec]
+    public var id: UUID { mapID }
+
+    public init(mapID: UUID = UUID(), createdAt: Date = Date(), montage: String, reference: String, channels: [ChannelSpec]) {
+        self.mapID = mapID; self.createdAt = createdAt; self.montage = montage
+        self.reference = reference; self.channels = channels
+    }
+}
+
 public struct EventRecord: Codable, Sendable, Equatable {
     public var eventID: UUID
     public var sessionID: String?

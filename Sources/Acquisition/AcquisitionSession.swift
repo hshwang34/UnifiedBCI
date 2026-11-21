@@ -39,19 +39,28 @@ public actor AcquisitionSession {
         public var holdsPowerAssertion = false
         /// The last recording that ended (stopped, or ended itself on disk full / error).
         public var lastRecordingEnd: RecordingWriter.Status?
+        /// The connected board's layout and what was sent / read back on the last
+        /// connect or reconnect (brief 004, "Configuration").
+        public var board: BoardDescription?
+        public var configuration: RecordingManifest.BoardConfiguration?
     }
 
-    /// The declared parts of a recording; the session fills in source, timing and clocks.
+    /// The declared parts of a recording; the session fills in source, timing, clocks and
+    /// board configuration.
     public struct RecordingRequest: Sendable {
         public var channels: [ChannelSpec]
         public var reference: String
         public var montage: String
-        public var boardConfiguration = RecordingManifest.BoardConfiguration(requested: [:], readback: [:])
         public var sessionID = UUID().uuidString
         public var runID = UUID().uuidString
 
         public init(channels: [ChannelSpec], reference: String, montage: String) {
             self.channels = channels; self.reference = reference; self.montage = montage
+        }
+
+        /// From a confirmed map, or the defaults for "Record without positions" (decision #31).
+        public init(map: ChannelMapRecord) {
+            self.init(channels: map.channels, reference: map.reference, montage: map.montage)
         }
     }
 
@@ -60,7 +69,11 @@ public actor AcquisitionSession {
         public var chunk: SampleChunk
     }
 
-    public enum SessionError: Error, Equatable { case notStreaming, alreadyRecording, streamEnded }
+    public enum SessionError: Error, Equatable {
+        case notStreaming, alreadyRecording, streamEnded
+        /// Readback shows a gain other than 24; µV scaling would be wrong.
+        case gainMismatch(channel: Int, gain: String)
+    }
 
     public nonisolated let source: AcquisitionSource
     /// Newest-wins: a slow preview loses frames, never the recording.
@@ -122,17 +135,25 @@ public actor AcquisitionSession {
         generation += 1
         let gen = generation
         set(.connecting)
-        let b: any AcquisitionBoard
+        var attempt: (any AcquisitionBoard)?
+        let configuration: RecordingManifest.BoardConfiguration
         do {
-            b = try makeBoard()
+            let b = try makeBoard()
+            attempt = b
             try await b.prepare()
+            configuration = try await source.applyDefaultConfiguration(to: b)
         } catch {
+            if let attempt { await Self.release(attempt) }
             if gen == generation { set(.failed(reason: Self.describe(error))) }
             return
         }
-        guard gen == generation else { return await Self.release(b) }   // cancelled meanwhile
+        guard gen == generation, let b = attempt else {             // cancelled meanwhile
+            if let attempt { await Self.release(attempt) }
+            return
+        }
         board = b
         lastDescription = b.description
+        published.withLock { $0.board = b.description; $0.configuration = configuration }
         set(.ready)
     }
 
@@ -161,6 +182,10 @@ public actor AcquisitionSession {
     public func startRecording(_ request: RecordingRequest, in store: ProjectStore) async throws -> UUID {
         guard state == .streaming, let board else { throw SessionError.notStreaming }
         guard writer == nil, !recordingStarting else { throw SessionError.alreadyRecording }
+        let configuration = snapshot.configuration ?? .init(requested: [:], readback: [:])
+        if let m = CytonRegisterReadback.gainMismatch(configuration.readback) {
+            throw SessionError.gainMismatch(channel: m.channel, gain: m.gain)
+        }
         recordingStarting = true
         defer { recordingStarting = false }
         let starts = recordingStarts
@@ -173,7 +198,7 @@ public actor AcquisitionSession {
             timing: .init(nominalSampleRateHz: Double(d.samplingRate), timestampClock: .brainflowReceipt, timestampGeneratedBy: "host",
                           sequenceCounterRow: d.packageNumRow, sequenceStep: d.sequenceStep, notes: Self.timingNotes(source)),
             clockMapping: .init(anchorMonotonicNanos: now, anchorWall: wall),
-            boardConfiguration: request.boardConfiguration, chunks: [], segments: [])
+            boardConfiguration: configuration, chunks: [], segments: [])
         var writerOptions = options.writer
         writerOptions.timestampRow = d.timestampRow
         let w = try await RecordingWriter.start(in: store, manifest: manifest, startedAtWall: wall,
@@ -218,6 +243,7 @@ public actor AcquisitionSession {
         await releaseBoard()
         hasStreamed = false
         reconnecting = false
+        published.withLock { $0.board = nil; $0.configuration = nil }
         set(.disconnected)
     }
 
@@ -320,10 +346,13 @@ public actor AcquisitionSession {
                 let b = try makeBoard()
                 attempt = b
                 try await b.prepare()
+                // "Reconnect to reset": every new session gets the defaults again.
+                let configuration = try await source.applyDefaultConfiguration(to: b)
                 try await b.startStream(bufferSize: options.bufferSize)
                 guard !Task.isCancelled else { await Self.release(b); return false }
                 board = b
                 lastDescription = b.description
+                published.withLock { $0.configuration = configuration }
                 recordingStarts += 1
                 beginStreamSegment(b, reconnect: true)
                 writer?.beginSegment(startedAtWall: Date(), startedAtMonotonicNanos: HostMonotonicClock.nowNanos())
