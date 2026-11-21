@@ -34,6 +34,8 @@ final class LiveFeedbackController {
     private(set) var replayCheck: LiveRunRecord.ReplayCheck?
     /// Why the live-vs-replay check didn't run, if it didn't.
     private(set) var checkProblem: String?
+    /// Why `run.json` couldn't be finished (the run then reads as "ended with the app").
+    private(set) var finishProblem: String?
 
     @ObservationIgnored private let runner: LiveInferenceRunner
     @ObservationIgnored private let writer: LiveRunWriter
@@ -172,7 +174,12 @@ final class LiveFeedbackController {
         } else if runIDs.isEmpty {
             checkProblem = LiveRunCopy.noRunsChecked
         }
-        try? await writer.finish(endedAt: Date(), summary: summary, latency: latency, replayCheck: replayCheck, runIDs: runIDs)
+        do {
+            try await writer.finish(endedAt: Date(), summary: summary, latency: latency, replayCheck: replayCheck, runIDs: runIDs)
+        } catch {
+            finishProblem = "\(error)"
+        }
+        status = runner.status
         phase = .ended
     }
 

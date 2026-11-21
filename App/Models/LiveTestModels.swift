@@ -15,28 +15,21 @@ enum LiveTestCopy {
     static let latencyNote = "Measured in the app: from the drain of the window's last sample to the prediction. Radio or USB transport and display delay are not measured."
     static let previewPlaceholder = "Debug preview: connect a source, then Start Run… on the acquisition screen runs the protocol with live feedback from the newest frozen model."
     static let noTrials = "No trials yet."
-    static let delayedDetail = "bar older than the stale limit when drawn"
+    static let delayedDetail = "The newest bar is older than the 250 ms stale limit, so neither window shows it."
     static let directionProblem = "Live feedback needs one class cued with a left arrow and the other with a right arrow, so the bar's sides match the cues."
 
     static func modelLine(_ m: ModelRecord, _ p: ProtocolRecord) -> String { "\(m.name) · \(StartRunCopy.protocolTitle(p))" }
 }
 
-struct LiveFeedbackPanelModel: Equatable {
+/// The operator's feedback state, built 20 times a second (it carries the stale rule), apart
+/// from the tiles and trial rows (`LiveFeedbackPanelModel`, four times a second).
+struct LiveFeedbackStateModel: Equatable {
     enum Tone: Equatable { case positive, info, warning, danger }
-
-    struct TrialRow: Identifiable, Equatable {
-        let id: String
-        let cue: String
-        let outcome: String
-        /// nil: no outcome yet, abstained, invalid or aborted.
-        let correct: Bool?
-        let accessibilityLabel: String
-    }
+    struct Bar: Equatable { let direction: Double; let length: Double }
 
     let state: String
     let tone: Tone
     let detail: String?
-    struct Bar: Equatable { let direction: Double; let length: Double }
 
     /// The bar as the participant sees it: −1 left or +1 right, length 0…1; nil when hidden.
     let bar: Bar?
@@ -45,19 +38,13 @@ struct LiveFeedbackPanelModel: Equatable {
     let leftEnd: String
     let rightEnd: String
     let prediction: String
-    let abstainValue: String
-    let abstainLine: String
-    let latencyValue: String
-    let latencyLine: String
-    let trials: [TrialRow]
-    let trialsSummary: String
 
     /// `mirror`: the feed's `mirror(now:)`, the participant's newest display under the same
-    /// 250 ms / stall rule (nil before the first update). The words and tiles come from `s`,
-    /// refreshed four times a second; the bar never comes from `s`, so the operator is never
-    /// shown a bar the participant sees as "Signal delayed". Stopped hides it for good.
+    /// 250 ms / stall rule (nil before the first update). The words come from `s`, refreshed
+    /// four times a second; the bar never comes from `s`, so the operator is never shown a bar
+    /// the participant sees as "Signal delayed". Stopped hides it for good.
     init(_ s: LiveInferenceRunner.Status, mirror: FeedbackPolicy.Display?, model: ModelRecord, protocolRecord p: ProtocolRecord,
-         threshold: Double, directions: [String: Double], truth: [String: String], aborted: Set<String>) {
+         directions: [String: Double]) {
         func name(_ label: String) -> String { p.classes.first { $0.label == label }?.displayName ?? ClassDisplay.name(label) }
         let delayedWords = FeedbackPolicy.words(.stale)
         let shown: FeedbackPolicy.Display
@@ -108,6 +95,36 @@ struct LiveFeedbackPanelModel: Equatable {
         } else {
             prediction = "No prediction yet"
         }
+    }
+}
+
+struct LiveFeedbackPanelModel: Equatable {
+    typealias Tone = LiveFeedbackStateModel.Tone
+    typealias Bar = LiveFeedbackStateModel.Bar
+
+    struct TrialRow: Identifiable, Equatable {
+        let id: String
+        let cue: String
+        let outcome: String
+        /// nil: no outcome yet, abstained, invalid or aborted.
+        let correct: Bool?
+        let accessibilityLabel: String
+    }
+
+    let abstainValue: String
+    let abstainLine: String
+    let latencyValue: String
+    let latencyLine: String
+    let trials: [TrialRow]
+    let trialsSummary: String
+
+    /// Lines missing from the logs so far (failed writes), else nil.
+    let logWarning: String?
+
+    init(_ s: LiveInferenceRunner.Status, model: ModelRecord, protocolRecord p: ProtocolRecord,
+         threshold: Double, truth: [String: String], aborted: Set<String>) {
+        func name(_ label: String) -> String { p.classes.first { $0.label == label }?.displayName ?? ClassDisplay.name(label) }
+        logWarning = LiveRunCopy.logGaps(predictions: s.predictionWriteFailures, feedback: s.feedbackWriteFailures)
         if let rate = s.abstainRate {
             abstainValue = "\(Int((rate * 100).rounded())) %"
             abstainLine = "of \(s.validHops) valid window\(s.validHops == 1 ? "" : "s") were below the threshold of \(Fmt.fixed(threshold))"

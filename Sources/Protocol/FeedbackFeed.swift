@@ -64,10 +64,13 @@ public struct FeedbackFrameState: Sendable, Equatable {
 
     /// What the operator mirror draws at `now` (`HostMonotonicClock`): the participant's newest
     /// display under the same stale rule, and hidden as "Signal delayed" while the participant
-    /// window shows that (a stall). Never a bar the participant would not be shown.
+    /// window shows that for this same prediction (a stall). A newer bar that simply hasn't been
+    /// drawn yet is judged by its own age, so the mirror doesn't flicker to "delayed" for a
+    /// frame. Never a bar older than the stale limit.
     public func mirror(now: Int64) -> FeedbackPolicy.Display? {
         guard let latest else { return nil }
-        if case .bar = latest.display, drawn?.reason == "delayed" || isOld(latest, at: now) {
+        let participantDelayed = drawn?.reason == "delayed" && drawn?.sequence == latest.sequence
+        if case .bar = latest.display, participantDelayed || isOld(latest, at: now) {
             return .hidden(words: FeedbackPolicy.words(.stale))
         }
         return latest.display

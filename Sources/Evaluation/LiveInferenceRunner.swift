@@ -62,6 +62,11 @@ public actor LiveInferenceRunner {
         public var receiptToEmission: LiveRunRecord.Percentiles?
         /// Each trial's live outcome so far (decision #41), by trial id.
         public var outcomes: [String: FeedbackPolicy.TrialOutcome] = [:]
+        /// Log lines that could not be written (the writer counts them into `run.json` too).
+        public var feedbackWriteFailures = 0
+        public var predictionWriteFailures = 0
+        /// Why `run.json` could not be finished, when `stop(finishing: true)` failed.
+        public var finishProblem: String?
 
         /// Valid hop windows that abstained, 0…1; nil before the first valid window.
         public var abstainRate: Double? { validHops > 0 ? Double(abstainedHops) / Double(validHops) : nil }
@@ -210,7 +215,13 @@ public actor LiveInferenceRunner {
         let (summary, latency) = summaries()
         // Not finishing: the caller drains the feedback reports still queued (`presented`),
         // then writes `run.json` once with `summaries()`, after its live-vs-replay check.
-        if finishing { try? await writer?.finish(endedAt: Date(), summary: summary, latency: latency, replayCheck: nil, runIDs: runIDs) }
+        if finishing, let writer {
+            do {
+                try await writer.finish(endedAt: Date(), summary: summary, latency: latency, replayCheck: nil, runIDs: runIDs)
+            } catch {
+                published.withLock { $0.finishProblem = "\(error)" }
+            }
+        }
         return (summary, latency)
     }
 
@@ -253,7 +264,13 @@ public actor LiveInferenceRunner {
             record = FeedbackRecord(predictionSequence: sequence, shown: false, side: nil, length: nil, words: words, presentedAtMonotonicNanos: at,
                                     reason: reason)
         }
-        try? await writer?.append(record)
+        guard let writer else { return }
+        do {
+            try await writer.append(record)
+        } catch {
+            // Counted, never silent: the operator sees it now, the card from run.json later.
+            published.withLock { $0.feedbackWriteFailures += 1 }
+        }
     }
 
     /// Test seam: one frame, handled to completion (no stream, no timing).
@@ -455,7 +472,14 @@ public actor LiveInferenceRunner {
     private func log(_ record: PredictionRecord) async {
         var r = record
         r.sequence = sequence
-        if let writer { r.sequence = (try? await writer.append(r)) ?? sequence }
+        if let writer {
+            do {
+                r.sequence = try await writer.append(r)
+            } catch {
+                r.sequence = sequence
+                published.withLock { $0.predictionWriteFailures += 1 }
+            }
+        }
         sequence += 1
         records.append(r)
         let seq = r.sequence ?? 0

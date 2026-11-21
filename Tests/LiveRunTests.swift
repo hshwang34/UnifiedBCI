@@ -227,6 +227,43 @@ final class LiveRunTests: XCTestCase {
         XCTAssertEqual(stored.runIDs, ["run01"])
     }
 
+    /// A failed append is never silent: the runner counts it for the operator, the writer
+    /// stores the counts in run.json, and the card names what is missing.
+    func testFailedAppends_areCountedStoredAndShown() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("bci-fault-\(UUID().uuidString).bciproj", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try ProjectStore.create(at: dir, name: "fault")
+        let writer = try await store.createLiveRun(LiveRunRecord(kind: .live, modelID: Self.model.modelID, recordingID: UUID(), runIDs: [], hopSamples: 16,
+                                                                 abstainThreshold: 0.6, staleLimitMillis: 250, startedAt: Date()))
+        let runner = LiveInferenceRunner(configuration: .init(model: Self.model, arraysPath: "/nonexistent", channelRows: [1], channelIDs: ["ch01"],
+                                                              sampleRateHz: 125, timestampRow: nil, markerRow: nil),
+                                         launch: nil, writer: writer, sourceState: { .streaming })
+        let bar = FeedbackPolicy.Display.bar(side: "cue_right_hand", length: 0.4)
+        await runner.presented(sequence: 0, display: bar, at: 10)                         // written
+        await writer.injectFaultForTesting(.init(afterBytes: 5, errno: EIO))
+        await runner.presented(sequence: 1, display: .hidden(words: "Model unsure"), at: 20, reason: "abstain")
+        await runner.presented(sequence: 2, display: bar, at: 30)
+        let p = PredictionRecord(pipelineID: UUID(), inputSegment: 0, inputSampleRange: nil, score: nil, validity: .insufficientWindow,
+                                 emittedAtMonotonicNanos: 1, action: .abstain, feedbackPresentedAtMonotonicNanos: nil)
+        do { _ = try await writer.append(p); XCTFail("the injected fault fails the append") } catch {}
+        await writer.injectFaultForTesting(nil)
+        XCTAssertEqual(runner.status.feedbackWriteFailures, 2, "the operator sees it during the run")
+        try await writer.finish(endedAt: Date(), summary: nil, latency: nil, replayCheck: nil)
+        let id = await writer.record.liveRunID
+        let logged = try await store.feedback(liveRun: id).records
+        XCTAssertEqual(logged.map(\.predictionSequence), [0], "a failed append leaves no partial line")
+        let listed = try await store.liveRuns().runs
+        let run = try XCTUnwrap(listed.first)
+        XCTAssertEqual(run.feedbackWriteFailures, 2)
+        XCTAssertEqual(run.predictionWriteFailures, 1)
+        let card = LiveRunCardModel(run: run, model: Self.model, inputs: inputs(), name: ClassDisplay.name)
+        XCTAssertEqual(card.logWarning, "1 prediction and 2 feedback changes couldn't be written to the logs and are missing from them.")
+        XCTAssertNil(LiveRunCardModel(run: self.run(), model: Self.model, inputs: inputs(), name: ClassDisplay.name).logWarning)
+        var hostile = run
+        hostile.feedbackWriteFailures = -5
+        XCTAssertNotNil(hostile.problem(directoryID: hostile.liveRunID), "a crafted count is refused by the reader")
+    }
+
     private final class Flag: @unchecked Sendable {
         private let lock = NSLock()
         private var value = false

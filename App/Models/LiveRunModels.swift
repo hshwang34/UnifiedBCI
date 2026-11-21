@@ -33,6 +33,22 @@ enum LiveRunCopy {
     static let stopping = "Stopping the analysis worker…"
     static let liveRunsUnderResult = "Live runs of models frozen from this result"
 
+    static func runNotSaved(_ why: String) -> String {
+        "The live run's summary couldn't be saved, so it reads as ended with the app (\(String(why.prefix(200))))."
+    }
+
+    /// Lines missing from the run's logs, or nil when every line was written. Shown on the
+    /// card and the operator view, so a gap in the evidence is never silent.
+    static func logGaps(predictions p: Int, feedback f: Int, stopped: String? = nil) -> String? {
+        var parts: [String] = []
+        if p > 0 { parts.append(p == 1 ? "1 prediction" : "\(p) predictions") }
+        if f > 0 { parts.append(f == 1 ? "1 feedback change" : "\(f) feedback changes") }
+        guard !parts.isEmpty || stopped != nil else { return nil }
+        var line = parts.isEmpty ? "" : "\(parts.joined(separator: " and ")) couldn't be written to the logs and \(p + f == 1 ? "is" : "are") missing from them."
+        if let stopped { line += (line.isEmpty ? "" : " ") + "Logging stopped early: \(String(stopped.prefix(200)))." }
+        return line
+    }
+
     static func modelSummary(_ m: ModelRecord) -> String {
         "\(m.expectedChannelIDs.count) channels at \(Fmt.hertz(m.expectedSampleRateHz)) · window \(Fmt.seconds(m.window.offsetSeconds))–\(Fmt.seconds(m.window.offsetSeconds + m.window.lengthSeconds)) after the cue · "
             + "\(m.classLabels.map(ClassDisplay.name).joined(separator: " vs "))"
@@ -124,6 +140,8 @@ struct LiveRunCardModel {
     let latency: [Row]
     let replayLine: String
     let replayOK: Bool?
+    /// Lines missing from the logs (failed writes, or logging stopped), else nil.
+    let logWarning: String?
     let accessibilityLabel: String
 
     init(run: LiveRunRecord, model: ModelRecord?, inputs: LiveRunInputs, name: (String) -> String) {
@@ -222,6 +240,8 @@ struct LiveRunCardModel {
         } else {
             (replayLine, replayOK) = (run.endedAt == nil ? "The run ended with the app; it was not replayed." : "The live-vs-replay check didn't run.", nil)
         }
+        logWarning = LiveRunCopy.logGaps(predictions: min(max(run.predictionWriteFailures ?? 0, 0), LiveRunRecord.maxCount),
+                                         feedback: min(max(run.feedbackWriteFailures ?? 0, 0), LiveRunRecord.maxCount), stopped: run.loggingStopped)
         accessibilityLabel = "\(title). Balanced accuracy \(balancedAccuracyValue). \(accuracyLine). \(evidence). \(trialsLine)."
     }
 }

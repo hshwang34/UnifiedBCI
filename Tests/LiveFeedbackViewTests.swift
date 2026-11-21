@@ -119,22 +119,39 @@ final class LiveFeedbackViewTests: XCTestCase {
         XCTAssertEqual(s.mirror(now: 20 * ms), bar)
         s.submit(u(2, notConfident, at: 30 * ms, reason: "abstain"))
         XCTAssertEqual(s.mirror(now: 900 * ms), notConfident, "only a bar goes stale; words stay")
+
+        // A stall hid bar 3; bar 4 arrives fresh and isn't drawn yet: no flicker to "delayed".
+        var t = FeedbackFrameState(staleLimitNanos: 250 * ms)
+        t.submit(u(3, bar, at: 0))
+        XCTAssertEqual(t.take(cueOnScreen: true, targetNanos: 10 * ms, stall: true)?.reason, "delayed")
+        let newer = FeedbackPolicy.Display.bar(side: "cue_left_hand", length: 0.7)
+        t.submit(u(4, newer, at: 20 * ms))
+        XCTAssertEqual(t.mirror(now: 25 * ms), newer, "judged by its own age, not the older bar's stall")
     }
 
     func testPanel_neverShowsABarTheParticipantSeesDelayed_andShowsStopped() {
         var s = LiveInferenceRunner.Status()
         s.validity = .valid; s.display = bar; s.score = 0.9; s.confidence = 0.71
-        let delayed = panel(s, mirror: .hidden(words: "Signal delayed"))
+        let delayed = state(s, mirror: .hidden(words: "Signal delayed"))
         XCTAssertNil(delayed.bar)
         XCTAssertEqual(delayed.state, "Signal delayed")
         XCTAssertEqual(delayed.tone, .warning)
         XCTAssertEqual(delayed.detail, LiveTestCopy.delayedDetail)
-        XCTAssertNil(panel(s, mirror: nil).bar, "no update in the feed yet: a status bar is not trusted")
+        XCTAssertTrue(LiveTestCopy.delayedDetail.hasSuffix("."), "a full sentence")
+        XCTAssertNil(state(s, mirror: .some(nil)).bar, "no update in the feed yet: a status bar is not trusted")
         s.stopped = true
-        let stopped = panel(s, mirror: bar)
+        let stopped = state(s, mirror: bar)
         XCTAssertEqual(stopped.state, "Stopped")
         XCTAssertNil(stopped.bar)
         XCTAssertEqual(stopped.tone, .info)
+    }
+
+    func testPanel_namesLinesMissingFromTheLogs() {
+        var s = LiveInferenceRunner.Status()
+        XCTAssertNil(panel(s).logWarning)
+        s.feedbackWriteFailures = 2; s.predictionWriteFailures = 1
+        XCTAssertEqual(panel(s).logWarning, "1 prediction and 2 feedback changes couldn't be written to the logs and are missing from them.")
+        XCTAssertEqual(LiveRunCopy.logGaps(predictions: 0, feedback: 1), "1 feedback change couldn't be written to the logs and is missing from them.")
     }
 
     func testFrameState_neverStepsBackToAnOlderPrediction() {
@@ -182,34 +199,34 @@ final class LiveFeedbackViewTests: XCTestCase {
     // MARK: Operator view copy
 
     private func panel(_ s: LiveInferenceRunner.Status, truth: [String: String] = [:], aborted: Set<String> = []) -> LiveFeedbackPanelModel {
-        panel(s, mirror: s.display, truth: truth, aborted: aborted)
+        LiveFeedbackPanelModel(s, model: Self.model, protocolRecord: Self.protocolRecord, threshold: 0.6, truth: truth, aborted: aborted)
     }
 
-    private func panel(_ s: LiveInferenceRunner.Status, mirror: FeedbackPolicy.Display?, truth: [String: String] = [:],
-                       aborted: Set<String> = []) -> LiveFeedbackPanelModel {
-        LiveFeedbackPanelModel(s, mirror: mirror, model: Self.model, protocolRecord: Self.protocolRecord, threshold: 0.6,
-                               directions: ["cue_left_hand": -1, "cue_right_hand": 1], truth: truth, aborted: aborted)
+    /// The 20 Hz state; `mirror` defaults to a fresh copy of the status's display.
+    private func state(_ s: LiveInferenceRunner.Status, mirror: FeedbackPolicy.Display?? = nil) -> LiveFeedbackStateModel {
+        LiveFeedbackStateModel(s, mirror: mirror ?? s.display, model: Self.model, protocolRecord: Self.protocolRecord,
+                               directions: ["cue_left_hand": -1, "cue_right_hand": 1])
     }
 
     func testPanel_namesEveryStateInWords() {
-        XCTAssertEqual(panel(.init()).state, "Starting analysis…")
+        XCTAssertEqual(state(.init()).state, "Starting analysis…")
         var s = LiveInferenceRunner.Status()
         s.validity = .valid; s.display = bar; s.score = 0.9; s.confidence = 0.71
-        let shown = panel(s)
+        let shown = state(s)
         XCTAssertEqual(shown.state, "Showing feedback")
         XCTAssertEqual(shown.bar, .init(direction: 1, length: 0.4))
         XCTAssertEqual(shown.prediction, "Right hand · model confidence 0.71 · score +0.90")
         XCTAssertEqual(shown.leftEnd, "◀ Left hand")
         XCTAssertEqual(shown.rightEnd, "Right hand ▶")
         s.display = .hidden(words: nil)
-        XCTAssertEqual(panel(s).state, "Valid · outside the feedback span")
-        XCTAssertNil(panel(s).bar)
-        for (v, words, tone) in [(Validity.stale, "Signal delayed", LiveFeedbackPanelModel.Tone.warning), (.disconnected, "Board disconnected", .danger),
+        XCTAssertEqual(state(s).state, "Valid · outside the feedback span")
+        XCTAssertNil(state(s).bar)
+        for (v, words, tone) in [(Validity.stale, "Signal delayed", LiveFeedbackStateModel.Tone.warning), (.disconnected, "Board disconnected", .danger),
                                  (.workerUnavailable, "Analysis stopped", .danger), (.insufficientWindow, "Waiting for enough signal", .info)] {
             s.validity = v; s.detail = "why"; s.display = .hidden(words: FeedbackPolicy.words(v))
-            XCTAssertEqual(panel(s).state, words)
-            XCTAssertEqual(panel(s).tone, tone)
-            XCTAssertEqual(panel(s).detail, "why", "the raw detail stays visible to the operator")
+            XCTAssertEqual(state(s).state, words)
+            XCTAssertEqual(state(s).tone, tone)
+            XCTAssertEqual(state(s).detail, "why", "the raw detail stays visible to the operator")
         }
     }
 
