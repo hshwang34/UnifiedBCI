@@ -163,5 +163,7 @@ def test_brainflow_plays_the_file_back_unchanged(tool, built, tmp_path):
     finally:
         board.release_session()
     n = got.shape[1]
-    assert n > 50
+    # The loop stops once 50 samples arrived, so exactly 50 is a pass (it was `> 50`,
+    # which failed whenever playback delivered in multiples of 50).
+    assert 50 <= n <= data.shape[0]
     assert np.array_equal(got, data[:n].T)
