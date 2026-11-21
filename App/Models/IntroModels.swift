@@ -32,8 +32,8 @@ enum IntroModel {
                   title: "Try it without hardware",
                   body: "Explore an example opens a public motor-imagery recording (PhysioNet EEGMMIDB, subject S001, 16 channels over the motor strip) in a new project. Nothing to connect."),
         IntroStep(kind: .hardwarePhase2,
-                  title: "Live hardware arrives in phase 2",
-                  body: "Recording from an OpenBCI Cyton + Daisy board comes in phase 2. Until then, every screen works on recorded data."),
+                  title: "Record from your own board",
+                  body: "Connect hardware streams an OpenBCI Cyton + Daisy into a project, with stream health always on screen, and records it. No kit? The Demo source plays the example EEG through the same live path."),
     ]
 
     /// Step 2's range, labelled as an illustration. A real Clopper-Pearson interval for 28 of

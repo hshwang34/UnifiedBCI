@@ -125,7 +125,7 @@ struct WelcomeView: View {
         switch kind {
         case .example: workspace.exploreExamplePanel()
         case .open: workspace.openPanel()
-        case .hardware: break
+        case .hardware: workspace.connectHardware()
         }
     }
 

@@ -76,6 +76,29 @@ final class LiveScreenTests: XCTestCase {
         XCTAssertNil(RecordingEndModel.diskWarning(hoursLeft: 3, freeBytes: 1_000_000_000))
     }
 
+    func testCloseConfirmationCopy() {
+        XCTAssertEqual(CloseConfirmation.recording.message, "Stop recording and close?")
+        XCTAssertEqual(CloseConfirmation.recording.confirm, "Stop Recording and Close")
+        XCTAssertEqual(CloseConfirmation.recording.keep, "Keep Recording")
+        XCTAssertTrue(CloseConfirmation.recording.info.contains("ends here as stopped"))
+        XCTAssertEqual(CloseConfirmation.evaluation.message, "Stop the evaluation and close?")
+        XCTAssertEqual(CloseConfirmation.evaluation.info, "Nothing will be saved.")
+    }
+
+    func testWelcomeHardwareEnabled_introAndPlaceholderNoLongerSayPhase2() {
+        let hardware = WelcomeModel.actions.first { $0.kind == .hardware }!
+        XCTAssertTrue(hardware.isEnabled)
+        XCTAssertFalse(hardware.caption.contains("phase 2"))
+        XCTAssertTrue(hardware.caption.contains("Opens a project first"))
+        XCTAssertFalse(IntroModel.steps[3].title.contains("phase 2"))
+        XCTAssertFalse(IntroModel.steps[3].body.contains("phase 2"))
+        XCTAssertFalse(LiveScreenModel.emptyRecordings.contains("phase 2"))
+        XCTAssertTrue(LiveScreenModel.emptyRecordings.contains("New Recording…"))
+        // Protocols and Live Test still arrive later (briefs 005 / 006).
+        XCTAssertTrue(SidebarSection.protocols.placeholder!.contains("arrive"))
+        XCTAssertTrue(SidebarSection.liveTest.placeholder!.contains("arrives"))
+    }
+
     func testLiveRecordingTitle_namesSourceAndStart() throws {
         var m = try ContractJSON.decoder().decode(RecordingManifest.self, from: Data(contentsOf: fixtureManifest()))
         m.createdAt = Date(timeIntervalSince1970: 1_763_663_400)            // 2025-11-20 18:30 UTC
@@ -205,9 +228,11 @@ final class LiveScreenTests: XCTestCase {
         await live.perform(.record)
         XCTAssertTrue(live.isRecording)
         XCTAssertNotNil(live.recordingStartedAt)
+        XCTAssertEqual(Workspace.closeConfirmation(session), .recording)
         try await Task.sleep(for: .seconds(5))
         await live.perform(.stopRecording)
         XCTAssertFalse(live.isRecording)
+        XCTAssertNil(Workspace.closeConfirmation(session))
         XCTAssertEqual(live.state, .streaming, "Stop recording keeps the preview running")
         let id = try XCTUnwrap(live.lastRecordingID)
         XCTAssertEqual(live.recordMessage?.danger, false)
@@ -241,6 +266,7 @@ final class LiveScreenTests: XCTestCase {
         live.recordWithoutPositions()
         await live.perform(.record)
         let recording = try XCTUnwrap(live.snapshot.recordingID)
+        XCTAssertTrue(Workspace.closeNeedsConfirmation(session), "closing asks to stop first")
         try await Task.sleep(for: .seconds(2))
         // What "Stop Recording and Close" (and quitting, through closeAll) runs.
         await workspace.closeAll()

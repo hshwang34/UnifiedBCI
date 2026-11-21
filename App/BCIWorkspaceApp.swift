@@ -135,6 +135,11 @@ struct WorkspaceCommands: Commands {
             Divider()
             Button("Explore Example…") { workspace.exploreExamplePanel() }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
+            Divider()
+            // Brief 004: the Connect sheet in this project (decision #30).
+            Button(LiveScreenModel.newRecording) { session?.showConnectSheet() }
+                .keyboardShortcut("n", modifiers: [.command, .option])
+                .disabled(session == nil)
         }
         CommandGroup(replacing: .importExport) {
             Button("Export Result…") { if let session { workspace.exportPanel(for: session) } }
@@ -161,9 +166,6 @@ struct WorkspaceCommands: Commands {
         #if DEBUG
         CommandMenu("Debug") {
             Button("Phase 0 Feasibility Checks") { openWindow(id: "feasibility") }
-            // Brief 004 PR 5: the Connect sheet, until PR 6 wires New Recording… for real.
-            Button("New Recording…") { session?.showConnectSheet() }
-                .disabled(session == nil)
         }
         #endif
     }

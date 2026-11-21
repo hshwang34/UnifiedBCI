@@ -116,15 +116,13 @@ struct ProjectWindow: View {
             }
         }
         .focusedSceneValue(\.projectSession, session)
-        #if DEBUG
-        // Debug-only until PR 6b (brief 004). Escape and Close go through the controller,
-        // so a board that never streamed is released.
+        // Brief 004: New Recording… / Connect hardware. Escape and Close go through the
+        // controller, so a board that never streamed is released.
         .sheet(isPresented: $session.showsConnectSheet, onDismiss: { session.connectSheetClosed() }) {
             if let live = session.live {
                 ConnectSheet(model: live) { session.showsConnectSheet = false }
             }
         }
-        #endif
         .frame(minWidth: 1100, minHeight: 640)
     }
 
@@ -165,23 +163,37 @@ private struct ProjectSidebar: View {
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) {
             // Plain text on the sidebar: no glass on glass.
+            let status = statusLines
             HStack(alignment: .top, spacing: Theme.Space.s) {
-                Image(systemName: "cable.connector.slash")
+                Image(systemName: status.symbol)
                     .font(.callout)
-                    .foregroundStyle(Theme.textSecondary)
+                    .foregroundStyle(status.recording ? Theme.danger : Theme.textSecondary)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("No hardware connected")
-                    Text("Replay mode")
+                    Text(status.first).foregroundStyle(status.live ? Theme.textPrimary : Theme.textSecondary)
+                    Text(status.second).foregroundStyle(Theme.textSecondary)
                 }
                 .font(.caption)
-                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
             .padding(Theme.Space.m)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(SidebarSection.statusLine)
+            .accessibilityLabel(status.accessibility)
+            .accessibilityAddTraits(.updatesFrequently)
         }
+    }
+
+    /// The session state in words while a board is connected (brief 004), else replay mode.
+    private var statusLines: (symbol: String, first: String, second: String, accessibility: String, live: Bool, recording: Bool) {
+        if let live = session.live, let source = live.source, live.session != nil, live.state != .disconnected {
+            let reconnects = live.snapshot.health.reconnects
+            let lines = AcquisitionStateModel.statusLines(live.state, source: source, recording: live.isRecording, reconnects: reconnects)
+            return (AcquisitionStateModel.symbol(live.state, recording: live.isRecording), lines.state, lines.source,
+                    AcquisitionStateModel.statusLine(live.state, source: source, recording: live.isRecording, reconnects: reconnects),
+                    true, live.isRecording)
+        }
+        return ("cable.connector.slash", "No hardware connected", "Replay mode", SidebarSection.statusLine, false, false)
     }
 
     private func count(_ section: SidebarSection) -> Int {
@@ -205,7 +217,10 @@ private struct ContentColumn: View {
                 ContentUnavailableView {
                     Label("No Recordings", systemImage: "waveform")
                 } description: {
-                    Text(session.loadError ?? "Recording from hardware arrives in phase 2.").foregroundStyle(Theme.textSecondary)
+                    Text(session.loadError ?? LiveScreenModel.emptyRecordings).foregroundStyle(Theme.textSecondary)
+                } actions: {
+                    Button(LiveScreenModel.newRecording) { session.showConnectSheet() }
+                        .help(LiveScreenModel.newRecordingHelp)
                 }
             } else {
                 List(selection: recordingSelection) {

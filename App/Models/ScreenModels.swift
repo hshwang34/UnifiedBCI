@@ -46,9 +46,8 @@ enum WelcomeModel {
                       caption: "Open a .bciproj folder.",
                       symbol: "folder", disabledReason: nil),
         WelcomeAction(kind: .hardware, title: "Connect hardware",
-                      caption: "Cyton + Daisy acquisition arrives in phase 2. Recorded data works today.",
-                      symbol: "cable.connector",
-                      disabledReason: "Cyton + Daisy acquisition arrives in phase 2. Recorded data works today."),
+                      caption: "Record from an OpenBCI Cyton + Daisy, or try the Demo with no kit. Opens a project first.",
+                      symbol: "cable.connector", disabledReason: nil),
     ]
 
     static let emptyRecents = "No recent projects."

@@ -1,9 +1,8 @@
 import SwiftUI
 
 /// Brief 004: pick a source, connect, see identity and requested-vs-readback, declare the
-/// channel map. Start preview hands over to the acquisition screen under Recordings.
-/// Reachable only from Debug (Debug ▸ New Recording…, `-BCIConnectSheet`, `-BCIConnectSource`)
-/// until PR 6b wires New Recording… and the welcome screen's Connect hardware.
+/// channel map. File ▸ New Recording… and the welcome screen's Connect hardware open it;
+/// Start preview hands over to the acquisition screen under Recordings.
 struct ConnectSheet: View {
     @Bindable var model: ConnectController
     let dismiss: () -> Void

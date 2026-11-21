@@ -154,7 +154,7 @@ final class IntroTests: XCTestCase {
             // VoiceOver: title then body.
             XCTAssertEqual(s.accessibilityLabel, "\(s.title). \(s.body)")
         }
-        XCTAssertTrue(IntroModel.steps[3].body.contains("phase 2"))
+        XCTAssertTrue(IntroModel.steps[3].body.contains("Connect hardware"), "step 4 names the live entry point (brief 004)")
         XCTAssertTrue(IntroModel.steps[2].body.contains("Explore an example"))
         XCTAssertEqual(IntroModel.announcement(1), "Step 2 of 4. \(IntroModel.steps[1].accessibilityLabel)")
         XCTAssertEqual(IntroModel.nextTitle(at: 0), "Next")
