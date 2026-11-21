@@ -130,6 +130,30 @@ targets:
             rm -rf "$DST" "$STAMP"
           fi
         basedOnDependencyAnalysis: false
+      - name: Generate and copy the Demo playback file
+        # Decision #42: the bundled example's run S001R04 as a Cyton+Daisy playback CSV plus
+        # its provenance sidecar (worker/tools/make_demo_playback.py; ~2.3 MB, never committed).
+        # Regenerated only when an input is newer than the stamp; the tool itself rewrites a
+        # file only on change. Without uv (or if it fails) the build goes on with a warning and
+        # the sheet shows the Demo as unavailable. scripts/release.sh requires it.
+        script: |
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+          OUT="$SRCROOT/build/demo"
+          DST="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Demo"
+          STAMP="$OUT/.inputs.stamp"
+          INPUTS="$SRCROOT/worker/tools/make_demo_playback.py $SRCROOT/worker/uv.lock $SRCROOT/worker/src/bciworkspace_worker/project_io.py $SRCROOT/App/Resources/ExampleProject"
+          if [ ! -f "$STAMP" ] || [ -n "$(find $INPUTS -newer "$STAMP" -print -quit)" ]; then
+            if command -v uv >/dev/null && (cd "$SRCROOT/worker" && uv run --frozen python tools/make_demo_playback.py --out "$OUT"); then
+              touch "$STAMP"
+            else
+              echo "warning: Demo playback file not generated (needs uv: brew install uv); the Demo source is unavailable in this build"
+            fi
+          fi
+          if [ -d "$OUT" ]; then
+            mkdir -p "$DST"
+            rsync -a --delete --exclude '.*' "$OUT/" "$DST/"
+          fi
+        basedOnDependencyAnalysis: false
 
   # Crash-injection helper for the store tests: commits chunks and _exit()s at a named
   # commit point (CRASH_AT=<point>:<n>). Built with the store sources only; no app, no worker.

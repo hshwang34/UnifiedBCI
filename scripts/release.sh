@@ -92,6 +92,9 @@ echo "==> bundle the worker, signing every Mach-O"
 WORKER_BUILT=1
 "$ROOT/scripts/bundle_worker.sh" --sign "$IDENTITY_HASH"
 
+echo "==> Demo playback file (decision #42; the build phase copies it into Resources/Demo)"
+(cd "$ROOT/worker" && uv run --frozen python tools/make_demo_playback.py --out "$ROOT/build/demo")
+
 echo "==> xcodegen"
 (cd "$ROOT" && xcodegen generate --quiet)
 
@@ -107,6 +110,9 @@ xcodebuild -project "$ROOT/BCIWorkspace.xcodeproj" -scheme BCIWorkspace -configu
 APP="$WORK/$APP_NAME.app"
 ditto "$DERIVED/Build/Products/Release/$APP_NAME.app" "$APP"
 [[ -x "$APP/Contents/Resources/worker/python/bin/python3" ]] || { echo "error: the worker was not embedded" >&2; exit 1; }
+for f in S001R04-demo-cyton-daisy-125hz.csv S001R04-demo-cyton-daisy-125hz.json; do
+  [[ -s "$APP/Contents/Resources/Demo/$f" ]] || { echo "error: the Demo file $f was not embedded" >&2; exit 1; }
+done
 
 # --- verify -------------------------------------------------------------------------------
 echo "==> verify signatures"

@@ -49,12 +49,62 @@ public enum AcquisitionSource: Sendable, Equatable {
             return .init(kind: "brainflow", boardID: board.boardID, boardName: board.name, dataPath: .radio125,
                          brainflowVersion: version, appVersion: appVersion)
         case .playback(let file, _):
-            let sha = (try? Data(contentsOf: file, options: .mappedIfSafe)).map { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() }
+            var files = [RecordingManifest.SourceFile(name: file.lastPathComponent, sha256: Self.sha256(file) ?? "unreadable")]
+            let derived = DerivedPlayback.load(for: file, sha256: files[0].sha256)
+            if let derived { files.append(.init(name: derived.sidecar.lastPathComponent, sha256: Self.sha256(derived.sidecar) ?? "unreadable")) }
             return .init(kind: "playback", boardID: KnownBoard.playbackFile, boardName: "BrainFlow playback file (\(board.name) layout)",
                          dataPath: nil, brainflowVersion: version, appVersion: appVersion,
-                         warning: "Played back from a file, not a device",
-                         sourceFiles: [.init(name: file.lastPathComponent, sha256: sha ?? "unreadable")])
+                         dataset: derived?.dataset, license: derived?.license,
+                         warning: derived?.warning ?? "Played back from a file, not a device",
+                         attribution: derived?.attribution, derivations: derived?.derivations, sourceFiles: files)
         }
+    }
+
+    /// The bundled Demo file (decision #42), generated at build time into `Resources/Demo/`.
+    public static let demoFileName = "S001R04-demo-cyton-daisy-125hz.csv"
+
+    public static func bundledDemo(in bundle: Bundle = .main) -> URL? {
+        bundle.url(forResource: (demoFileName as NSString).deletingPathExtension, withExtension: "csv", subdirectory: "Demo")
+    }
+
+    static func sha256(_ file: URL) -> String? {
+        (try? Data(contentsOf: file, options: .mappedIfSafe)).map { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() }
+    }
+}
+
+/// The sidecar `worker/tools/make_demo_playback.py` writes next to a derived playback file
+/// (`<name>.json`). Used only when it is `derived_playback` and names the played file's
+/// SHA-256, so a recording never borrows provenance from a different file.
+struct DerivedPlayback {
+    let sidecar: URL
+    let warning: String
+    let dataset: String?
+    let license: String?
+    let attribution: [RecordingManifest.Citation]?
+    let derivations: [String]
+
+    private struct Sidecar: Decodable {
+        struct File: Decodable { let name: String; let sha256: String }
+        struct Origin: Decodable {
+            let project: String?; let recordingID: String?; let dataset: String?; let license: String?
+            let attribution: [RecordingManifest.Citation]?
+        }
+        let kind: String; let warning: String; let generator: String; let method: String
+        let originalRateHz: Double; let resampledRateHz: Double
+        let file: File; let source: Origin
+    }
+
+    static func load(for file: URL, sha256: String) -> DerivedPlayback? {
+        let url = file.deletingPathExtension().appendingPathExtension("json")
+        guard let data = try? Data(contentsOf: url), data.count < 1 << 20,
+              let s = try? JSONDecoder().decode(Sidecar.self, from: data),
+              s.kind == "derived_playback", s.file.name == file.lastPathComponent, s.file.sha256 == sha256 else { return nil }
+        let origin = [s.source.project, s.source.recordingID.map { "recording \($0)" }].compactMap { $0 }.joined(separator: " ")
+        return .init(sidecar: url, warning: s.warning, dataset: s.source.dataset, license: s.source.license,
+                     attribution: s.source.attribution,
+                     derivations: ["derived_playback (\(s.generator))",
+                                   "resampled \(Fmt.hertz(s.originalRateHz)) to \(Fmt.hertz(s.resampledRateHz)): \(s.method)",
+                                   "derived from \(origin.isEmpty ? "an unnamed source" : origin)"])
     }
 }
 

@@ -116,6 +116,9 @@ struct ProjectWindow: View {
             }
         }
         .focusedSceneValue(\.projectSession, session)
+        .sheet(item: $session.connectSheet) { model in
+            ConnectSheet(model: model) { session.connectSheet = nil }
+        }
         .frame(minWidth: 1100, minHeight: 640)
     }
 
