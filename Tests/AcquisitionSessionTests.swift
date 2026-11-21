@@ -473,6 +473,11 @@ final class FakeLink: Sendable {
         var clockSkewNanos: Int64 = 0
         /// Counters of every delivered sample, in delivery order.
         var counters: [Int] = []
+        /// Every `configure` command, and the reply to `?` (nil: echo like the synthetic board).
+        var commands: [String] = []
+        var registerReply: String?
+        /// Reply to channel commands; nil is the firmware's success reply.
+        var channelReply: String?
     }
     let script = Mutex(Script())
     let description = try! BrainFlowBoard.describe(boardID: KnownBoard.cytonDaisy)
@@ -516,6 +521,14 @@ actor FakeBoard: AcquisitionBoard {
     func startStream(bufferSize: Int32) async throws {
         try await prepare()
         link.set { $0.streamStarts += 1 }
+    }
+
+    func configure(_ command: String) throws -> String {
+        try link.script.withLock { s in
+            if s.prepareFails { throw BrainFlowError(code: BrainFlowExitCode.boardNotReady.rawValue, operation: "config_board") }
+            s.commands.append(command)
+            return command == "?" ? (s.registerReply ?? "Config:?") : (s.channelReply ?? "Success: Channel set for 1$$$")
+        }
     }
 
     func readAll() throws -> SampleChunk {

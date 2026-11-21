@@ -39,19 +39,39 @@ public actor AcquisitionSession {
         public var holdsPowerAssertion = false
         /// The last recording that ended (stopped, or ended itself on disk full / error).
         public var lastRecordingEnd: RecordingWriter.Status?
+        /// The connected board's layout and what was sent / read back on the last
+        /// connect or reconnect (brief 004, "Configuration").
+        public var board: BoardDescription?
+        public var configuration: RecordingManifest.BoardConfiguration?
+        /// Set when a reconnect found the board configured differently from what the
+        /// recording describes, so the recording was ended rather than continued.
+        public var recordingEndedByReconnect: ConfigurationProblem?
     }
 
-    /// The declared parts of a recording; the session fills in source, timing and clocks.
+    /// Why a board configuration can't carry a recording (µV scaling would be wrong or
+    /// unconfirmed), or how it changed across a reconnect.
+    public enum ConfigurationProblem: Sendable, Equatable {
+        case gainMismatch(channel: Int, gain: String)
+        case notAcknowledged(channel: Int)
+        case changedOnReconnect
+    }
+
+    /// The declared parts of a recording; the session fills in source, timing, clocks and
+    /// board configuration.
     public struct RecordingRequest: Sendable {
         public var channels: [ChannelSpec]
         public var reference: String
         public var montage: String
-        public var boardConfiguration = RecordingManifest.BoardConfiguration(requested: [:], readback: [:])
         public var sessionID = UUID().uuidString
         public var runID = UUID().uuidString
 
         public init(channels: [ChannelSpec], reference: String, montage: String) {
             self.channels = channels; self.reference = reference; self.montage = montage
+        }
+
+        /// From a confirmed map, or the defaults for "Record without positions" (decision #31).
+        public init(map: ChannelMapRecord) {
+            self.init(channels: map.channels, reference: map.reference, montage: map.montage)
         }
     }
 
@@ -60,7 +80,12 @@ public actor AcquisitionSession {
         public var chunk: SampleChunk
     }
 
-    public enum SessionError: Error, Equatable { case notStreaming, alreadyRecording, streamEnded }
+    public enum SessionError: Error, Equatable {
+        case notStreaming, alreadyRecording, streamEnded
+        case configuration(ConfigurationProblem)
+        /// The map's channels aren't exactly this board's EEG rows.
+        case channelMapMismatch(mapChannels: Int, boardChannels: Int)
+    }
 
     public nonisolated let source: AcquisitionSource
     /// Newest-wins: a slow preview loses frames, never the recording.
@@ -96,6 +121,8 @@ public actor AcquisitionSession {
     /// The newest recording started; only its end is published (a late finish of an older
     /// one never overwrites it).
     private var latestRecordingID: UUID?
+    /// The configuration the current recording's manifest stores; every segment must match it.
+    private var recordingConfiguration: RecordingManifest.BoardConfiguration?
     private var lastSampleNanos: Int64 = 0
     private var lastPublishNanos: Int64 = 0
 
@@ -125,17 +152,25 @@ public actor AcquisitionSession {
         generation += 1
         let gen = generation
         set(.connecting)
-        let b: any AcquisitionBoard
+        var attempt: (any AcquisitionBoard)?
+        let configuration: RecordingManifest.BoardConfiguration
         do {
-            b = try makeBoard()
+            let b = try makeBoard()
+            attempt = b
             try await b.prepare()
+            configuration = try await source.applyDefaultConfiguration(to: b)
         } catch {
+            if let attempt { await Self.release(attempt) }
             if gen == generation { set(.failed(reason: Self.describe(error))) }
             return
         }
-        guard gen == generation else { return await Self.release(b) }   // cancelled meanwhile
+        guard gen == generation, let b = attempt else {             // cancelled meanwhile
+            if let attempt { await Self.release(attempt) }
+            return
+        }
         board = b
         lastDescription = b.description
+        published.withLock { $0.board = b.description; $0.configuration = configuration }
         set(.ready)
     }
 
@@ -165,6 +200,12 @@ public actor AcquisitionSession {
     public func startRecording(_ request: RecordingRequest, in store: ProjectStore) async throws -> UUID {
         guard state == .streaming, let board else { throw SessionError.notStreaming }
         guard writer == nil, !recordingStarting else { throw SessionError.alreadyRecording }
+        let configuration = snapshot.configuration ?? .init(requested: [:], readback: [:])
+        if let problem = Self.problem(configuration, isDevice: source.readsBackRegisters) { throw SessionError.configuration(problem) }
+        let map = ChannelMapRecord(montage: request.montage, reference: request.reference, channels: request.channels)
+        guard map.fits(board.description), Set(request.channels.map(\.id)).count == request.channels.count else {
+            throw SessionError.channelMapMismatch(mapChannels: request.channels.count, boardChannels: board.description.eegChannelRows.count)
+        }
         recordingStarting = true
         defer { recordingStarting = false }
         let starts = recordingStarts
@@ -177,7 +218,7 @@ public actor AcquisitionSession {
             timing: .init(nominalSampleRateHz: Double(d.samplingRate), timestampClock: .brainflowReceipt, timestampGeneratedBy: "host",
                           sequenceCounterRow: d.packageNumRow, sequenceStep: d.sequenceStep, notes: Self.timingNotes(source)),
             clockMapping: .init(anchorMonotonicNanos: now, anchorWall: wall),
-            boardConfiguration: request.boardConfiguration, chunks: [], segments: [])
+            boardConfiguration: configuration, chunks: [], segments: [])
         var writerOptions = options.writer
         writerOptions.timestampRow = d.timestampRow
         let w = try await RecordingWriter.start(in: store, manifest: manifest, startedAtWall: wall,
@@ -188,6 +229,8 @@ public actor AcquisitionSession {
             throw SessionError.streamEnded
         }
         writer = w
+        recordingConfiguration = configuration
+        published.withLock { $0.recordingEndedByReconnect = nil }
         power?.release()
         power = PowerAssertion.take("Recording EEG")
         published.withLock { $0.recordingID = w.recordingID; $0.holdsPowerAssertion = power != nil }
@@ -223,6 +266,7 @@ public actor AcquisitionSession {
         await releaseBoard()
         hasStreamed = false
         reconnecting = false
+        published.withLock { $0.board = nil; $0.configuration = nil }
         set(.disconnected)
     }
 
@@ -332,13 +376,32 @@ public actor AcquisitionSession {
                 let b = try makeBoard()
                 attempt = b
                 try await b.prepare()
+                // "Reconnect to reset": every new session gets the defaults again.
+                let configuration = try await source.applyDefaultConfiguration(to: b)
                 try await b.startStream(bufferSize: options.bufferSize)
                 guard !Task.isCancelled else { await Self.release(b); return false }
                 board = b
                 lastDescription = b.description
+                published.withLock { $0.configuration = configuration }
                 recordingStarts += 1
                 beginStreamSegment(b, reconnect: true)
-                writer?.beginSegment(startedAtWall: Date(), startedAtMonotonicNanos: HostMonotonicClock.nowNanos())
+                // The manifest holds one configuration: a reconnect that finds the board set
+                // differently (or wrongly) ends the recording instead of mis-scaling a segment.
+                if let w = writer, let stored = recordingConfiguration {
+                    let change = Self.problem(configuration, isDevice: source.readsBackRegisters)
+                        ?? (CytonRegisterReadback.settings(configuration) == CytonRegisterReadback.settings(stored) ? nil : .changedOnReconnect)
+                    if let change {
+                        _ = detachRecording()
+                        published.withLock { $0.recordingEndedByReconnect = change }
+                        // Its last segment already ended `disconnect`; finish off the actor.
+                        Task.detached { [weak self] in
+                            let status = await w.finish(.disconnect)
+                            await self?.noteEnded(status, of: w)
+                        }
+                    } else {
+                        w.beginSegment(startedAtWall: Date(), startedAtMonotonicNanos: HostMonotonicClock.nowNanos())
+                    }
+                }
                 set(.streaming)
                 return true
             } catch {
@@ -384,6 +447,7 @@ public actor AcquisitionSession {
     private func detachRecording() -> RecordingWriter? {
         guard let w = writer else { return nil }
         writer = nil
+        recordingConfiguration = nil
         power?.release()
         power = nil
         published.withLock { $0.recordingID = nil; $0.holdsPowerAssertion = false }
@@ -414,6 +478,14 @@ public actor AcquisitionSession {
     private func set(_ s: State) { published.withLock { $0.state = s } }
     private var isFailed: Bool { if case .failed = state { true } else { false } }
     private var isInterrupted: Bool { if case .interrupted = state { true } else { false } }
+
+    /// Gain other than 24 in the readback, or (on the Cyton) a channel command without a
+    /// success reply: either way the stored µV would not be what the manifest claims.
+    static func problem(_ c: RecordingManifest.BoardConfiguration, isDevice: Bool) -> ConfigurationProblem? {
+        if let m = CytonRegisterReadback.gainMismatch(c.readback) { return .gainMismatch(channel: m.channel, gain: m.gain) }
+        if isDevice, let n = CytonRegisterReadback.unacknowledged(c.requested) { return .notAcknowledged(channel: n) }
+        return nil
+    }
 
     static func describe(_ error: Error) -> String {
         (error as? BrainFlowError)?.description ?? "\(error)"
