@@ -176,7 +176,8 @@ class StreamingPredictor:
         self.segment = segment
         self._filter.reset()
         self._n = 0
-        self._buf = np.empty((self.n_channels, 0))
+        # The last `length` band-passed samples, sample i at column i % length: no copy per push.
+        self._ring = np.zeros((self.n_channels, self.spec.length))
         self._gaps: list[tuple[int, str]] = []
         self._cues: list[Cue] = []
         self._pending: dict[int, list[str]] = {}       # cue-locked stop -> trial ids
@@ -189,8 +190,10 @@ class StreamingPredictor:
         self._cues.append(cue)
         stop = cue.sample + self.spec.offset + self.spec.length
         if stop <= self._n:
+            # A window the offline reference also excludes keeps the reference's reason.
+            reason, gap = pipeline.window_exclusion(stop - self.spec.length, stop, stop, self.spec.warmup, self._gaps)
             return [Prediction(self.segment, "cue_locked", stop - self.spec.length, stop, INSUFFICIENT,
-                               "cue_registered_late", trial_id=cue.trial_id)]
+                               reason or "cue_registered_late", trial_id=cue.trial_id, gap=gap)]
         self._pending.setdefault(stop, []).append(cue.trial_id)
         return []
 
@@ -208,14 +211,12 @@ class StreamingPredictor:
             self._gaps.append((after, evidence))
         filtered = self._filter.process(chunk)
         self.last_filtered = filtered
-        full = np.concatenate([self._buf, filtered], axis=1)
-        base = n1 - full.shape[1]                       # sample index of full[:, 0]
         first_hop = (n0 // self.spec.hop + 1) * self.spec.hop
         stops = sorted({*range(first_hop, n1 + 1, self.spec.hop), *(s for s in self._pending if n0 < s <= n1)})
         out: list[Prediction] = []
         for stop in stops:
             start = stop - self.spec.length
-            window = full[:, start - base: stop - base] if start >= base else None
+            window = self._window(filtered, n0, start, stop) if start >= 0 else None
             if stop % self.spec.hop == 0:
                 trial = _eligible_trial(self._cues, self.spec, start, stop)
                 out.append(_judge(self.arrays, self.spec, self.segment, "hop", stop, n1, self._gaps, window,
@@ -223,9 +224,17 @@ class StreamingPredictor:
             for trial_id in self._pending.pop(stop, []):
                 out.append(_judge(self.arrays, self.spec, self.segment, "cue_locked", stop, n1, self._gaps, window,
                                   trial_id, False))
-        self._buf = full[:, -self.spec.length:]
+        keep = min(filtered.shape[1], self.spec.length)
+        self._ring[:, np.arange(n1 - keep, n1) % self.spec.length] = filtered[:, filtered.shape[1] - keep:]
         self._n = n1
         return out
+
+    def _window(self, filtered: np.ndarray, n0: int, start: int, stop: int) -> np.ndarray:
+        """Samples [start, stop): those before `n0` from the ring, the rest from this chunk.
+        Joined only for a due window (every hop), never per push."""
+        if start >= n0:
+            return filtered[:, start - n0: stop - n0]
+        return np.concatenate([self._ring[:, np.arange(start, n0) % self.spec.length], filtered[:, :stop - n0]], axis=1)
 
     def end_segment(self) -> list[Prediction]:
         out = [Prediction(self.segment, "cue_locked", stop - self.spec.length, stop, INSUFFICIENT,
@@ -342,13 +351,9 @@ def parity_report(streamed: Sequence[Prediction], reference: Sequence[Prediction
         elif decide(got.score, got.confidence, got.predicted_class, threshold) != decide(
                 ref.score, ref.confidence, ref.predicted_class, threshold):
             decision_mismatch.append({**where, "offline_score": ref.score, "streaming_score": got.score})
-    deviations = {
-        "bandpassed_uv": {"max": float(bandpassed_deviation), "tolerance": TOLERANCES["bandpassed_uv"]},
-        "features": {"max": dev["features"], "tolerance": TOLERANCES["features"]},
-        "score": {"max": dev["score"], "tolerance": TOLERANCES["score"]},
-    }
-    for d in deviations.values():
-        d["within"] = d["max"] <= d["tolerance"]
+    observed = {"bandpassed_uv": float(bandpassed_deviation), **dev}
+    deviations = {q: {"tolerance": TOLERANCES[q], "observed_max": observed[q], "within": observed[q] <= TOLERANCES[q]}
+                  for q in ("bandpassed_uv", "features", "score")}
     passed = (not missing and not extra and not validity_mismatch and not decision_mismatch
               and all(d["within"] for d in deviations.values()))
     return {

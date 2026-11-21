@@ -65,7 +65,7 @@ def test_streaming_matches_offline_for_every_chunking(model, chunking):
     report, got, ref = run_parity(model["arrays"], model["spec"], seg.data, chunking, cues=cues_of(seg))
     assert report["passed"], report
     assert report["windows_compared"] == len(ref) == len(got)
-    assert report["max_deviation"]["bandpassed_uv"]["max"] <= streaming.TOLERANCES["bandpassed_uv"]
+    assert report["max_deviation"]["bandpassed_uv"]["observed_max"] <= streaming.TOLERANCES["bandpassed_uv"]
     assert not report["missing_windows"] and not report["extra_windows"]
     n_valid = sum(p.validity == "valid" for p in got)
     assert n_valid > 100
@@ -251,3 +251,50 @@ def test_abstention_is_a_threshold_on_confidence():
     assert streaming.decide(3.0, float(pipeline.confidence_from_score(3.0)), 1) == 1
     assert streaming.decide(None, None, None) is None
     assert streaming.DEFAULT_ABSTAIN_THRESHOLD == 0.6
+
+
+def test_report_shows_observed_deviation_next_to_each_tolerance(model):
+    seg = model["segs"][0]
+    report, _, _ = run_parity(model["arrays"], model["spec"], seg.data, 7)
+    for q, d in report["max_deviation"].items():
+        assert d["tolerance"] == streaming.TOLERANCES[q] and 0.0 <= d["observed_max"] <= d["tolerance"] and d["within"]
+
+
+def test_streamed_confidence_equals_sklearn_predict_proba(model):
+    """The independent check: both paths share _judge/_score_window, so their agreement
+    alone can't catch an error in the scoring; the sklearn objects can."""
+    sk, arrays, spec, ep = model["sk"], model["arrays"], model["spec"], model["epochs"]
+    proba = dict(zip(ep.trial_ids, sk.predict_proba(ep.X).max(axis=1)))
+    decision = dict(zip(ep.trial_ids, sk.decision_function(ep.X)))
+    cls = dict(zip(ep.trial_ids, sk.predict(ep.X)))
+    got = []
+    for i, seg in enumerate(model["segs"]):
+        got += streaming.stream_segment(StreamingPredictor(arrays, 8, spec), seg.data, 7, cues=cues_of(seg), segment=i)[0]
+    locked = [p for p in got if p.kind == "cue_locked"]
+    assert len(locked) == len(proba)
+    for p in locked:
+        assert abs(p.confidence - proba[p.trial_id]) <= 1e-12
+        assert abs(p.score - decision[p.trial_id]) <= streaming.TOLERANCES["score"]
+        assert p.predicted_class == cls[p.trial_id]
+
+
+def test_late_cue_outside_the_segment_gets_the_reference_reason(model):
+    predictor = StreamingPredictor(model["arrays"], 8, model["spec"])
+    predictor.push(model["segs"][0].data[:, :1000])
+    (before,) = predictor.add_cue(Cue(-model["spec"].length - 100, "neg"))
+    assert before.window_stop <= 0 and before.detail == "window_starts_before_segment"
+    (warm,) = predictor.add_cue(Cue(0, "warm"))
+    assert warm.detail == "window_starts_before_filter_warmup"
+    ref, _ = streaming.reference_segment(model["arrays"], model["spec"], model["segs"][0].data[:, :1000],
+                                         cues=[Cue(-model["spec"].length - 100, "neg"), Cue(0, "warm")])
+    assert {p.trial_id: p.detail for p in ref if p.kind == "cue_locked"} == {"neg": before.detail, "warm": warm.detail}
+
+
+def test_push_does_not_copy_the_window_buffer(model, monkeypatch):
+    calls = []
+    real = np.concatenate
+    monkeypatch.setattr(streaming.np, "concatenate", lambda *a, **k: calls.append(1) or real(*a, **k))
+    predictor = StreamingPredictor(model["arrays"], 8, model["spec"])
+    for k in range(0, 160):
+        predictor.push(model["segs"][0].data[:, k:k + 1])
+    assert len(calls) <= 160 // model["spec"].hop                         # only per due window
