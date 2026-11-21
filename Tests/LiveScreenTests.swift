@@ -94,8 +94,8 @@ final class LiveScreenTests: XCTestCase {
         XCTAssertFalse(IntroModel.steps[3].body.contains("phase 2"))
         XCTAssertFalse(LiveScreenModel.emptyRecordings.contains("phase 2"))
         XCTAssertTrue(LiveScreenModel.emptyRecordings.contains("New Recording…"))
-        // Protocols and Live Test still arrive later (briefs 005 / 006).
-        XCTAssertTrue(SidebarSection.protocols.placeholder!.contains("arrive"))
+        // Protocols is a real section since brief 005; Live Test still arrives later (brief 006).
+        XCTAssertNil(SidebarSection.protocols.placeholder)
         XCTAssertTrue(SidebarSection.liveTest.placeholder!.contains("arrives"))
     }
 
