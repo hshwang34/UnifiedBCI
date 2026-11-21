@@ -39,6 +39,15 @@ public struct PresentationToken: Hashable, Sendable {
 /// sampled in the same callback). Any thread; returns at once.
 public protocol PresentationSink: Sendable {
     func presented(_ token: PresentationToken, atMonotonicNanos: Int64)
+    /// `afterStall`: the refresh followed a gap in display callbacks (more than three frame
+    /// periods), so its lateness says more about the stall than about scheduling.
+    func presented(_ token: PresentationToken, atMonotonicNanos: Int64, afterStall: Bool)
+}
+
+extension PresentationSink {
+    public func presented(_ token: PresentationToken, atMonotonicNanos at: Int64, afterStall: Bool) {
+        presented(token, atMonotonicNanos: at)
+    }
 }
 
 /// The participant window as the runner sees it (built in brief 005 PR 5).
@@ -90,7 +99,9 @@ public actor ProtocolRunner: PresentationSink {
         public init() {}
     }
 
-    public enum PauseReason: String, Sendable { case `operator`, disconnect }
+    /// `display`: the participant display changed or went away mid-run (paused as a
+    /// disconnect is: the trial in progress is aborted).
+    public enum PauseReason: String, Sendable { case `operator`, disconnect, display }
 
     public enum RunState: Sendable, Equatable {
         case instructions, running
@@ -120,6 +131,8 @@ public actor ProtocolRunner: PresentationSink {
         public var abortedTrials: [String] = []
         /// presented − intended, per phase with a callback, in order.
         public var latenessNanos: [Int64] = []
+        /// Parallel to `latenessNanos`: that callback followed a display stall.
+        public var afterStall: [Bool] = []
         public var missingPresentations = 0
         /// Why the run ended early: `operator` (Abort run) or `recording_stopped` (an event
         /// could not be recorded, so the run stopped rather than go on unrecorded).
@@ -142,7 +155,7 @@ public actor ProtocolRunner: PresentationSink {
         }
     }
 
-    private enum Command { case begin, abortTrial, pause, resume, abortRun }
+    private enum Command { case begin, abortTrial, pause, resume, abortRun, displayChanged }
 
     private struct Step {
         let trial: Int
@@ -171,7 +184,7 @@ public actor ProtocolRunner: PresentationSink {
     private let store: ProjectStore
     private let options: Options
 
-    private nonisolated let inbox = Mutex<(commands: [Command], presented: [(PresentationToken, Int64)])>(([], []))
+    private nonisolated let inbox = Mutex<(commands: [Command], presented: [(PresentationToken, Int64, Bool)])>(([], []))
     private nonisolated let published: Mutex<Status>
     public nonisolated var status: Status { published.withLock { $0 } }
 
@@ -207,11 +220,18 @@ public actor ProtocolRunner: PresentationSink {
     public nonisolated func resume() { send(.resume) }
     /// ⌘.: ends the run; completed trials stay evaluable.
     public nonisolated func abortRun() { send(.abortRun) }
+    /// The participant display changed or went away: pause and abort the trial in progress.
+    /// The caller re-frames the window before calling `resume`.
+    public nonisolated func displayChanged() { send(.displayChanged) }
 
     private nonisolated func send(_ c: Command) { inbox.withLock { $0.commands.append(c) } }
 
     public nonisolated func presented(_ token: PresentationToken, atMonotonicNanos: Int64) {
-        inbox.withLock { $0.presented.append((token, atMonotonicNanos)) }
+        presented(token, atMonotonicNanos: atMonotonicNanos, afterStall: false)
+    }
+
+    public nonisolated func presented(_ token: PresentationToken, atMonotonicNanos: Int64, afterStall: Bool) {
+        inbox.withLock { $0.presented.append((token, atMonotonicNanos, afterStall)) }
         Task { await self.drainPresentations() }
     }
 
@@ -324,6 +344,11 @@ public actor ProtocolRunner: PresentationSink {
                 // keeps its planned time.
                 showNow(.blank, now: now, trial: a, labels: ["rest"])
             }
+        case (.displayChanged, .running):
+            guard ending == nil else { return }
+            await pauseRun(.display, now: now)
+        case (.displayChanged, .paused(.operator)):
+            update { $0.state = .paused(.display) }
         case (.pause, .running):
             guard ending == nil else { return }
             await record(["pause"], trial: nil, origin: "operator", intended: now, reason: "operator")
@@ -355,11 +380,12 @@ public actor ProtocolRunner: PresentationSink {
     /// a disconnect (the trial in progress is aborted, decision #35). The next trial follows
     /// the aborted one on Resume.
     private func pauseRun(_ reason: PauseReason, now: Int64) async {
-        if reason == .disconnect { await record(["pause"], trial: nil, origin: "protocol", intended: now, reason: "disconnect") }
-        if let a = active, !aborted.contains(a), reason == .disconnect || phase(of: a, at: now) != .rest {
+        let why = reason == .operator ? "pause" : reason == .disconnect ? "disconnect" : "display_changed"
+        if reason != .operator { await record(["pause"], trial: nil, origin: "protocol", intended: now, reason: why) }
+        if let a = active, !aborted.contains(a), reason != .operator || phase(of: a, at: now) != .rest {
             let origin = reason == .operator ? "operator" : "protocol"
-            abort(a, origin: origin, reason: reason == .operator ? "pause" : "disconnect")
-            await record(["trial_abort"], trial: a, origin: origin, intended: now, reason: reason == .operator ? "pause" : "disconnect")
+            abort(a, origin: origin, reason: why)
+            await record(["trial_abort"], trial: a, origin: origin, intended: now, reason: why)
         }
         // A trial scheduled but not yet started stays next; it was never shown.
         if let k = lastScheduled, k != active { nextTrial = k }
@@ -412,9 +438,9 @@ public actor ProtocolRunner: PresentationSink {
 
     private func drainPresentations() async {
         let items = inbox.withLock { box in defer { box.presented = [] }; return box.presented }
-        for (token, at) in items {
+        for (token, at, stall) in items {
             guard let o = outstanding.removeValue(forKey: token) else { continue }     // replaced, or timed out
-            update { $0.latenessNanos.append(at - o.intended) }
+            update { $0.latenessNanos.append(at - o.intended); $0.afterStall.append(stall) }
             await recordPhase(o, presented: at)
         }
     }

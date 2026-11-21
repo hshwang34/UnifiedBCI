@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import Synchronization
 
 /// Development-only launch arguments for driving the app without clicks (screenshots,
 /// smoke tests). Compiled out of Release builds, so a shipped app never opens anything
@@ -53,6 +54,11 @@ import Foundation
 ///                                              "live-recorded", "live-recorded-full" (tall),
 ///                                              "live-recorded-segments",
 ///                                              "live-recorded-quality"
+///     -BCICueWindowPreview YES                 open the participant cue window (brief 005 PR 5)
+///                                              on the display the picker chooses and cycle
+///                                              instructions, fixation, left cue, rest, right
+///                                              cue; snapshots "cue-<phase>" and prints the
+///                                              software lateness. Esc closes it.
 @MainActor
 enum LaunchArguments {
     private static var done = false
@@ -199,6 +205,10 @@ enum LaunchArguments {
                 workspace.welcomeFlow.apply(.next)
             }
             try? await Task.sleep(for: .seconds(1))
+        }
+        if defaults.bool(forKey: "BCICueWindowPreview") {
+            await cueWindowPreview(snapshots: snapshots != nil, snap: snap)
+            return
         }
         await snap("welcome")
 
@@ -398,6 +408,59 @@ enum LaunchArguments {
         await snap("live-recorded-quality", .seconds(1.5))
     }
 
+    /// Brief 005 PR 5: the participant window cycling through its phases, presented by the
+    /// display link as a run would present them. With snapshots (or -BCIQuitWhenDone) one
+    /// cycle; otherwise until Esc.
+    private static func cueWindowPreview(snapshots: Bool, snap: (String, Duration) async -> Void) async {
+        let displays = CueWindowController.displays(operatorScreen: NSApp.keyWindow?.screen ?? NSApp.windows.first?.screen)
+        guard let choice = CueDisplayPicker.choose(from: displays, remembered: CueDisplayPicker.remembered(in: .standard)),
+              let screen = CueWindowController.screen(for: choice.display) else { return }
+        FileHandle.standardError.write(Data("cue preview: \(CueWindowModel.displayLabel(choice.display))\n".utf8))
+        let scheduler = CueFrameScheduler()
+        let window = CueWindowController(scheduler: scheduler, screen: screen)
+        window.show()
+        let sink = PreviewSink()
+        var stop = false
+        let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 53 { stop = true; return nil }
+            return event
+        }
+        defer { if let monitor { NSEvent.removeMonitor(monitor) } }
+        let phases: [(String, CueFrame)] = [("instructions", .instructions(CueWindowModel.previewInstructions)), ("fixation", .fixation),
+                                            ("left", .cue(.leftArrow)), ("rest", .blank), ("fixation-2", .fixation),
+                                            ("right", .cue(.rightArrow)), ("rest-2", .blank)]
+        let once = snapshots || UserDefaults.standard.bool(forKey: "BCIQuitWhenDone")
+        var token: UInt64 = 0
+        repeat {
+            for (name, frame) in phases where !stop {
+                token += 1
+                let at = HostMonotonicClock.nowNanos() + 40_000_000
+                sink.expect(PresentationToken(value: token), intended: at)
+                scheduler.show(frame, atMonotonicNanos: at, token: PresentationToken(value: token), sink: sink)
+                try? await Task.sleep(for: .milliseconds(300))
+                if snapshots { await snap("cue-\(name)", .zero) }
+                try? await Task.sleep(for: .milliseconds(snapshots ? 200 : 1200))
+            }
+        } while !once && !stop
+        window.close()
+        FileHandle.standardError.write(Data("cue preview: \(sink.summary())\n".utf8))
+    }
+
+    /// Collects presented − intended for the preview's frames.
+    private final class PreviewSink: PresentationSink {
+        private let box = Mutex<(intended: [UInt64: Int64], lateness: [Int64])>(([:], []))
+        func expect(_ token: PresentationToken, intended: Int64) { box.withLock { $0.intended[token.value] = intended } }
+        func presented(_ token: PresentationToken, atMonotonicNanos at: Int64) {
+            box.withLock { b in if let i = b.intended.removeValue(forKey: token.value) { b.lateness.append(at - i) } }
+        }
+        func summary() -> String {
+            let (missing, late) = box.withLock { ($0.intended.count, $0.lateness.sorted()) }
+            guard let max = late.last else { return "no presentation callbacks; \(missing) missing" }
+            let ms = { (n: Int64) in Fmt.fixed(Double(n) / 1e6, 1) }
+            return "\(late.count) frames presented, lateness median \(ms(late[late.count / 2])) ms, max \(ms(max)) ms; \(missing) missing"
+        }
+    }
+
     /// Captures every visible titled window of this app into `<name>-<n>-<title>.png`.
     /// Uses the window server's own-window capture (`CGWindowListCreateImage`, looked up at
     /// run time: it is deprecated, and this is debug-only tooling); an app may always image
@@ -407,7 +470,7 @@ enum LaunchArguments {
         typealias Capture = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
         guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { return }
         let capture = unsafeBitCast(sym, to: Capture.self)
-        let windows = NSApp.windows.filter { $0.isVisible && ($0.styleMask.contains(.titled) || $0.isSheet) }
+        let windows = NSApp.windows.filter { $0.isVisible && ($0.styleMask.contains(.titled) || $0.isSheet || $0.identifier == CueWindowController.identifier) }
         for (i, window) in windows.enumerated() {
             // .optionIncludingWindow = 1 << 3; .boundsIgnoreFraming = 1 << 0, .bestResolution = 1 << 3
             guard let image = capture(.null, 1 << 3, UInt32(window.windowNumber), (1 << 0) | (1 << 3))?.takeRetainedValue() else { continue }
