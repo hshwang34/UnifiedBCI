@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import Synchronization
 
 /// One live board session (brief 004): the PRD §7 state machine, the drain loop, fan-out to
@@ -71,13 +72,27 @@ public actor AcquisitionSession {
     private let options: Options
     private let makeBoard: @Sendable () throws -> any AcquisitionBoard
     private let projectDirectory: URL?
+    /// Set only once a board is prepared (and, after a reconnect, streaming).
     private var board: (any AcquisitionBoard)?
+    /// The last board's layout, kept while interrupted for the free-space figures.
+    private var lastDescription: BoardDescription?
     private var accounting: SequenceAccounting?
     private var health: HealthAccumulator?
     private var writer: RecordingWriter?
     private var power: PowerAssertion?
     private var run: Task<Void, Never>?
     private var hasStreamed = false
+    /// Bumped by every lifecycle command; a call resuming from an await under an older
+    /// generation was overtaken (Cancel, Disconnect, Retry) and must undo, not apply.
+    private var generation = 0
+    /// Set synchronously before the first await of `startStreaming` / `reconnect`, so a
+    /// second press while the first is in flight is ignored.
+    private var starting = false
+    private var reconnecting = false
+    private var recordingStarting = false
+    /// Bumped whenever streaming ends or restarts, so a recording that finishes starting
+    /// after an interruption is not attached to a different segment.
+    private var recordingStarts = 0
     private var lastSampleNanos: Int64 = 0
     private var lastPublishNanos: Int64 = 0
 
@@ -92,7 +107,10 @@ public actor AcquisitionSession {
         (preview, previewSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(8))
     }
 
-    deinit { previewSink.finish() }
+    deinit {
+        previewSink.finish()
+        power?.release()
+    }
 
     public var state: State { snapshot.state }
 
@@ -101,29 +119,37 @@ public actor AcquisitionSession {
     /// disconnected / failed-before-streaming → connecting → ready, or failed.
     public func connect() async {
         guard state == .disconnected || (isFailed && !hasStreamed) else { return }
+        generation += 1
+        let gen = generation
         set(.connecting)
+        let b: any AcquisitionBoard
         do {
-            let b = try makeBoard()
-            board = b
+            b = try makeBoard()
             try await b.prepare()
-            guard state == .connecting else { return }     // disconnected meanwhile
-            set(.ready)
         } catch {
-            await releaseBoard()
-            if state == .connecting { set(.failed(reason: Self.describe(error))) }
+            if gen == generation { set(.failed(reason: Self.describe(error))) }
+            return
         }
+        guard gen == generation else { return await Self.release(b) }   // cancelled meanwhile
+        board = b
+        lastDescription = b.description
+        set(.ready)
     }
 
     /// ready → streaming (start preview).
     public func startStreaming() async {
-        guard state == .ready, let board else { return }
+        guard state == .ready, !starting, let board else { return }
+        starting = true
+        defer { starting = false }
+        let gen = generation
         do {
             try await board.startStream(bufferSize: options.bufferSize)
         } catch {
+            guard gen == generation else { return }
             await releaseBoard()
             return set(.failed(reason: Self.describe(error)))
         }
-        guard state == .ready else { return }
+        guard gen == generation, state == .ready else { return }
         hasStreamed = true
         beginStreamSegment(board, reconnect: false)
         set(.streaming)
@@ -134,7 +160,10 @@ public actor AcquisitionSession {
     @discardableResult
     public func startRecording(_ request: RecordingRequest, in store: ProjectStore) async throws -> UUID {
         guard state == .streaming, let board else { throw SessionError.notStreaming }
-        guard writer == nil else { throw SessionError.alreadyRecording }
+        guard writer == nil, !recordingStarting else { throw SessionError.alreadyRecording }
+        recordingStarting = true
+        defer { recordingStarting = false }
+        let starts = recordingStarts
         let d = board.description
         let (wall, now) = (Date(), HostMonotonicClock.nowNanos())
         let manifest = RecordingManifest(
@@ -149,25 +178,25 @@ public actor AcquisitionSession {
         writerOptions.timestampRow = d.timestampRow
         let w = try await RecordingWriter.start(in: store, manifest: manifest, startedAtWall: wall,
                                                 startedAtMonotonicNanos: now, options: writerOptions)
-        guard state == .streaming, writer == nil else {
+        guard state == .streaming, writer == nil, recordingStarts == starts else {
             await w.finish(state == .streaming ? .stopped : .disconnect)
             throw SessionError.streamEnded
         }
         writer = w
+        power?.release()
         power = PowerAssertion.take("Recording EEG")
         published.withLock { $0.recordingID = w.recordingID; $0.holdsPowerAssertion = power != nil }
         return w.recordingID
     }
 
     /// Stops the recording (segment `stopped`, partial chunk flushed); streaming continues.
+    /// It ends at the last drain (≤ `drainInterval` ago): only the drain loop reads the
+    /// board, so counters are never seen out of order.
     @discardableResult
     public func stopRecording() async -> RecordingWriter.Status? {
-        guard let w = writer else { return nil }
-        if let board, state == .streaming, let chunk = try? await board.readAll() { process(chunk, board) }
-        guard writer === w else { return nil }
-        writer = nil
+        guard let w = detachRecording() else { return nil }
         let status = await w.finish(.stopped)
-        endRecording(status)
+        noteEnded(status)
         return status
     }
 
@@ -175,18 +204,20 @@ public actor AcquisitionSession {
     /// recording `stopped`, releases the board.
     public func disconnect() async {
         guard state != .disconnected, state != .stopping else { return }
+        generation += 1
+        recordingStarts += 1
         let wasStreaming = state == .streaming
         set(.stopping)
-        run?.cancel()
-        await run?.value
+        let task = run
         run = nil
+        task?.cancel()
+        await task?.value
+        // The drain loop has ended, so this is the only reader now: take what BrainFlow holds.
         if wasStreaming, let board, let chunk = try? await board.readAll() { process(chunk, board) }
-        if let w = writer {
-            writer = nil
-            endRecording(await w.finish(.stopped))
-        }
+        if let w = detachRecording() { noteEnded(await w.finish(.stopped)) }
         await releaseBoard()
         hasStreamed = false
+        reconnecting = false
         set(.disconnected)
     }
 
@@ -194,10 +225,19 @@ public actor AcquisitionSession {
     /// failed connect retries the connect itself.
     public func reconnect() async {
         if isFailed && !hasStreamed { return await connect() }
-        guard isFailed || isInterrupted else { return }
-        run?.cancel()
-        await run?.value
+        guard isFailed || isInterrupted, !reconnecting else { return }
+        reconnecting = true
+        generation += 1
+        let gen = generation
+        set(.interrupted(reason: "Reconnecting"))
+        let task = run
+        run = nil
+        task?.cancel()
+        await task?.value
+        reconnecting = false
+        guard gen == generation else { return }        // Disconnect meanwhile
         await releaseBoard()
+        guard gen == generation else { return }
         run = Task {
             guard await self.reconnectWithinWindow() else { return }
             await self.drainAndRecover()
@@ -245,10 +285,11 @@ public actor AcquisitionSession {
             previewSink.yield(.init(segment: health.health.segment, chunk: chunk))
             if let w = writer, case .refused = w.submit(block) {
                 // The writer stopped itself (disk full, backlog, write error); preview goes on.
-                writer = nil
+                // Detached synchronously: a new recording may start before this finishes.
+                _ = detachRecording()
                 Task.detached { [weak self] in
                     let status = await w.finish()
-                    await self?.endRecording(status)
+                    await self?.noteEnded(status)
                 }
             }
         }
@@ -258,6 +299,7 @@ public actor AcquisitionSession {
     /// streaming → interrupted: the segment closes with a `disconnect` gap; the board goes.
     private func interrupt(_ reason: String) async {
         set(.interrupted(reason: reason))
+        recordingStarts += 1
         writer?.endSegment(.disconnect, endedAtMonotonicNanos: lastSampleNanos)
         health?.noteGap(.disconnect)
         publishHealth(force: true)
@@ -271,26 +313,34 @@ public actor AcquisitionSession {
         var lastError = "no attempt made"
         if !isInterrupted { set(.interrupted(reason: "Reconnecting")) }
         while !Task.isCancelled {
+            // The attempt's board is local until it streams: a cancelled or failed attempt
+            // releases its own session and never overwrites `board`.
+            var attempt: (any AcquisitionBoard)?
             do {
                 let b = try makeBoard()
-                board = b
+                attempt = b
                 try await b.prepare()
                 try await b.startStream(bufferSize: options.bufferSize)
-                guard !Task.isCancelled else { return false }
+                guard !Task.isCancelled else { await Self.release(b); return false }
+                board = b
+                lastDescription = b.description
+                recordingStarts += 1
                 beginStreamSegment(b, reconnect: true)
                 writer?.beginSegment(startedAtWall: Date(), startedAtMonotonicNanos: HostMonotonicClock.nowNanos())
                 set(.streaming)
                 return true
             } catch {
                 lastError = Self.describe(error)
-                await releaseBoard()
+                if let attempt { await Self.release(attempt) }
             }
             guard HostMonotonicClock.nowNanos() < deadline else { break }
             try? await Task.sleep(for: options.retryInterval)
         }
-        if !Task.isCancelled {
-            set(.failed(reason: "Reconnect failed for \(Self.seconds(options.retryWindow)) s: \(lastError)"))
-        }
+        guard !Task.isCancelled else { return false }
+        set(.failed(reason: "Reconnect failed for \(Self.seconds(options.retryWindow)) s: \(lastError)"))
+        // Nothing is being recorded any more: end the recording with its last segment's real
+        // reason, which also lets the Mac sleep again. Retry streams; Record starts anew.
+        if let w = detachRecording() { noteEnded(await w.finish(.disconnect)) }
         return false
     }
 
@@ -308,13 +358,28 @@ public actor AcquisitionSession {
     }
 
     private func releaseBoard() async {
-        if let b = board { board = nil; try? await b.release() }
+        if let b = board { board = nil; await Self.release(b) }
     }
 
-    private func endRecording(_ status: RecordingWriter.Status) {
+    private static func release(_ b: any AcquisitionBoard) async {
+        do { try await b.release() } catch { log.error("board release failed: \(describe(error), privacy: .public)") }
+    }
+
+    private static let log = Logger(subsystem: "com.hshwang34.BCIWorkspace", category: "acquisition")
+
+    /// Takes the current writer out of the session and releases its power assertion, all
+    /// before any await, so nothing that finishes later can touch a newer recording.
+    private func detachRecording() -> RecordingWriter? {
+        guard let w = writer else { return nil }
+        writer = nil
         power?.release()
         power = nil
-        published.withLock { $0.recordingID = nil; $0.holdsPowerAssertion = false; $0.lastRecordingEnd = status }
+        published.withLock { $0.recordingID = nil; $0.holdsPowerAssertion = false }
+        return w
+    }
+
+    private func noteEnded(_ status: RecordingWriter.Status) {
+        published.withLock { $0.lastRecordingEnd = status }
     }
 
     /// At most once a second (the panel's rate), or at once on a state change.
@@ -324,8 +389,8 @@ public actor AcquisitionSession {
         lastPublishNanos = now
         var h = health.snapshot()
         h.writer = writer?.status
-        if let dir = projectDirectory, let free = RecordingWriter.freeBytes(at: dir), let board {
-            let bytesPerHour = Double(board.description.numRows * 8 * board.description.samplingRate) * 3600
+        if let dir = projectDirectory, let free = RecordingWriter.freeBytes(at: dir), let d = lastDescription {
+            let bytesPerHour = Double(d.numRows * 8 * d.samplingRate) * 3600
             h.freeBytes = free
             h.hoursLeft = max(0, Double(free - RecordingWriter.minimumFreeBytes) / bytesPerHour)
         }

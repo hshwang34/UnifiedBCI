@@ -78,7 +78,10 @@ struct HealthAccumulator {
         if let lastDrain { drainIntervals.append((t, Double(t - lastDrain) / 1e9)) }
         lastDrain = t
         drainIntervals.removeAll { $0.t < t - Self.windowNanos }
-        guard chunk.count > 0 else { return nil }
+        guard chunk.count > 0 else {
+            updateRate(at: t)          // a stall must pull the rate down, not freeze it
+            return nil
+        }
 
         var pause: RecordingManifest.Gap?
         if health.samplesThisSegment > 0, let last = lastSampleDrain, t - last >= Self.pauseNanos,
@@ -96,16 +99,14 @@ struct HealthAccumulator {
             tally.estimatedMissingSamples += gap.estimatedMissingSamples ?? 0
             if gap.ambiguous { tally.ambiguous += 1 }
             health.gaps[gap.evidence] = tally
+            // Only a skip leaves counter slots without a sample. A stale half is a received
+            // sample (one Daisy half lost, its counter not advanced): it is already in
+            // `chunk.count` and adds no slot, so it is not counted again.
             if gap.evidence == .sequenceSkip { missing += gap.estimatedMissingSamples ?? 0 }
         }
 
         rateWindow.append((t, chunk.count + missing))
-        rateWindow.removeAll { $0.t < t - Self.windowNanos }
-        if let first = rateWindow.first, t - first.t >= Self.pauseNanos {
-            // The first drain's samples arrived before the window opened.
-            let counted = rateWindow.dropFirst().reduce(0) { $0 + $1.n }
-            health.effectiveRateHz = Double(counted) / (Double(t - first.t) / 1e9)
-        }
+        updateRate(at: t)
 
         for value in chunk.row(timestampRow) {
             if let lastTimestamp { timestampIntervals.append(value - lastTimestamp) }
@@ -115,6 +116,19 @@ struct HealthAccumulator {
             timestampIntervals.removeFirst(timestampIntervals.count - timestampCapacity)
         }
         return pause
+    }
+
+    /// Counter slots per monotonic second from the window's first drain to `t` (that drain's
+    /// own samples arrived before the window opened). Empty window after samples: 0.
+    private mutating func updateRate(at t: Int64) {
+        rateWindow.removeAll { $0.t < t - Self.windowNanos }
+        if let first = rateWindow.first {
+            guard t - first.t >= Self.pauseNanos else { return }
+            let counted = rateWindow.dropFirst().reduce(0) { $0 + $1.n }
+            health.effectiveRateHz = Double(counted) / (Double(t - first.t) / 1e9)
+        } else if health.samplesThisSegment > 0 {
+            health.effectiveRateHz = 0
+        }
     }
 
     /// The panel's numbers; spreads are computed here (about once per second), not per drain.

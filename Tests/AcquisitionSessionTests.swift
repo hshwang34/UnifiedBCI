@@ -184,7 +184,7 @@ final class AcquisitionSessionTests: XCTestCase {
         await session.disconnect()
     }
 
-    func testRetriesExhausted_failed_thenRetryResumesTheRecordingInANewSegment() async throws {
+    func testRetriesExhausted_failed_recordingFinishedAsDisconnect_assertionReleased_retryStreams() async throws {
         let link = FakeLink()
         let store = try store()
         var options = fastOptions()
@@ -198,14 +198,20 @@ final class AcquisitionSessionTests: XCTestCase {
         try await waitFor("failed") { if case .failed = session.snapshot.state { true } else { false } }
         guard case .failed(let reason) = session.snapshot.state else { return }
         XCTAssertTrue(reason.contains("Reconnect failed"), reason)
-        XCTAssertNotNil(session.snapshot.recordingID, "the recording waits for Retry or Disconnect")
+        try await waitFor("the recording to end") { session.snapshot.lastRecordingEnd != nil }
+        XCTAssertNil(session.snapshot.recordingID, "nothing records in failed")
+        XCTAssertFalse(session.snapshot.holdsPowerAssertion, "the Mac may sleep again")
+        XCTAssertEqual(session.snapshot.lastRecordingEnd?.endReason, .disconnect)
+        XCTAssertEqual(link.live, 0)
 
         link.set { $0.silent = false; $0.prepareFails = false }
         await session.reconnect()
         try await waitFor("streaming again") { session.snapshot.state == .streaming }
+        XCTAssertNil(session.snapshot.recordingID)
         await session.disconnect()
         let m = try await store.recording(id: id).manifest
-        XCTAssertEqual(m.segments.map(\.endReason), [.disconnect, .stopped])
+        XCTAssertEqual(m.segments.map(\.endReason), [.disconnect])
+        XCTAssertEqual(link.live, 0)
     }
 
     func testArrivalPauseWithContiguousCounters_isReceiptIntervalNotLoss() async throws {
@@ -218,9 +224,9 @@ final class AcquisitionSessionTests: XCTestCase {
         await session.startStreaming()
         let id = try await session.startRecording(request(link.description), in: store)
         try await waitFor("samples") { link.delivered > 100 }
-        link.set { $0.silent = true }
-        try await Task.sleep(for: .milliseconds(1_300))
-        link.set { $0.silent = false }
+        // Jump the drain clock 1.5 s while counters stay contiguous: one arrival pause,
+        // independent of real scheduling.
+        link.set { $0.clockSkewNanos = 1_500_000_000 }
         try await waitFor("more samples") { link.delivered > 400 }
         let health = session.snapshot.health
         await session.disconnect()
@@ -259,6 +265,112 @@ final class AcquisitionSessionTests: XCTestCase {
         await session.disconnect()
     }
 
+    // MARK: Reentrancy
+
+    func testDoubleRetry_runsOneReconnectLoop_noLeakedSession() async throws {
+        let link = FakeLink()
+        var options = fastOptions()
+        options.retryWindow = .milliseconds(200)
+        let session = AcquisitionSession(source: .synthetic, projectDirectory: nil, options: options, makeBoard: link.factory)
+        await session.connect()
+        await session.startStreaming()
+        try await waitFor("samples") { link.delivered > 50 }
+        link.set { $0.silent = true; $0.prepareFails = true }
+        try await waitFor("failed") { if case .failed = session.snapshot.state { true } else { false } }
+        link.set { $0.silent = false; $0.prepareFails = false; $0.prepareDelay = .milliseconds(100) }
+        async let a: Void = session.reconnect()
+        async let b: Void = session.reconnect()
+        _ = await (a, b)
+        try await waitFor("streaming") { session.snapshot.state == .streaming }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(link.live, 1, "one board session, nothing leaked")
+        XCTAssertEqual(session.snapshot.health.reconnects, 1)
+        await session.disconnect()
+        XCTAssertEqual(link.live, 0)
+        XCTAssertEqual(link.value(\.maxLive), 1)
+    }
+
+    func testDoubleStart_startsTheStreamOnce_andStaysHealthy() async throws {
+        let link = FakeLink()
+        let session = AcquisitionSession(source: .synthetic, projectDirectory: nil, options: fastOptions(), makeBoard: link.factory)
+        await session.connect()
+        link.set { $0.prepareDelay = .milliseconds(100) }    // startStream re-prepares: make it slow
+        async let a: Void = session.startStreaming()
+        async let b: Void = session.startStreaming()
+        _ = await (a, b)
+        XCTAssertEqual(session.snapshot.state, .streaming)
+        XCTAssertEqual(link.value(\.streamStarts), 1)
+        await session.disconnect()
+    }
+
+    func testCancelDuringConnecting_releasesThatBoard_andALaterConnectIsClean() async throws {
+        let link = FakeLink()
+        link.set { $0.prepareDelay = .milliseconds(300) }
+        let session = AcquisitionSession(source: .synthetic, projectDirectory: nil, options: fastOptions(), makeBoard: link.factory)
+        let first = Task { await session.connect() }
+        try await waitFor("connecting") { session.snapshot.state == .connecting }
+        await session.disconnect()
+        XCTAssertEqual(session.snapshot.state, .disconnected)
+        link.set { $0.prepareDelay = .zero }
+        await session.connect()                 // the first prepare is still sleeping
+        XCTAssertEqual(session.snapshot.state, .ready)
+        await first.value
+        XCTAssertEqual(session.snapshot.state, .ready, "the cancelled connect never lands on the new one")
+        XCTAssertEqual(link.live, 1, "the cancelled connect released its own board")
+        await session.disconnect()
+        XCTAssertEqual(link.live, 0)
+    }
+
+    func testDisconnectDuringRetrying_endsCleanly() async throws {
+        let link = FakeLink()
+        let store = try store()
+        let session = AcquisitionSession(source: .synthetic, projectDirectory: store.directory, options: fastOptions(), makeBoard: link.factory)
+        await session.connect()
+        await session.startStreaming()
+        let id = try await session.startRecording(request(link.description), in: store)
+        try await waitFor("samples") { link.delivered > 100 }
+        link.set { $0.silent = true; $0.prepareFails = true }
+        try await waitFor("interrupted") { if case .interrupted = session.snapshot.state { true } else { false } }
+        await session.disconnect()
+        XCTAssertEqual(session.snapshot.state, .disconnected)
+        link.set { $0.prepareFails = false; $0.silent = false }
+        try await Task.sleep(for: .milliseconds(300))   // longer than a retry interval
+        XCTAssertEqual(session.snapshot.state, .disconnected, "no retry survives Disconnect")
+        XCTAssertEqual(link.live, 0)
+        XCTAssertFalse(session.snapshot.holdsPowerAssertion)
+        let m = try await store.recording(id: id).manifest
+        XCTAssertEqual(m.segments.map(\.endReason), [.disconnect])
+    }
+
+    func testStopRecording_neverReadsBesideTheDrainLoop_noFalseGaps() async throws {
+        let link = FakeLink()
+        let store = try store()
+        let session = AcquisitionSession(source: .synthetic, projectDirectory: store.directory, options: fastOptions(), makeBoard: link.factory)
+        await session.connect()
+        await session.startStreaming()
+        var ids: [UUID] = []
+        for _ in 0..<4 {
+            ids.append(try await session.startRecording(request(link.description), in: store))
+            let target = link.delivered + 60
+            try await waitFor("samples") { link.delivered > target }
+            await session.stopRecording()
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        let health = session.snapshot.health
+        await session.disconnect()
+        XCTAssertEqual(health.gaps, [:], "counters were seen in order")
+        let counters = link.value(\.counters)
+        for id in ids {
+            let handle = try await store.recording(id: id)
+            XCTAssertEqual(handle.manifest.segments.map(\.endReason), [.stopped])
+            XCTAssertEqual(handle.manifest.segments[0].detectedGaps, [])
+            // Every recording is one contiguous run of what the board delivered, in order.
+            let stored = try handle.manifest.chunks.flatMap { e in try handle.chunk(e)[0..<e.sampleCount].map { Int($0) } }
+            let start = try XCTUnwrap(counters.indices.first { counters[$0...].starts(with: stored) }, "recorded counters out of order")
+            XCTAssertEqual(Array(counters[start..<(start + stored.count)]), stored)
+        }
+    }
+
     // MARK: Health accumulator
 
     func testHealth_effectiveRateIsCounterDerived_andPausesNeedContiguousCounters() throws {
@@ -282,6 +394,15 @@ final class AcquisitionSessionTests: XCTestCase {
         XCTAssertEqual(h.health.gaps[.sequenceSkip], .init(events: 2, estimatedMissingSamples: 28, ambiguous: 2))
         XCTAssertEqual(h.health.samplesThisSegment, 422)
         XCTAssertEqual(h.snapshot().drainInterval?.max, 1.5)
+        // A stall: empty drains pull the rate down, and to 0 once the window is empty.
+        func empty(at seconds: Double) -> SampleChunk {
+            .init(numRows: d.numRows, count: 0, values: [], drainedAtMonotonicNanos: Int64(seconds * 1e9), availableBeforeDrain: 0, overflowSuspected: false)
+        }
+        _ = h.ingest(empty(at: 8), gaps: [])
+        let stalled = try XCTUnwrap(h.health.effectiveRateHz)
+        XCTAssertLessThan(stalled, 125)
+        _ = h.ingest(empty(at: 20), gaps: [])
+        XCTAssertEqual(h.health.effectiveRateHz, 0)
         XCTAssertEqual(HealthAccumulator.spread([0.3, 0.1, 0.4, 0.2, 5]), .init(p50: 0.3, p95: 5, max: 5))
     }
 }
@@ -291,17 +412,28 @@ final class FakeLink: Sendable {
     struct Script {
         var silent = false
         var prepareFails = false
+        var prepareDelay: Duration = .zero
         var readErrors = 0
         var counter = 0            // keeps counting across boards: a reconnect's first counter jumps
         var delivered = 0
         var boardsMade = 0
+        var streamStarts = 0
+        /// Boards prepared and not yet released: more than 1 would mean a leaked session.
+        var live = 0
+        var maxLive = 0
+        /// Added to every drain time: an injectable monotonic clock for pause tests.
+        var clockSkewNanos: Int64 = 0
+        /// Counters of every delivered sample, in delivery order.
+        var counters: [Int] = []
     }
     let script = Mutex(Script())
     let description = try! BrainFlowBoard.describe(boardID: KnownBoard.cytonDaisy)
 
     func set(_ change: (inout Script) -> Void) { script.withLock { change(&$0) } }
-    var delivered: Int { script.withLock { $0.delivered } }
-    var boardsMade: Int { script.withLock { $0.boardsMade } }
+    func value<T>(_ read: (Script) -> T) -> T { script.withLock { read($0) } }
+    var delivered: Int { value(\.delivered) }
+    var boardsMade: Int { value(\.boardsMade) }
+    var live: Int { value(\.live) }
 
     var factory: @Sendable () throws -> any AcquisitionBoard {
         { [self] in
@@ -316,27 +448,36 @@ final class FakeLink: Sendable {
 actor FakeBoard: AcquisitionBoard {
     nonisolated let description: BoardDescription
     private let link: FakeLink
+    private var prepared = false
 
     init(link: FakeLink) { self.link = link; description = link.description }
 
-    func prepare() throws {
-        if link.script.withLock({ $0.prepareFails }) {
+    func prepare() async throws {
+        let delay = link.value(\.prepareDelay)
+        if delay > .zero { try? await Task.sleep(for: delay) }
+        if link.value(\.prepareFails) {
             throw BrainFlowError(code: BrainFlowExitCode.boardNotReady.rawValue, operation: "prepare_session")
         }
+        guard !prepared else { return }
+        prepared = true
+        link.set { $0.live += 1; $0.maxLive = max($0.maxLive, $0.live) }
     }
 
-    func startStream(bufferSize: Int32) throws { try prepare() }
+    func startStream(bufferSize: Int32) async throws {
+        try await prepare()
+        link.set { $0.streamStarts += 1 }
+    }
 
     func readAll() throws -> SampleChunk {
         let d = description
-        let first = try link.script.withLock { s -> Int? in
+        let (first, skew) = try link.script.withLock { s -> (Int?, Int64) in
             if s.readErrors > 0 {
                 s.readErrors -= 1
                 throw BrainFlowError(code: BrainFlowExitCode.generalError.rawValue, operation: "get_board_data")
             }
-            guard !s.silent else { return nil }
-            defer { s.counter += 6; s.delivered += 6 }
-            return s.counter
+            guard !s.silent else { return (nil, s.clockSkewNanos) }
+            defer { s.counters += (s.counter..<(s.counter + 6)).map { ($0 * 2) % 256 }; s.counter += 6; s.delivered += 6 }
+            return (s.counter, s.clockSkewNanos)
         }
         let n = first == nil ? 0 : 6
         var values = [Double](repeating: 0, count: n * d.numRows)
@@ -346,9 +487,13 @@ actor FakeBoard: AcquisitionBoard {
             values[d.timestampRow * n + i] = 1_700_000_000 + Double(k) / 125
             for r in d.eegChannelRows { values[r * n + i] = Double(k % 50) }
         }
-        return SampleChunk(numRows: d.numRows, count: n, values: values, drainedAtMonotonicNanos: HostMonotonicClock.nowNanos(),
+        return SampleChunk(numRows: d.numRows, count: n, values: values, drainedAtMonotonicNanos: HostMonotonicClock.nowNanos() + skew,
                            availableBeforeDrain: n, overflowSuspected: false)
     }
 
-    func release() {}
+    func release() {
+        guard prepared else { return }
+        prepared = false
+        link.set { $0.live -= 1 }
+    }
 }
