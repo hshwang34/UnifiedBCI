@@ -51,13 +51,27 @@ public actor LiveInferenceRunner {
         public var predictions = 0
         public var lastSequence: Int?
         public var stopped = false
+        /// Valid hop windows and how many of them abstained (the operator's abstain rate).
+        public var validHops = 0
+        public var abstainedHops = 0
+        /// Receipt → emission so far, in milliseconds (operator panel; `run.json` at the end).
+        public var receiptToEmission: LiveRunRecord.Percentiles?
+        /// Each trial's live outcome so far (decision #41), by trial id.
+        public var outcomes: [String: FeedbackPolicy.TrialOutcome] = [:]
+
+        /// Valid hop windows that abstained, 0…1; nil before the first valid window.
+        public var abstainRate: Double? { validHops > 0 ? Double(abstainedHops) / Double(validHops) : nil }
     }
 
-    /// One change of the display, for the participant window: it calls `presented` when the
-    /// frame showing it is on screen.
+    /// The display for one prediction, for the participant window: it calls `presented` when
+    /// the frame first showing a change is on screen. `emittedAt` lets the window refuse to
+    /// draw a bar that has grown older than the stale limit by the time it would be shown.
     public struct Update: Sendable, Equatable {
         public var sequence: Int
         public var display: FeedbackPolicy.Display
+        public var emittedAt: Int64? = nil
+        /// Why the bar is hidden (`FeedbackPolicy.hiddenReason`), nil when shown.
+        public var reason: String? = nil
     }
 
     /// Where a cue landed: on the stream (segment and sample since its start, as the fan-out
@@ -110,6 +124,7 @@ public actor LiveInferenceRunner {
     private var records: [PredictionRecord] = []
     private var bufferWaitsMs: [Double] = []
     private var presentationMs: [Double] = []
+    private var receiptMs: [Double] = []
     private var emitted: [Int: Int64] = [:]
 
     /// `writer` is nil only in tests that read the status alone. `now` is the latency
@@ -165,9 +180,10 @@ public actor LiveInferenceRunner {
     }
 
     /// Ends the run: unsubscribes, closes the worker session (its unfinished cue-locked
-    /// windows are logged), stops the worker and writes the summaries into `run.json`.
+    /// windows are logged), stops the worker and writes the summaries into `run.json` (with
+    /// `runIDs`, the protocol runs it covered, when given).
     @discardableResult
-    public func stop() async -> (summary: LiveRunRecord.Summary, latency: LiveRunRecord.LatencySummary) {
+    public func stop(runIDs: [String]? = nil) async -> (summary: LiveRunRecord.Summary, latency: LiveRunRecord.LatencySummary) {
         unsubscribe?()
         unsubscribe = nil
         loops.forEach { $0.cancel() }
@@ -180,15 +196,17 @@ public actor LiveInferenceRunner {
         }
         if let c = client { await c.shutdown() }
         client = nil
+        // The bar never outlives the run: the window's last word is hidden.
+        let last = published.withLock { $0.lastSequence ?? -1 }
+        updateSink.yield(Update(sequence: last, display: .hidden(words: nil), emittedAt: now(), reason: "stopped"))
         updateSink.finish()
         published.withLock { $0.stopped = true }
         let summary = LiveRunRecord.Summary(predictions: records.count,
                                             byValidity: Dictionary(grouping: records, by: \.validity.rawValue).mapValues(\.count),
                                             abstained: records.filter { $0.validity == .valid && $0.action.kind == .abstain }.count)
-        let receipt = records.compactMap { p in p.acquisitionReceiptMonotonicNanos.flatMap { r in p.emittedAtMonotonicNanos.map { Double($0 - r) / 1e6 } } }
-        let latency = LiveRunRecord.LatencySummary(receiptToEmission: Self.percentiles(receipt), bufferWait: Self.percentiles(bufferWaitsMs),
+        let latency = LiveRunRecord.LatencySummary(receiptToEmission: Self.percentiles(receiptMs), bufferWait: Self.percentiles(bufferWaitsMs),
                                                    emissionToPresentation: Self.percentiles(presentationMs))
-        try? await writer?.finish(endedAt: Date(), summary: summary, latency: latency, replayCheck: nil)
+        try? await writer?.finish(endedAt: Date(), summary: summary, latency: latency, replayCheck: nil, runIDs: runIDs)
         return (summary, latency)
     }
 
@@ -196,8 +214,11 @@ public actor LiveInferenceRunner {
     /// `lengthSeconds`. With `marker` (the BrainFlow marker the protocol inserted, brief 005)
     /// it waits for the marked sample; without one, or after `EventAssociator.markerTimeoutNanos`,
     /// it is placed by the estimate.
-    public func addCue(trialID: String, marker: Double?, presentedAt: Int64, lengthSeconds: Double) async {
+    /// A nil `presentedAt` (the window never reported the cue) is never replaced by a guess:
+    /// the trial gets its outcome record, flagged `cue_not_presented`.
+    public func addCue(trialID: String, marker: Double?, presentedAt: Int64?, lengthSeconds: Double) async {
         guard condition != .workerUnavailable else { return await lose(trialID, "cue_lost_worker_unavailable") }
+        guard let presentedAt else { return await lose(trialID, "cue_not_presented") }
         let cue = WaitingCue(trialID: trialID, marker: marker, presentedAt: presentedAt, queuedAt: now(), lengthSeconds: lengthSeconds)
         if marker == nil || configuration.markerRow == nil { return await placeByEstimate(cue) }
         waiting.append(cue)
@@ -205,14 +226,17 @@ public actor LiveInferenceRunner {
 
     /// The participant window showed `sequence`'s display on the frame presented at `at`,
     /// on `HostMonotonicClock` (the cue window converts its display-link time, brief 005).
-    public func presented(sequence: Int, display: FeedbackPolicy.Display, at: Int64?) async {
-        if let at, let e = emitted[sequence] { presentationMs.append(Double(at - e) / 1e6) }
+    /// `measured`: a new prediction caused the change (counted in emission → presentation);
+    /// a change caused by the cue appearing or ending is logged but not counted.
+    public func presented(sequence: Int, display: FeedbackPolicy.Display, at: Int64?, reason: String? = nil, measured: Bool = true) async {
+        if measured, let at, let e = emitted[sequence] { presentationMs.append(Double(at - e) / 1e6) }
         let record: FeedbackRecord
         switch display {
         case .bar(let side, let length):
             record = FeedbackRecord(predictionSequence: sequence, shown: true, side: side, length: length, words: nil, presentedAtMonotonicNanos: at)
         case .hidden(let words):
-            record = FeedbackRecord(predictionSequence: sequence, shown: false, side: nil, length: nil, words: words, presentedAtMonotonicNanos: at)
+            record = FeedbackRecord(predictionSequence: sequence, shown: false, side: nil, length: nil, words: words, presentedAtMonotonicNanos: at,
+                                    reason: reason)
         }
         try? await writer?.append(record)
     }
@@ -408,17 +432,28 @@ public actor LiveInferenceRunner {
         // Hop windows drive the bar; a cue-locked window is the trial's outcome, not feedback.
         let drivesDisplay = r.windowKind != "cue_locked"
         let display = configuration.policy.display(for: r)
+        if let rc = r.acquisitionReceiptMonotonicNanos, let e = r.emittedAtMonotonicNanos { receiptMs.append(Double(e - rc) / 1e6) }
+        let latency = drivesDisplay && r.acquisitionReceiptMonotonicNanos != nil ? Self.percentiles(receiptMs) : nil
+        let outcome = FeedbackPolicy.trialOutcomes([r]).first
         published.withLock { s in
             s.predictions += 1
             s.lastSequence = seq
             if drivesDisplay {
                 s.validity = r.validity; s.detail = r.validityDetail; s.display = display
                 s.score = r.score; s.confidence = r.confidence
+                if r.validity == .valid, r.inputSampleRange != nil {
+                    s.validHops += 1
+                    if r.action.kind == .abstain { s.abstainedHops += 1 }
+                }
+                if let latency { s.receiptToEmission = latency }
             }
+            if let outcome, s.outcomes[outcome.key] == nil { s.outcomes[outcome.key] = outcome.value }
         }
-        guard drivesDisplay, display != shown else { return }
+        // Every display-driving prediction goes out (newest wins), so the window always knows
+        // how old what it would draw is; it draws and logs only changes.
+        guard drivesDisplay else { return }
         shown = display
-        updateSink.yield(Update(sequence: seq, display: display))
+        updateSink.yield(Update(sequence: seq, display: display, emittedAt: r.emittedAtMonotonicNanos, reason: FeedbackPolicy.hiddenReason(r)))
     }
 
     // MARK: Helpers
