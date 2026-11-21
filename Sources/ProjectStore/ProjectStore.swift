@@ -80,7 +80,7 @@ public actor ProjectStore {
             if !fm.fileExists(atPath: dir.path) { try fm.createDirectory(at: dir, withIntermediateDirectories: false) }
         }
         let sweep = removeOrphans(in: url)
-        return ProjectStore(directory: url, manifest: manifest, sweep: sweep, closedSegments: closeUnterminatedSegments(in: url))
+        return ProjectStore(directory: url, manifest: manifest, sweep: sweep, closedSegments: closeUnterminatedSegments(in: url, afterPrecheck: nil))
     }
 
     /// Copies the example project bundled with the app into `destination`, verifying
@@ -429,32 +429,53 @@ public actor ProjectStore {
     /// `process_terminated`, `endedAtMonotonicNanos` = the last committed chunk's drain
     /// time (the last evidence the process was alive), and a `process_terminated` gap
     /// after the segment's last committed sample — whatever BrainFlow still buffered is
-    /// gone, by an unknown amount. The one rewrite a committed recording ever gets; chunk
-    /// entries are untouched. Skipped while a live writer holds the recording's lock.
-    /// Best-effort, like the orphan sweep: a recording that cannot be read or rewritten
-    /// is reported and left exactly as found.
-    private static func closeUnterminatedSegments(in project: URL) -> [String] {
+    /// gone, by an unknown amount. When the writer was alive but could not close the
+    /// segment (disk full), its lock file carries the real reason and count, used instead.
+    /// The one rewrite a committed recording ever gets; chunk entries are untouched.
+    ///
+    /// The recording's writer lock is taken first and held across the re-read and the
+    /// rewrite, so a writer finishing concurrently is never overwritten with a stale
+    /// manifest. Best-effort, like the orphan sweep: a recording that cannot be read,
+    /// locked or rewritten is reported and left exactly as found. `afterPrecheck` is a
+    /// test seam that runs between the unlocked first look and taking the lock.
+    static func closeUnterminatedSegments(in project: URL, afterPrecheck: (() -> Void)? = nil) -> [String] {
         var report: [String] = []
         for id in (try? childIDs(in: project, child: "recordings", requiring: recordingFileName)) ?? [] {
             let dir = recordingDirectory(in: project, id)
-            guard var manifest = try? RecordingHandle(directory: dir).manifest,
-                  manifest.segments.contains(where: { $0.endReason == nil }) else { continue }
-            let lock = dir.appendingPathComponent(RecordingLock.fileName)
-            guard lockState(lock) != .held else { continue }
+            // Cheap first look without the lock: most recordings are closed.
+            guard let first = try? RecordingHandle(directory: dir).manifest,
+                  first.segments.contains(where: { $0.endReason == nil }) else { continue }
+            afterPrecheck?()
+            guard let lock = RecordingLock.tryAcquire(in: dir) else { continue }   // a live writer
+            var keepLock = true
+            defer { lock.release(keepFile: keepLock) }
+            guard var manifest = try? RecordingHandle(directory: dir).manifest else { continue }
+            let note = lock.readNote()
+            var closed: [String] = []
+            let lastOpen = manifest.segments.lastIndex { $0.endReason == nil }
             for i in manifest.segments.indices where manifest.segments[i].endReason == nil {
                 let index = manifest.segments[i].index
                 let last = manifest.chunks.filter { $0.segment == index }.max { $0.firstSampleIndex < $1.firstSampleIndex }
-                manifest.segments[i].endReason = .processTerminated
                 manifest.segments[i].endedAtMonotonicNanos = last?.drainedAtMonotonicNanos ?? manifest.segments[i].startedAtMonotonicNanos
-                manifest.segments[i].detectedGaps.append(.init(afterSampleIndex: last.map { $0.firstSampleIndex + $0.sampleCount - 1 } ?? -1,
-                                                               evidence: .processTerminated, estimatedMissingSamples: nil, ambiguous: false))
-                report.append("\(id.uuidString)#\(index)")
+                if i == lastOpen, let note {
+                    manifest.segments[i].endReason = note.reason
+                    if note.uncommitted > 0 { manifest.segments[i].uncommittedSampleCount = note.uncommitted }
+                } else {
+                    // `validate` guarantees firstSampleIndex + sampleCount does not overflow.
+                    let after = last.map { $0.firstSampleIndex + ($0.sampleCount - 1) } ?? -1
+                    manifest.segments[i].endReason = .processTerminated
+                    manifest.segments[i].detectedGaps.append(.init(afterSampleIndex: after, evidence: .processTerminated,
+                                                                   estimatedMissingSamples: nil, ambiguous: false))
+                }
+                closed.append("\(id.uuidString)#\(index)")
             }
+            guard !closed.isEmpty else { keepLock = false; continue }   // its writer finished meanwhile
             do {
                 try AtomicFile.write(try ContractJSON.encoder().encode(manifest), to: dir.appendingPathComponent(recordingFileName))
-                unlink(lock.path)
+                keepLock = false
+                report += closed
             } catch {
-                report = report.filter { !$0.hasPrefix(id.uuidString) } + ["\(id.uuidString): not closed: \(error)"]
+                report.append("\(id.uuidString): not closed: \(error)")
             }
         }
         return report
@@ -490,10 +511,14 @@ public actor ProjectStore {
     }
 }
 
-/// `recordings/<uuid>/.writer.lock`, `flock`ed by a live `RecordingWriter`. The lock
-/// dies with the process, which is how `open` tells a killed writer from a live one.
+/// `recordings/<uuid>/.writer.lock`, `flock`ed by a live `RecordingWriter` (or briefly by
+/// `ProjectStore.open` closing a dead writer's segment). The lock dies with the process,
+/// which is how `open` tells a killed writer from a live one. The file is created with
+/// `noteSize` bytes of padding, so a writer that cannot close its segment on a full disk
+/// can still overwrite them with its end reason ("disk_full 1234") without allocating.
 struct RecordingLock: Sendable {
     static let fileName = ".writer.lock"
+    static let noteSize = 64
     let fd: Int32
     let path: String
 
@@ -506,12 +531,42 @@ struct RecordingLock: Sendable {
             close(fd)
             throw ProjectStoreError.io("lock recording", code)
         }
+        let lock = RecordingLock(fd: fd, path: path)
+        lock.write(String(repeating: " ", count: noteSize))
+        return lock
+    }
+
+    /// The lock, or nil when someone else holds it (or it cannot be opened).
+    static func tryAcquire(in dir: URL) -> RecordingLock? {
+        let path = dir.appendingPathComponent(fileName).path
+        let fd = Foundation.open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o644)
+        guard fd >= 0 else { return nil }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { close(fd); return nil }
         return RecordingLock(fd: fd, path: path)
     }
 
-    /// Removes the lock file, then drops the lock: a finished recording keeps no trace.
-    func release() {
-        unlink(path)
+    func note(_ reason: EndReason, uncommitted: Int) {
+        let text = "\(reason.rawValue) \(uncommitted)"
+        write(text + String(repeating: " ", count: max(0, Self.noteSize - text.utf8.count)))
+    }
+
+    func readNote() -> (reason: EndReason, uncommitted: Int)? {
+        var buf = [UInt8](repeating: 0, count: Self.noteSize)
+        let n = pread(fd, &buf, Self.noteSize, 0)
+        guard n > 0 else { return nil }
+        let parts = String(decoding: buf.prefix(n), as: UTF8.self).split(separator: " ")
+        guard parts.count == 2, let reason = EndReason(rawValue: String(parts[0])), let count = Int(parts[1]), count >= 0 else { return nil }
+        return (reason, count)
+    }
+
+    private func write(_ text: String) {
+        _ = Array(text.utf8).withUnsafeBytes { pwrite(fd, $0.baseAddress, $0.count, 0) }
+        try? AtomicFile.fullSync(fd, Self.fileName)
+    }
+
+    /// Drops the lock; removes the file unless it must keep a note for the next `open`.
+    func release(keepFile: Bool = false) {
+        if !keepFile { unlink(path) }
         close(fd)
     }
 }

@@ -136,7 +136,9 @@ final class RecordingWriterTests: XCTestCase {
         writer.submit(Self.block(from: 0, count: 130, segment: 1))
         XCTAssertEqual(writer.status.endReason, nil)
         writer.beginSegment(startedAtWall: Date(), startedAtMonotonicNanos: 600)
-        writer.submit(Self.block(from: 0, count: 130, segment: 1))
+        // An overflow warning on the new segment's first drain sits before its sample 0.
+        writer.submit(Self.block(from: 0, count: 130, segment: 1,
+                                 gaps: [.init(afterSampleIndex: -1, evidence: .overflowSuspected, estimatedMissingSamples: nil, ambiguous: true)]))
         let status = await writer.finish()
 
         XCTAssertEqual(status.uncommittedSamples, 130, "a block between segments is counted, never joined to either")
@@ -149,6 +151,9 @@ final class RecordingWriterTests: XCTestCase {
         XCTAssertEqual(segs.map(\.endReason), [.disconnect, .stopped])
         XCTAssertEqual(segs[0].detectedGaps, [.init(afterSampleIndex: 199, evidence: .disconnect, estimatedMissingSamples: nil, ambiguous: false)])
         XCTAssertEqual(segs[1].startedAtMonotonicNanos, 600)
+        XCTAssertEqual(segs[0].uncommittedSampleCount, 130, "drained after segment 0 closed: counted there")
+        XCTAssertNil(segs[1].uncommittedSampleCount)
+        XCTAssertEqual(segs[1].detectedGaps.map(\.afterSampleIndex), [-1], "segment-relative, not offset by segment 0")
         XCTAssertEqual(segs.map(\.runID), ["r", "r"])
         XCTAssertEqual(try samples(handle, segment: 1)[5], (0..<130).map { Self.value($0, 5, segment: 1) })
     }
@@ -210,22 +215,61 @@ final class RecordingWriterTests: XCTestCase {
             XCTAssertEqual(handle.manifest.segments[0].endReason, .diskFull, label)
             let chunkFiles = try FileManager.default.contentsOfDirectory(atPath: handle.directory.appendingPathComponent("chunks").path)
             XCTAssertFalse(chunkFiles.contains { $0.hasPrefix(".tmp-") }, "no temp chunk left on a full disk: \(label)")
-            switch point {
-            case .afterTmpWrite, .afterFsync:
-                XCTAssertEqual(handle.verify(), [], label)
-                XCTAssertEqual(status.committedSamples, 125, label)
-            case .afterRename:
-                // Renamed, never listed: exactly what a kill at the same point leaves.
-                XCTAssertEqual(handle.verify().map(\.kind), [.unlistedChunk], label)
-                XCTAssertEqual(status.committedSamples, 125, label)
-            case .afterManifestWrite:
-                // The chunk entry was in memory; the segment-close rewrite lists it.
-                XCTAssertEqual(handle.verify(), [], label)
-                XCTAssertEqual(handle.manifest.chunks.count, 2, label)
-                XCTAssertEqual(status.committedSamples, 250, label)
-            }
+            // Whatever the step, the failed chunk is not on disk unlisted (its file is removed to
+            // free space) and is not counted as committed: the disk manifest is the truth.
+            XCTAssertEqual(handle.verify(), [], label)
+            XCTAssertEqual(handle.manifest.chunks.count, 1, label)
+            XCTAssertEqual(status.committedSamples, 125, label)
+            XCTAssertEqual(handle.manifest.segments[0].uncommittedSampleCount, 275, label)
             XCTAssertEqual(status.committedSamples + status.uncommittedSamples, 400, "every sample accounted for: \(label)")
         }
+    }
+
+    func testCloseFailsOnAFullDisk_reasonSurvivesInTheLockFileForTheNextOpen() async throws {
+        var options = RecordingWriter.Options()
+        options.fault = WriteFault { p, index in (p == .afterTmpWrite && index == 1) || index == -1 ? ENOSPC : nil }
+        let (store, writer) = try await start(options: options)
+        writer.submit(Self.block(from: 0, count: 300))
+        let status = await writer.finish()
+        XCTAssertEqual(status.endReason, .diskFull)
+        XCTAssertEqual(status.uncommittedSamples, 175)
+        XCTAssertTrue(status.failure?.contains("segment 0 not closed") == true, status.failure ?? "")
+        let reopened = try ProjectStore.open(at: store.directory)
+        let handle = try await reopened.recording(id: writer.recordingID)
+        let seg = handle.manifest.segments[0]
+        XCTAssertEqual(seg.endReason, .diskFull, "not process_terminated: the writer was alive and said why")
+        XCTAssertEqual(seg.uncommittedSampleCount, 175)
+        XCTAssertEqual(seg.detectedGaps, [])
+        XCTAssertEqual(handle.verify(), [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: handle.directory.appendingPathComponent(".writer.lock").path))
+    }
+
+    func testUnreadableFreeSpace_failsSafe() async throws {
+        var options = RecordingWriter.Options()
+        options.freeBytes = { _ in nil }
+        let (_, writer) = try await start(options: options)
+        writer.submit(Self.block(from: 0, count: 125))
+        let status = await writer.finish()
+        XCTAssertEqual(status.endReason, .error)
+        XCTAssertEqual(status.uncommittedSamples, 125)
+    }
+
+    func testReleasedWithoutFinish_commitsTheBufferAndClosesAsError() async throws {
+        let store = try ProjectStore.create(at: scratch.appendingPathComponent("dropped.bciproj"), name: "d")
+        var id: UUID!
+        do {
+            let writer = try await RecordingWriter.start(in: store, manifest: manifest(), startedAtWall: Date(), startedAtMonotonicNanos: 1)
+            id = writer.recordingID
+            writer.submit(Self.block(from: 0, count: 50))
+        }
+        var seg: RecordingManifest.StreamSegment?
+        try await waitFor("the released writer to close its segment") {
+            seg = (try? RecordingHandle(directory: store.recordingDirectory(id)))?.manifest.segments.first
+            return seg?.endReason != nil
+        }
+        XCTAssertEqual(seg?.endReason, .error)
+        let handle = try await store.recording(id: id)
+        XCTAssertEqual(handle.manifest.chunks.map(\.sampleCount), [50], "the partial chunk is committed, not dropped")
     }
 
     func testOtherWriteError_stopsWithError() async throws {
@@ -276,8 +320,11 @@ final class RecordingWriterTests: XCTestCase {
         let (raw, rawHandle) = try await record(minimumFree: 0)
         XCTAssertEqual(raw.endReason, .diskFull, raw.failure ?? "")
         XCTAssertTrue(raw.failure?.contains("errno \(ENOSPC)") == true, raw.failure ?? "")
-        XCTAssertEqual(rawHandle.verify().filter { $0.kind != .unlistedChunk }, [])
-        _ = try ProjectStore.open(at: store.directory)
+        XCTAssertEqual(rawHandle.verify(), [], "the failed chunk is removed, not left unlisted")
+        XCTAssertEqual(raw.committedSamples, rawHandle.manifest.chunks.reduce(0) { $0 + $1.sampleCount }, "committed = listed")
+        // Closed by the writer, or (no room even for that) by the next open from the lock note.
+        let reopened = try await ProjectStore.open(at: store.directory).recording(id: rawHandle.id)
+        XCTAssertEqual(reopened.manifest.segments[0].endReason, .diskFull)
     }
 
     private static func hdiutil(_ args: [String]) -> Int32 {
@@ -297,6 +344,9 @@ final class RecordingWriterTests: XCTestCase {
     /// the writer drains; the manifest rewrite grows with every entry, so the budget is
     /// checked at the end: p95 of the last 100 commits ≤ 250 ms (brief 004, eng. decisions).
     func testSoak_3600Chunks_commitTimeAtTheEndStaysUnderBudget() async throws {
+        guard ProcessInfo.processInfo.environment["BCI_SOAK"] == "1" else {
+            throw XCTSkip("about 2 minutes of fsyncs; run with BCI_SOAK=1 (TEST_RUNNER_BCI_SOAK=1 via xcodebuild)")
+        }
         let (store, writer) = try await start("soak")
         let chunks = 3_600
         var k = 0
@@ -321,6 +371,26 @@ final class RecordingWriterTests: XCTestCase {
         XCTAssertEqual(handle.manifest.segments[0].endReason, .stopped)
     }
 
+    /// Always-on short soak: 200 chunks, and the per-commit time does not grow with the
+    /// manifest (median of the last 50 vs the first 50). No wall-clock budget, so no flake.
+    func testShortSoak_commitTimeDoesNotGrow() async throws {
+        let (_, writer) = try await start("short-soak")
+        var first: [Int64] = [], k = 0
+        while writer.status.committedChunks < 200 {
+            if first.isEmpty, writer.status.committedChunks >= 50 { first = Array(writer.status.recentCommitDurationsNanos.prefix(50)) }
+            if k < 200 * 125, writer.status.backlogChunks < 3 {
+                writer.submit(Self.block(from: k, count: 125)); k += 125
+            } else {
+                try await Task.sleep(for: .milliseconds(1))
+            }
+        }
+        let last = Array(writer.status.recentCommitDurationsNanos.suffix(50))
+        await writer.finish()
+        func median(_ v: [Int64]) -> Double { Double(v.sorted()[v.count / 2]) / 1e6 }
+        XCTAssertEqual(first.count, 50)
+        XCTAssertLessThanOrEqual(median(last), 2 * median(first) + 10, "first \(median(first)) ms, last \(median(last)) ms")
+    }
+
     // MARK: Crash recovery
 
     func testOpenLeavesALiveWritersSegmentAlone() async throws {
@@ -335,6 +405,58 @@ final class RecordingWriterTests: XCTestCase {
         await writer.finish()
         let after = try await ProjectStore.open(at: store.directory).recording(id: writer.recordingID)
         XCTAssertEqual(after.manifest.segments[0].endReason, .stopped)
+    }
+
+    func testOpenRacingAFinishingWriter_neverOverwritesItsManifest() async throws {
+        let (store, writer) = try await start()
+        writer.submit(Self.block(from: 0, count: 250))
+        try await waitFor("two chunks") { writer.status.committedChunks == 2 }
+        // Between open's unlocked first look (segment open, 2 chunks) and its lock attempt,
+        // the writer commits a third chunk, finishes and drops its lock.
+        let report: [String] = await withCheckedContinuation { done in
+            DispatchQueue.global().async {
+                let report = ProjectStore.closeUnterminatedSegments(in: store.directory, afterPrecheck: {
+                    let finished = DispatchSemaphore(value: 0)
+                    Task.detached {
+                        writer.submit(Self.block(from: 250, count: 125))
+                        await writer.finish()
+                        finished.signal()
+                    }
+                    finished.wait()
+                })
+                done.resume(returning: report)
+            }
+        }
+        XCTAssertEqual(report, [])
+        let handle = try await store.recording(id: writer.recordingID)
+        XCTAssertEqual(handle.manifest.chunks.count, 3, "the chunk committed after the first look is kept")
+        XCTAssertEqual(handle.manifest.segments[0].endReason, .stopped)
+        XCTAssertEqual(handle.manifest.segments[0].detectedGaps, [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: handle.directory.appendingPathComponent(".writer.lock").path))
+    }
+
+    func testHostileManifestWithOverflowingSampleRange_isRefusedNotTrapped() async throws {
+        let url = scratch.appendingPathComponent("hostile.bciproj")
+        let store = try ProjectStore.create(at: url, name: "h")
+        var m = manifest()
+        m.segments = [.init(index: 0, sessionID: nil, runID: "r", startedAtWall: Date(), startedAtMonotonicNanos: 0,
+                            endedAtMonotonicNanos: nil, endReason: nil, detectedGaps: [])]
+        let writer = try await store.createRecording(m)
+        try await writer.append(ChunkPayload(samples: [1, 2], rowCount: 2, sampleCount: 1, segment: 0, firstSampleIndex: 0,
+                                             drainedAtMonotonicNanos: 1))
+        var crafted = await writer.manifest
+        crafted.channels = [ChannelSpec(id: "ch01", label: "a", kind: "eeg", unit: "uV", sourceRow: 1)]
+        crafted.chunks[0].firstSampleIndex = Int.max
+        let file = url.appendingPathComponent("recordings/\(m.recordingID.uuidString)/recording.json")
+        try ContractJSON.encoder().encode(crafted).write(to: file)
+
+        XCTAssertThrowsError(try RecordingHandle(directory: file.deletingLastPathComponent())) { error in
+            XCTAssertTrue("\(error)".contains("overflows"), "\(error)")
+        }
+        let reopened = try ProjectStore.open(at: url)      // must not trap
+        let closed = await reopened.closedSegments
+        XCTAssertEqual(closed, [])
+        XCTAssertEqual(try Data(contentsOf: file), try ContractJSON.encoder().encode(crafted), "left exactly as found")
     }
 
     private func runRecordingHelper(chunks: Int, crashAt: (CommitHook.Point, Int)?) throws -> URL {

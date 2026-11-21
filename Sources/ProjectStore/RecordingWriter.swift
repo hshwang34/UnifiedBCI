@@ -90,15 +90,26 @@ public final class RecordingWriter: Sendable {
         self.shared = shared
         let (segments, counterRow) = (manifest.segments, manifest.timing.sequenceCounterRow)
         consumer = Task.detached(priority: .userInitiated) {
-            defer { lock.release() }
-            var assembler = Assembler(writer: writer, segments: segments, counterRow: counterRow, options: options, shared: shared)
+            var assembler = Assembler(writer: writer, segments: segments, counterRow: counterRow, options: options, shared: shared, lock: lock)
             for await command in stream {
                 if await !assembler.handle(command) { break }
             }
+            // A segment the writer could not close keeps the lock file and its end note.
+            lock.release(keepFile: assembler.leftOpen)
         }
     }
 
-    deinit { commands.finish() }
+    /// Released without `finish`: the consumer still commits everything accepted and closes
+    /// the segment `error`, so nothing buffered is dropped silently.
+    deinit {
+        shared.state.withLock { s in
+            guard s.accepting else { return }
+            s.accepting = false
+            s.status.failure = "The recording writer was released without finish()"
+            commands.yield(.finish(.error, endedAt: HostMonotonicClock.nowNanos()))
+        }
+        commands.finish()
+    }
 
     public var status: Status { shared.state.withLock { $0.status } }
 
@@ -185,6 +196,11 @@ private struct Assembler {
     let counterRow: Int?
     let options: RecordingWriter.Options
     let shared: WriterShared
+    let lock: RecordingLock
+    /// True when the last segment could not be closed on disk (see `close`).
+    var leftOpen = false
+    /// Samples counted against an already-closed segment, not yet in a manifest rewrite.
+    var unsavedAttribution = false
     var rows: [[Double]] = []
     var drainedAt: [Int64] = []            // per buffered sample: its block's drain time
     var committedInSegment = 0             // also the segment index of the first buffered sample
@@ -193,8 +209,10 @@ private struct Assembler {
     var segmentOpen = true
     var attributedLoss = 0
 
-    init(writer: ChunkWriter, segments: [RecordingManifest.StreamSegment], counterRow: Int?, options: RecordingWriter.Options, shared: WriterShared) {
-        self.writer = writer; self.segments = segments; self.counterRow = counterRow; self.options = options; self.shared = shared
+    init(writer: ChunkWriter, segments: [RecordingManifest.StreamSegment], counterRow: Int?, options: RecordingWriter.Options,
+         shared: WriterShared, lock: RecordingLock) {
+        self.writer = writer; self.segments = segments; self.counterRow = counterRow; self.options = options
+        self.shared = shared; self.lock = lock
     }
 
     private var buffered: Int { drainedAt.count }
@@ -205,7 +223,15 @@ private struct Assembler {
         case .block(let block):
             guard segmentOpen, rows.isEmpty || rows.count == block.rowCount else {
                 // No open segment, or a different board shape: received, never committed.
-                shared.state.withLock { $0.pendingSamples -= block.sampleCount; $0.status.uncommittedSamples += block.sampleCount }
+                let n = block.sampleCount
+                shared.state.withLock { $0.pendingSamples -= n; $0.status.uncommittedSamples += n }
+                if !segmentOpen {
+                    // Drained after its segment closed (before `beginSegment`): it belongs to
+                    // that segment's stream, so it is counted there, on the next rewrite.
+                    segments[segments.count - 1].uncommittedSampleCount = (segments[segments.count - 1].uncommittedSampleCount ?? 0) + n
+                    attributedLoss += n
+                    unsavedAttribution = true
+                }
                 return true
             }
             append(block)
@@ -224,7 +250,12 @@ private struct Assembler {
             committedInSegment = 0; acceptedInSegment = 0; segmentOpen = true
             return true
         case .finish(let reason, let endedAt):
-            if segmentOpen { _ = await flushAndClose(reason, endedAt: endedAt, gap: nil, final: true) }
+            if segmentOpen {
+                _ = await flushAndClose(reason, endedAt: endedAt, gap: nil, final: true)
+            } else {
+                shared.state.withLock { $0.status.endReason = $0.status.endReason ?? reason }
+                if unsavedAttribution { _ = await save() }
+            }
             return false
         }
     }
@@ -245,7 +276,11 @@ private struct Assembler {
     /// Commits the first `n` buffered samples as one chunk; on failure stops the recording.
     private mutating func commit(_ n: Int) async -> Bool {
         let started = HostMonotonicClock.nowNanos()
-        if let free = options.freeBytes(writer.directory), free < options.minimumFreeBytes {
+        guard let free = options.freeBytes(writer.directory) else {
+            // Fail safe: a guard that cannot see the disk is not a pass.
+            return await stop(.error, "Free space on the recording volume could not be read")
+        }
+        if free < options.minimumFreeBytes {
             return await stop(.diskFull, "Free space \(free / 1_048_576) MB is under \(options.minimumFreeBytes / 1_048_576) MB")
         }
         let end = committedInSegment + n
@@ -263,9 +298,9 @@ private struct Assembler {
         do {
             try await writer.append(payload, segments: next)
         } catch {
-            // The entry may already be in the writer's manifest (the rewrite failed after the
-            // chunk was renamed); the segment close rewrite then lists it, so count it committed.
-            if await writer.manifest.chunks.count > listedBefore { consumed(n, ready: next, later: later, started: started) }
+            // The disk manifest is the truth: the chunk counts as committed only if it lists
+            // it. Anything it does not list (temp file, renamed chunk) is removed, freeing space.
+            if await writer.reconcileWithDisk() > listedBefore { consumed(n, ready: next, later: later, started: started) }
             return await stop(Self.isDiskFull(error) ? .diskFull : .error, "\(error)")
         }
         consumed(n, ready: next, later: later, started: started)
@@ -329,18 +364,32 @@ private struct Assembler {
             seg.detectedGaps.append(.init(afterSampleIndex: committedInSegment - 1, evidence: gap, estimatedMissingSamples: nil, ambiguous: false))
         }
         let lost = shared.state.withLock { $0.status.uncommittedSamples } - attributedLoss
-        if lost > 0 { seg.uncommittedSampleCount = lost; attributedLoss += lost }
+        if lost > 0 { seg.uncommittedSampleCount = (seg.uncommittedSampleCount ?? 0) + lost; attributedLoss += lost }
         segments[segments.count - 1] = seg
         pendingGaps = []
         segmentOpen = false
-        do {
-            try await writer.updateSegments(segments)
-            return true
-        } catch {
-            // Left open on disk; the next `ProjectStore.open` closes it as process_terminated.
-            shared.state.withLock { $0.status.failure = ($0.status.failure.map { $0 + "; " } ?? "") + "segment \(seg.index) not closed: \(error)" }
-            return false
+        if await save() { return true }
+        // Still open on disk. Leave the reason in the lock file, so the next
+        // `ProjectStore.open` closes it with this reason rather than process_terminated.
+        leftOpen = true
+        lock.note(reason, uncommitted: seg.uncommittedSampleCount ?? 0)
+        return false
+    }
+
+    /// Rewrites the segment list; on failure frees what the disk manifest does not list and
+    /// retries once (a full disk usually has room again once the failed chunk is gone).
+    private mutating func save() async -> Bool {
+        for attempt in 0..<2 {
+            do {
+                try await writer.updateSegments(segments)
+                unsavedAttribution = false
+                return true
+            } catch {
+                if attempt == 0 { _ = await writer.reconcileWithDisk(); continue }
+                shared.state.withLock { $0.status.failure = ($0.status.failure.map { $0 + "; " } ?? "") + "segment \(segments.last!.index) not closed: \(error)" }
+            }
         }
+        return false
     }
 
     static func isDiskFull(_ error: Error) -> Bool {

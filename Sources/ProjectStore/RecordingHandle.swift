@@ -27,8 +27,8 @@ public struct RecordingHandle: Sendable {
         "chunks/" + String(format: "%06d", index) + ".f64"
     }
 
-    /// Structural checks a decoder cannot make: every chunk's dimensions are positive and
-    /// their byte size fits an `Int`, its `fileName` is exactly the canonical name for its
+    /// Structural checks a decoder cannot make: every chunk's dimensions are positive, its
+    /// sample range end and byte size fit an `Int`, its `fileName` is exactly the canonical name for its
     /// index, indices are unique, and every channel's `sourceRow` is a row of every chunk.
     static func validate(_ manifest: RecordingManifest) throws {
         var seen = Set<Int>()
@@ -41,6 +41,10 @@ public struct RecordingHandle: Sendable {
             }
             guard entry.rowCount > 0, entry.sampleCount > 0, entry.firstSampleIndex >= 0, entry.segment >= 0 else {
                 throw ProjectStoreError.invalidManifest("chunk \(entry.index) has non-positive dimensions")
+            }
+            // Readers compute the segment end and last sample index from these two.
+            guard !entry.firstSampleIndex.addingReportingOverflow(entry.sampleCount).overflow else {
+                throw ProjectStoreError.invalidManifest("chunk \(entry.index): firstSampleIndex + sampleCount overflows")
             }
             _ = try expectedByteCount(entry)
             for channel in manifest.channels where !(0..<entry.rowCount).contains(channel.sourceRow) {

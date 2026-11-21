@@ -137,7 +137,28 @@ public actor ChunkWriter {
     /// rewrites the manifest atomically. Chunks already committed are untouched.
     public func updateSegments(_ segments: [RecordingManifest.StreamSegment]) throws {
         manifest.segments = segments
+        try fault?.check(.afterManifestWrite, -1)   // index -1: a segment-only rewrite
         try writeManifest()
+    }
+
+    /// After a failed write: makes the in-memory chunk list exactly what `recording.json` on
+    /// disk lists, and deletes this recording's temp files and any chunk file the disk
+    /// manifest does not list (this writer's own failed attempt), so a full disk gets that
+    /// space back and `verify` finds nothing unlisted. Returns the listed chunk count.
+    func reconcileWithDisk() -> Int {
+        let url = directory.appendingPathComponent(ProjectStore.recordingFileName)
+        if let data = FileManager.default.contents(atPath: url.path),
+           let disk = try? ContractJSON.decoder().decode(RecordingManifest.self, from: data) {
+            manifest.chunks = disk.chunks
+        }
+        let listed = Set(manifest.chunks.map { ($0.fileName as NSString).lastPathComponent })
+        let chunkDir = directory.appendingPathComponent("chunks")
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: chunkDir.path)) ?? []
+        where name.hasPrefix(AtomicFile.tempPrefix) || (name.hasSuffix(".f64") && !listed.contains(name)) {
+            unlink(chunkDir.appendingPathComponent(name).path)
+        }
+        unlink(AtomicFile.tempURL(for: url).path)
+        return manifest.chunks.count
     }
 
     public func appendEvent(_ event: EventRecord) throws {
