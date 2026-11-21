@@ -200,11 +200,79 @@ def test_missing_session_ids_report_unknown_session_not_same_session():
     assert pipeline.fit_evaluate(segs, seed=19)["split_policy"]["evidence"] == "unknown-session"
 
 
-def test_duplicate_run_ids_are_rejected():
+# --- brief 005: multi-segment runs, aborted trials, detected gaps -------------------------------
+
+
+def split_run(seg: pipeline.Segment, at: int) -> list[pipeline.Segment]:
+    """One run as two segments (a reconnect at sample `at`): same run id, own sample indices."""
+    first = [e for e in seg.events if e[0] < at]
+    second = [(e[0] - at, e[1], e[2]) for e in seg.events if e[0] >= at]
+    return [pipeline.Segment(seg.data[:, :at], seg.sfreq, first, seg.run_id, seg.session_id),
+            pipeline.Segment(seg.data[:, at:], seg.sfreq, second, seg.run_id, seg.session_id)]
+
+
+def test_a_run_spanning_two_segments_evaluates_grouped_by_run_and_filtered_per_segment():
+    segs = small_runs(n_runs=4, trials_per_run=8, seed=20)
+    for s in segs:
+        s.session_id = "S1"
+    at = segs[1].events[4][0] - int(0.5 * SFREQ)      # between trials 4 and 5 of run01
+    multi = [segs[0], *split_run(segs[1], at), *segs[2:]]
+    out = pipeline.fit_evaluate(multi, seed=20)
+    m = out["split_manifest"]
+    assert sorted(m["holdout_runs"] + m["training_runs"]) == ["run00", "run01", "run02", "run03"]
+    assert out["split_policy"]["grouping"] == "run" and out["split_policy"]["evidence"] == "same-session"
+    # The second segment starts from zero filter state: its first trial's window equals one
+    # cut from that segment filtered alone, not from the run filtered across the break.
+    sos = pipeline.BandpassSpec().design(SFREQ)
+    warm = pipeline.settling_samples(sos)
+    ep = pipeline.epoch_segments(multi, sos, (0.5, 2.0), warm)
+    tid = multi[2].events[0][2]
+    start = multi[2].events[0][0] + int(0.5 * SFREQ)
+    alone = pipeline.filter_segment(sos, multi[2].data)[:, start:start + int(2.0 * SFREQ)]
+    np.testing.assert_array_equal(ep.X[list(ep.trial_ids).index(tid)], alone)
+    assert set(ep.groups.tolist()) == {"run00", "run01", "run02", "run03"}
+
+
+def test_a_run_whose_segments_disagree_on_session_is_refused():
     segs = small_runs(n_runs=4, trials_per_run=6, seed=20)
-    segs[1].run_id = segs[0].run_id
-    with pytest.raises(ValueError, match="duplicate run ids"):
-        pipeline.fit_evaluate(segs, seed=20)
+    for s in segs:
+        s.session_id = "S1"
+    parts = split_run(segs[1], segs[1].events[3][0] - 10)
+    parts[1].session_id = "S2"
+    with pytest.raises(ValueError, match="span more than one session"):
+        pipeline.fit_evaluate([segs[0], *parts, *segs[2:]], seed=20)
+
+
+def test_aborted_trials_are_excluded_and_listed():
+    segs = small_runs(n_runs=4, trials_per_run=8, seed=21)
+    aborted = frozenset({segs[0].events[2][2], segs[3].events[5][2]})
+    for s in segs:
+        s.aborted_trials = aborted
+    out = pipeline.fit_evaluate(segs, seed=21)
+    listed = [e for e in out["exclusions"] if e["reason"] == "trial_aborted"]
+    assert sorted(e["trial_id"] for e in listed) == sorted(aborted)
+    kept = out["split_manifest"]["holdout_trials"]
+    assert not set(kept) & aborted
+
+
+def test_window_spanning_a_detected_gap_or_its_filter_transient_is_excluded():
+    segs = small_runs(n_runs=4, trials_per_run=8, seed=22)
+    sos = pipeline.BandpassSpec().design(SFREQ)
+    warm = pipeline.settling_samples(sos)
+    offset, length = int(0.5 * SFREQ), int(2.0 * SFREQ)
+    ev = segs[0].events
+    inside = ev[1][0] + offset + 10                   # inside trial 2's window
+    before = ev[3][0] + offset - warm // 2 - 1        # in the warm-up before trial 4's window
+    clear = ev[5][0] + offset - warm - 1              # transient over before trial 6's window starts
+    segs[0].gaps = ((inside, "sequence_skip"), (before, "stale_half"), (clear, "invalid_counter"))
+    ep = pipeline.epoch_segments(segs, sos, (0.5, 2.0), warm)
+    hits = {e["trial_id"]: e for e in ep.exclusions if e["reason"] == "window_spans_detected_gap"}
+    assert set(hits) == {ev[1][2], ev[3][2]}
+    assert hits[ev[1][2]]["gap_after_sample"] == inside and hits[ev[1][2]]["gap_evidence"] == "sequence_skip"
+    assert ev[5][2] in set(ep.trial_ids.tolist())
+    # Gap right after the window's last sample: the window holds no sample past it.
+    segs[0].gaps = ((ev[1][0] + offset + length - 1, "sequence_skip"),)
+    assert ev[1][2] in set(pipeline.epoch_segments(segs, sos, (0.5, 2.0), warm).trial_ids.tolist())
 
 
 def test_manifest_schema_errors_are_value_errors_with_clear_messages():

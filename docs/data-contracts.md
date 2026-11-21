@@ -166,7 +166,9 @@ Three clocks, never mixed:
   "reset_on_segment_start"`), and the worker applies the same reset when replaying: the
   band-pass runs once over the whole segment from zero state, and trials whose window
   starts inside the filter's warm-up are excluded and listed. Nothing is ever concatenated
-  across segments, and no values are interpolated into raw data.
+  across segments, and no values are interpolated into raw data. A run may span several
+  segments (a reconnect mid-run, decision #35): each segment is still filtered on its own,
+  trials still group by run for every split, and a run's segments must share one session.
 
 ## Protocols and run plans
 
@@ -287,7 +289,12 @@ client passes the worker's `result` bytes through without re-encoding):
 - `exclusions` — trials dropped and why; empty is a valid answer. Reasons:
   `window_starts_before_filter_warmup` (the window begins inside the band-pass warm-up,
   derived from the filter's slowest pole, so its features would carry a start transient
-  the online path never sees), `window_starts_before_segment`, `window_exceeds_segment`.
+  the online path never sees), `window_starts_before_segment`, `window_exceeds_segment`,
+  `trial_aborted` (a `trial_abort` event names the trial; decision #34), and
+  `window_spans_detected_gap` (a `sequence_skip`, `stale_half`, `invalid_counter` or
+  `overflow_suspected` gap lies inside the window or inside the filter warm-up before it,
+  so the band-passed window would carry the discontinuity's transient; the entry adds
+  `gap_after_sample` and `gap_evidence`).
 - `models.<name>` — per-fold grouped CV balanced accuracy, and a `holdout` block with
   balanced accuracy, accuracy, confusion matrix, `n_test_trials`, `n_test_runs`, a 95 %
   Clopper-Pearson interval over held-out **trials**, `per_run` scores, and a run-level

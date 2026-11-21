@@ -48,13 +48,18 @@ Check = Callable[[], None]
 class Segment:
     """One contiguous stream segment: `data` is (n_channels, n_samples) float64 at
     `sfreq`; `events` are `(sample_index, label, trial_id)` cue onsets inside it.
-    `run_id` is the grouping unit for splits; `session_id` decides the evidence label."""
+    `run_id` is the grouping unit for splits; `session_id` decides the evidence label.
+    A run may span several segments (a reconnect mid-run, decision #35); each is still
+    filtered on its own. `gaps` are detected data gaps inside the segment, as
+    `(after_sample_index, evidence)`; `aborted_trials` are trial ids the protocol aborted."""
 
     data: np.ndarray
     sfreq: float
     events: list[tuple[int, int, str]]
     run_id: str
     session_id: str | None = None
+    gaps: tuple[tuple[int, str], ...] = ()
+    aborted_trials: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         self.data = np.asarray(self.data, dtype=np.float64)
@@ -122,8 +127,12 @@ def epoch_segments(
     """Filter each segment continuously, then cut one window per event.
 
     `window` is `(offset_s, length_s)` relative to the cue sample. A trial is excluded
-    (and listed with a reason) when its window starts before `warmup_samples` into the
-    segment, before the segment itself, or runs past its end. Nothing is padded."""
+    (and listed with a reason) when the protocol aborted it (`trial_aborted`, decision
+    #34), when its window starts before `warmup_samples` into the segment, before the
+    segment itself, or runs past its end, or when a detected data gap lies inside the
+    window or inside the filter warm-up before it (`window_spans_detected_gap`): the
+    band-pass ran across the discontinuity, so the window would carry its transient.
+    Nothing is padded or interpolated."""
     sfreq = segments[0].sfreq
     offset_s, length_s = window
     offset = int(round(offset_s * sfreq))
@@ -146,18 +155,29 @@ def epoch_segments(
         for sample_index, label, trial_id in seg.events:
             start = int(sample_index) + offset
             stop = start + length
-            reason = None
-            if start < 0:
+            reason, gap = None, None
+            if str(trial_id) in seg.aborted_trials:
+                reason = "trial_aborted"
+            elif start < 0:
                 reason = "window_starts_before_segment"
             elif start < warmup_samples:
                 reason = "window_starts_before_filter_warmup"
             elif stop > n_samples:
                 reason = "window_exceeds_segment"
+            else:
+                # A gap after sample a affects sample a + 1 onwards (the discontinuity, or the
+                # mixed/unknown sample itself); its filter transient lasts `warmup_samples`.
+                gap = next((g for g in seg.gaps if start - warmup_samples < g[0] + 1 < stop), None)
+                if gap is not None:
+                    reason = "window_spans_detected_gap"
             if reason is not None:
-                exclusions.append({
+                exclusion = {
                     "trial_id": str(trial_id), "run_id": seg.run_id, "label": int(label),
                     "reason": reason, "window_start_sample": start, "window_stop_sample": stop,
-                })
+                }
+                if gap is not None:
+                    exclusion["gap_after_sample"], exclusion["gap_evidence"] = gap
+                exclusions.append(exclusion)
                 continue
             X.append(filtered[:, start:stop])
             y.append(int(label))
@@ -534,7 +554,7 @@ def holdout_report(y_true, y_pred, groups) -> dict[str, Any]:
 def _evidence(segments: Sequence[Segment], manifest: dict[str, Any]) -> str:
     """`same-session` and `cross-session` are claims; a missing session id on any run
     makes the claim unsupportable, so it is reported as `unknown-session`."""
-    session_of = {s.run_id: s.session_id for s in segments}
+    session_of = {s.run_id: s.session_id for s in segments}   # one session per run (fit_evaluate checks)
     if any(sid is None for sid in session_of.values()):
         return "unknown-session"
     holdout_sessions = {session_of[r] for r in manifest["holdout_runs"]}
@@ -565,10 +585,14 @@ def fit_evaluate(
     fitted arrays (`fitted_arrays`) for the caller to write as `.npz`."""
     if not segments:
         raise ValueError("no segments")
-    run_ids = [s.run_id for s in segments]
-    duplicates = sorted({r for r in run_ids if run_ids.count(r) > 1})
-    if duplicates:
-        raise ValueError(f"duplicate run ids across segments: {duplicates}; a run is one segment")
+    # A run may span several segments (reconnects); trials still group by run, so a run's
+    # segments must agree on its session, or the evidence label would be a guess.
+    sessions: dict[str, set[str | None]] = {}
+    for s in segments:
+        sessions.setdefault(s.run_id, set()).add(s.session_id)
+    mixed = sorted(r for r, ids in sessions.items() if len(ids) > 1)
+    if mixed:
+        raise ValueError(f"run ids span more than one session: {mixed}")
     sfreq = segments[0].sfreq
     sos = bandpass.design(sfreq)
     warmup_samples = settling_samples(sos) if warmup_seconds is None else int(round(warmup_seconds * sfreq))
