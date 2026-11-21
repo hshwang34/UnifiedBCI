@@ -20,6 +20,7 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
              "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"):
     os.environ.setdefault(_var, WORKER_THREADS)
 
+import base64  # noqa: E402
 import hashlib  # noqa: E402
 import io  # noqa: E402
 import json  # noqa: E402
@@ -29,14 +30,14 @@ import sys  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
 import traceback  # noqa: E402
-from dataclasses import dataclass  # noqa: E402
+from dataclasses import dataclass, field  # noqa: E402
 from importlib import metadata  # noqa: E402
 from typing import Any, Callable, Iterable, TextIO  # noqa: E402
 
 import numpy as np  # noqa: E402
 import threadpoolctl  # noqa: E402
 
-from . import pipeline, project_io, quality, signal_window  # noqa: E402
+from . import pipeline, project_io, quality, signal_window, streaming  # noqa: E402
 from .protocol import (  # noqa: E402
     CONTROL_METHODS,
     PROTOCOL_VERSION,
@@ -59,6 +60,8 @@ class Context:
 
     emit: Callable[[str, Any], None]
     check_cancelled: Callable[[], None]
+    # Open live inference sessions of this server (`live_open`), by session id.
+    sessions: dict[str, Any] = field(default_factory=dict)
 
 
 Handler = Callable[[Request, Context], Any]
@@ -367,7 +370,252 @@ def handle_signal_window(req: Request, ctx: Context) -> dict[str, Any]:
     return {"recording_id": recording_id, "segment": index, "run_id": seg.run_id, **out}
 
 
+# --- frozen models, replay and live inference (brief 006) --------------------------------------
+
+MAX_LIVE_SESSIONS = 2
+# One drained chunk is ~6 samples (50 ms at 125 Hz); 512 bounds a push at ~4 s of data, 64 KB
+# for 16 channels, so in-band samples stay small.
+MAX_PUSH_SAMPLES = 512
+MAX_PUSH_EVENTS = 64
+MAX_OPEN_CUES = 64          # cues a session holds at once (eligibility spans + pending trial windows)
+# A cue may be announced ahead of the samples, by at most one window plus this margin.
+CUE_AHEAD_MARGIN_SAMPLES = MAX_PUSH_SAMPLES
+# An imagery span longer than this (in samples, ~65 s at 125 Hz) is not a cue.
+MAX_CUE_SPAN_SAMPLES = 8192
+
+
+def _bad(req: Request, message: str) -> ProtocolError:
+    return ProtocolError("bad_request", message, req.id)
+
+
+def _int_param(req: Request, p: dict[str, Any], key: str, default: int | None = None, minimum: int = 0) -> int:
+    value = p.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise _bad(req, f"{key} must be an integer >= {minimum}, got {value!r}")
+    return value
+
+
+def _load_model(req: Request, p: dict[str, Any], n_channels: int | None = None) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    """params.model = {arrays_path, sha256 (optional at freeze time), which}."""
+    m = p.get("model")
+    if not isinstance(m, dict) or not isinstance(m.get("arrays_path"), str):
+        raise _bad(req, "model must be an object with a string arrays_path")
+    sha = m.get("sha256")
+    if sha is not None and not isinstance(sha, str):
+        raise _bad(req, "model.sha256 must be a string")
+    try:
+        return project_io.load_model_arrays(m["arrays_path"], sha, str(m.get("which", "reference")), n_channels)
+    except pipeline.ModelError as exc:
+        raise ProtocolError("invalid_model", str(exc), req.id) from exc
+
+
+def _check_stream(req: Request, ids: Any, rate: Any, expected_ids: Any, expected_rate: Any) -> None:
+    """`channel_mismatch` naming the difference: never reordered or resampled."""
+    for name, v in (("channel_ids", ids), ("expected_channel_ids", expected_ids)):
+        if not isinstance(v, list) or not all(isinstance(c, str) for c in v):
+            raise _bad(req, f"{name} must be a list of strings")
+    try:
+        rate, expected_rate = float(rate), float(expected_rate)
+    except (TypeError, ValueError) as exc:
+        raise _bad(req, f"sample rates must be numbers: {exc}") from exc
+    if ids != expected_ids:
+        if sorted(ids) == sorted(expected_ids):
+            detail = f"same channels in a different order: {ids} vs the model's {expected_ids}"
+        else:
+            missing, extra = sorted(set(expected_ids) - set(ids)), sorted(set(ids) - set(expected_ids))
+            detail = f"missing {missing}, unexpected {extra}" if missing or extra else f"{ids} vs the model's {expected_ids}"
+        raise ProtocolError("channel_mismatch", f"channels differ from the model: {detail}", req.id)
+    if rate != expected_rate:
+        raise ProtocolError("channel_mismatch", f"sample rate {rate:g} Hz differs from the model's {expected_rate:g} Hz", req.id)
+
+
+def _window_spec(req: Request, p: dict[str, Any], sfreq: float, sos: np.ndarray) -> streaming.WindowSpec:
+    w = p.get("window")
+    if not isinstance(w, dict):
+        raise _bad(req, "window must be an object {offset_s, length_s}")
+    warmup = p.get("warmup_samples")
+    if warmup is not None:
+        warmup = _int_param(req, p, "warmup_samples")
+    try:
+        return streaming.WindowSpec.make(sfreq, (float(w["offset_s"]), float(w["length_s"])),
+                                         _int_param(req, p, "hop_samples", streaming.DEFAULT_HOP_SAMPLES, 1), warmup, sos)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _bad(req, f"bad window: {exc}") from exc
+
+
+def handle_validate_model(req: Request, ctx: Context) -> dict[str, Any]:
+    """Validates a fitted-arrays file before it is frozen. params: model {arrays_path,
+    sha256?, which}, optional n_channels. result: the model summary (kind, channels,
+    features, warm-up, classes, sha256). Refusals use error code `invalid_model`."""
+    p = req.params
+    n = p.get("n_channels")
+    _, summary = _load_model(req, p, None if n is None else _int_param(req, p, "n_channels", minimum=1))
+    return summary
+
+
+def handle_replay_recording(req: Request, ctx: Context) -> dict[str, Any]:
+    """Replays one recording through a frozen model, chunk by chunk, beside the offline
+    reference (see the module docstring). Writes predictions to the app's staging path."""
+    p = req.params
+    try:
+        project_dir, recording_id = str(p["project_dir"]), str(p["recording_id"])
+        predictions_path = str(p["predictions_path"])
+        labels_p = p.get("labels", PROJECT_DEFAULTS["labels"])
+        left, right = str(labels_p["left"]), str(labels_p["right"])
+        threshold = float(p.get("abstain_threshold", streaming.DEFAULT_ABSTAIN_THRESHOLD))
+        cue_length_s = p.get("cue_length_s")
+        cue_length_s = None if cue_length_s is None else float(cue_length_s)
+        chunkings = list(p.get("chunkings", streaming.DEFAULT_CHUNKINGS))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _bad(req, f"bad parameter: {exc}") from exc
+    seed = _int_param(req, p, "seed", 0)
+    ctx.emit("progress", {"stage": "loading"})
+    try:
+        rec = project_io.open_recording(project_dir, recording_id)
+    except project_io.IntegrityError as exc:
+        raise ProtocolError("integrity", str(exc), req.id) from exc
+    except project_io.ProjectError as exc:
+        raise _bad(req, str(exc)) from exc
+    _check_stream(req, rec.channel_ids, rec.sfreq, p.get("expected_channel_ids"), p.get("expected_sample_rate_hz"))
+    arrays, summary = _load_model(req, p, len(rec.channel_ids))
+    spec = _window_spec(req, p, rec.sfreq, arrays["bandpass_sos"])
+    try:
+        for c in chunkings:
+            streaming.resolve_chunking(c, seed)
+        segments = project_io.load_segments(rec, {left: 0, right: 1}, notes={})
+        ends = project_io.cue_end_samples(rec)
+    except ValueError as exc:
+        raise _bad(req, str(exc)) from exc
+    except project_io.IntegrityError as exc:
+        raise ProtocolError("integrity", str(exc), req.id) from exc
+    except project_io.ProjectError as exc:
+        raise _bad(req, str(exc)) from exc
+    if not segments:
+        raise _bad(req, f"recording {recording_id} has no segments")
+    fallback = None if cue_length_s is None else int(round(cue_length_s * rec.sfreq))
+    replayed = []
+    for seg in segments:
+        cues = []
+        for sample, _, trial_id in seg.events:
+            end = ends.get(trial_id)
+            end_sample = end[1] if end is not None and end[0] == seg.segment_index else (
+                None if fallback is None else sample + fallback)
+            cues.append(streaming.Cue(sample, trial_id, end_sample))
+        replayed.append((seg.segment_index, seg.data, seg.gaps, cues))
+    ctx.emit("progress", {"stage": "replay", "chunkings": len(chunkings)})
+    report, streamed, reference = streaming.replay(arrays, spec, replayed, chunkings, seed, threshold, ctx.check_cancelled)
+    offline = {r.key: r for r in reference}
+    with open(predictions_path, "w", encoding="utf-8") as f:
+        for pred in streamed:
+            ref = offline.get(pred.key)
+            line = {**pred.to_json(), "offline": None if ref is None else {"validity": ref.validity, "score": ref.score}}
+            f.write(json.dumps(line, separators=(",", ":"), allow_nan=False) + "\n")
+    report.update({"model": summary, "predictions_file": predictions_path, "n_predictions": len(streamed),
+                   "recording_id": rec.recording_id,
+                   "window": {"offset_samples": spec.offset, "length_samples": spec.length,
+                              "hop_samples": spec.hop, "warmup_samples": spec.warmup}})
+    return report
+
+
+def handle_live_open(req: Request, ctx: Context) -> dict[str, Any]:
+    """Opens a live inference session. params: model {arrays_path, sha256, which},
+    channel_ids / sample_rate_hz (the connected stream), expected_channel_ids /
+    expected_sample_rate_hz (the model's), window {offset_s, length_s}, optional
+    warmup_samples, hop_samples. result: {session, model, window}."""
+    p = req.params
+    if len(ctx.sessions) >= MAX_LIVE_SESSIONS:
+        raise _bad(req, f"at most {MAX_LIVE_SESSIONS} live sessions may be open")
+    _check_stream(req, p.get("channel_ids"), p.get("sample_rate_hz"), p.get("expected_channel_ids"), p.get("expected_sample_rate_hz"))
+    n_channels = len(p["channel_ids"])
+    arrays, summary = _load_model(req, p, n_channels)
+    spec = _window_spec(req, p, float(p["sample_rate_hz"]), arrays["bandpass_sos"])
+    session = f"live-{len(ctx.sessions) + 1}-{os.urandom(4).hex()}"
+    ctx.sessions[session] = streaming.StreamingPredictor(arrays, n_channels, spec)
+    return {"session": session, "model": summary,
+            "window": {"offset_samples": spec.offset, "length_samples": spec.length,
+                       "hop_samples": spec.hop, "warmup_samples": spec.warmup}}
+
+
+def _session(req: Request, ctx: Context) -> tuple[str, streaming.StreamingPredictor]:
+    sid = req.params.get("session")
+    if not isinstance(sid, str) or sid not in ctx.sessions:
+        raise _bad(req, f"no open live session {sid!r}")
+    return sid, ctx.sessions[sid]
+
+
+def handle_live_push(req: Request, ctx: Context) -> dict[str, Any]:
+    """One drained chunk into a live session; see the module docstring of protocol.py."""
+    p = req.params
+    sid, predictor = _session(req, ctx)
+    t0 = time.monotonic_ns()
+    segment = _int_param(req, p, "segment")
+    first = _int_param(req, p, "first_sample")
+    n = _int_param(req, p, "n_samples", minimum=1)
+    if n > MAX_PUSH_SAMPLES:
+        raise _bad(req, f"n_samples {n} exceeds the per-push limit of {MAX_PUSH_SAMPLES}")
+    if predictor.segment is not None and segment < predictor.segment:
+        raise _bad(req, f"segment {segment} is before the session's current segment {predictor.segment}")
+    new_segment = segment != predictor.segment
+    expected_first = 0 if new_segment else predictor.n_samples
+    if first != expected_first:
+        raise _bad(req, f"push starts at sample {first} of segment {segment}, but the session expects {expected_first}")
+    expected_bytes = n * predictor.n_channels * 8
+    data = p.get("samples")
+    if not isinstance(data, str) or len(data) != 4 * ((expected_bytes + 2) // 3):
+        raise _bad(req, f"samples must be base64 of {predictor.n_channels} x {n} little-endian float64")
+    if any(not isinstance(p.get(k, []), list) or len(p.get(k, [])) > MAX_PUSH_EVENTS for k in ("gaps", "cues")):
+        raise _bad(req, f"gaps and cues must be lists of at most {MAX_PUSH_EVENTS} entries")
+    try:
+        raw = base64.b64decode(data, validate=True)
+        gaps = [(int(g["after_sample"]), str(g["evidence"])) for g in p.get("gaps", [])]
+        cues = [streaming.Cue(int(c["sample"]), str(c["trial_id"]), None if c.get("end_sample") is None else int(c["end_sample"]))
+                for c in p.get("cues", [])]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _bad(req, f"bad samples, gaps or cues: {exc}") from exc
+    if len(raw) != expected_bytes:
+        raise _bad(req, f"samples decode to {len(raw)} bytes, expected {expected_bytes}")
+    chunk = np.frombuffer(raw, dtype="<f8").reshape(predictor.n_channels, n)
+    if not np.all(np.isfinite(chunk)):
+        # NaN or inf would poison the band-pass state for the rest of the segment.
+        raise _bad(req, f"samples hold {int(np.sum(~np.isfinite(chunk)))} non-finite values")
+    latest = first + n - 1
+    ahead = predictor.spec.length + CUE_AHEAD_MARGIN_SAMPLES
+    for cue in cues:
+        if not 0 <= cue.sample <= latest + ahead:
+            raise _bad(req, f"cue {cue.trial_id!r} at sample {cue.sample} is outside 0..{latest + ahead}")
+        if cue.end_sample is not None and not cue.sample <= cue.end_sample <= cue.sample + MAX_CUE_SPAN_SAMPLES:
+            raise _bad(req, f"cue {cue.trial_id!r} ends at {cue.end_sample}, outside {cue.sample}..{cue.sample + MAX_CUE_SPAN_SAMPLES}")
+    held = 0 if new_segment else predictor.open_cues
+    if held + len(cues) > MAX_OPEN_CUES:
+        raise _bad(req, f"at most {MAX_OPEN_CUES} cues may be open in a session ({held} are)")
+    for after, _ in gaps:
+        if not first - 1 <= after < first + n:
+            raise _bad(req, f"gap after sample {after} is not in this push ({first}..{first + n - 1})")
+    # Everything is checked; only now does the session change.
+    out: list[streaming.Prediction] = []
+    if new_segment:
+        out += predictor.end_segment()
+        predictor.start_segment(segment)
+    for cue in cues:
+        out += predictor.add_cue(cue)
+    out += predictor.push(chunk, gaps)
+    return {"session": sid, "segment": segment, "n_samples": predictor.n_samples,
+            "predictions": [pred.to_json() for pred in out], "worker_compute_nanos": time.monotonic_ns() - t0}
+
+
+def handle_live_close(req: Request, ctx: Context) -> dict[str, Any]:
+    sid, predictor = _session(req, ctx)
+    pending = predictor.end_segment()
+    del ctx.sessions[sid]
+    return {"session": sid, "closed": True, "predictions": [pred.to_json() for pred in pending]}
+
+
 HANDLERS: dict[str, Handler] = {
+    "validate_model": handle_validate_model,
+    "replay_recording": handle_replay_recording,
+    "live_open": handle_live_open,
+    "live_push": handle_live_push,
+    "live_close": handle_live_close,
     "fit_evaluate_synthetic": handle_fit_evaluate_synthetic,
     "fit_evaluate_project": handle_fit_evaluate_project,
     "fit_evaluate_defaults": handle_fit_evaluate_defaults,
@@ -402,6 +650,7 @@ class Server:
         self._active_lock = threading.Lock()
         self._shutting_down = False
         self._pipe_broken = False
+        self._sessions: dict[str, Any] = {}     # live sessions, touched by the work thread only
 
     # -- output ---------------------------------------------------------------
 
@@ -513,7 +762,8 @@ class Server:
             if flag.is_set():
                 raise Cancelled()
 
-        ctx = Context(emit=lambda name, data: self.write(event(name, data, req.id)), check_cancelled=check_cancelled)
+        ctx = Context(emit=lambda name, data: self.write(event(name, data, req.id)), check_cancelled=check_cancelled,
+                      sessions=self._sessions)
         try:
             check_cancelled()
             result = HANDLERS[req.method](req, ctx)
