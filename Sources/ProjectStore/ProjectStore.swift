@@ -308,6 +308,7 @@ public actor ProjectStore {
     /// Saves `map` as a new immutable directory (temp → fsync → rename) and returns its id.
     @discardableResult
     public func saveChannelMap(_ map: ChannelMapRecord) throws -> UUID {
+        if let problem = map.problem(directoryID: map.mapID) { throw ProjectStoreError.invalidChannelMap(problem) }
         let parent = directory.appendingPathComponent("montages", isDirectory: true)
         try fm.createDirectory(at: parent, withIntermediateDirectories: true)
         let dir = parent.appendingPathComponent(map.mapID.uuidString, isDirectory: true)
@@ -325,14 +326,20 @@ public actor ProjectStore {
         return map.mapID
     }
 
-    /// Every readable saved map, newest first; an unreadable one is skipped, not fatal.
-    public func channelMaps() throws -> [ChannelMapRecord] {
+    /// Saved maps that pass `ChannelMapRecord.problem`, newest first, and how many were
+    /// skipped as unreadable or invalid (the picker says so; one bad map hides no others).
+    public func channelMaps() throws -> (maps: [ChannelMapRecord], unreadable: Int) {
         let parent = directory.appendingPathComponent("montages", isDirectory: true)
-        guard fm.fileExists(atPath: parent.path) else { return [] }
-        return try childIDs(in: "montages", requiring: Self.channelMapFileName).compactMap { id in
-            fm.contents(atPath: parent.appendingPathComponent(id.uuidString).appendingPathComponent(Self.channelMapFileName).path)
-                .flatMap { try? ContractJSON.decoder().decode(ChannelMapRecord.self, from: $0) }
-        }.sorted { $0.createdAt > $1.createdAt }
+        guard fm.fileExists(atPath: parent.path) else { return ([], 0) }
+        let ids = try childIDs(in: "montages", requiring: Self.channelMapFileName)
+        let maps = ids.compactMap { id -> ChannelMapRecord? in
+            let url = parent.appendingPathComponent(id.uuidString).appendingPathComponent(Self.channelMapFileName)
+            guard let data = fm.contents(atPath: url.path),
+                  let map = try? ContractJSON.decoder().decode(ChannelMapRecord.self, from: data),
+                  map.problem(directoryID: id) == nil else { return nil }
+            return map
+        }
+        return (maps.sorted { $0.createdAt > $1.createdAt }, ids.count - maps.count)
     }
 
     public func fittedArraysURL(pipelineID: UUID) -> URL {

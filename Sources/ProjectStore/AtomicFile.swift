@@ -125,6 +125,7 @@ public enum ProjectStoreError: Error, CustomStringConvertible, Sendable {
     /// `recording.json` decoded but describes something impossible (a channel row no
     /// chunk has, a non-canonical chunk path, overflowing dimensions). Refused, not fixed.
     case invalidManifest(String)
+    case invalidChannelMap(String)
     case io(String, Int32)
 
     public var description: String {
@@ -138,6 +139,7 @@ public enum ProjectStoreError: Error, CustomStringConvertible, Sendable {
         case .integrity(let issues): return "integrity: " + issues.map(\.description).joined(separator: "; ")
         case .invalidChunk(let why): return "invalid chunk: \(why)"
         case .invalidManifest(let why): return "invalid recording manifest: \(why)"
+        case .invalidChannelMap(let why): return "invalid channel map: \(why)"
         case .io(let what, let code): return "\(what): \(String(cString: strerror(code))) (errno \(code))"
         }
     }

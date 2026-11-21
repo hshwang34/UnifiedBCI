@@ -476,6 +476,8 @@ final class FakeLink: Sendable {
         /// Every `configure` command, and the reply to `?` (nil: echo like the synthetic board).
         var commands: [String] = []
         var registerReply: String?
+        /// Reply to channel commands; nil is the firmware's success reply.
+        var channelReply: String?
     }
     let script = Mutex(Script())
     let description = try! BrainFlowBoard.describe(boardID: KnownBoard.cytonDaisy)
@@ -525,7 +527,7 @@ actor FakeBoard: AcquisitionBoard {
         try link.script.withLock { s in
             if s.prepareFails { throw BrainFlowError(code: BrainFlowExitCode.boardNotReady.rawValue, operation: "config_board") }
             s.commands.append(command)
-            return command == "?" ? (s.registerReply ?? "Config:?") : "Success: Channel set$$$"
+            return command == "?" ? (s.registerReply ?? "Config:?") : (s.channelReply ?? "Success: Channel set for 1$$$")
         }
     }
 

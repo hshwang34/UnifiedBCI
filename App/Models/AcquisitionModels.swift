@@ -46,6 +46,9 @@ enum ConnectSource: Equatable, Identifiable {
         }
     }
 
+    /// A real board: its channel commands must be acknowledged (same rule as the session).
+    var isDevice: Bool { if case .serial = self { true } else { false } }
+
     /// Shown when the selected port disappears on a re-scan.
     static func gone(_ port: SerialPort) -> String {
         "\(port.path) is gone. Plug the dongle back in or pick another port."
@@ -112,7 +115,8 @@ enum IdentityModel {
         case .demo: (port, path) = ("none (Demo)", "none (Demo)")
         }
         return [
-            ("Board", "\(board.name) (BrainFlow board \(board.boardID))"),
+            // The Demo is "Demo" only (decision #42); channels and rate follow below.
+            ("Board", source == .demo ? "Demo" : "\(board.name) (BrainFlow board \(board.boardID))"),
             ("BrainFlow", brainflowVersion),
             ("Serial port", port),
             ("Firmware", firmware.flatMap { $0.isEmpty ? nil : $0 } ?? "not reported"),
@@ -138,25 +142,40 @@ enum ConfigurationModel {
     static let noReadback = "No readback from this board"
     static let rawOnly = "The board replied, but not as a register map; its raw reply is kept."
 
+    static let notAcknowledgedMark = "not acknowledged by the board"
+    /// Lead decision: a real Cyton without register readback may record, with this warning.
+    static let gainNotConfirmed = "Gain not confirmed by the board; µV scaling assumes 24."
+
     static func rows(_ c: RecordingManifest.BoardConfiguration) -> [ConfigurationRow] {
         (1...DefaultChannelSettings.channelCount).map { n in
             let k = DefaultChannelSettings.key(n)
-            let req = describe(c.requested, k), back = describe(c.readback, k)
+            let unacked = c.requested[k + ".acknowledged"] == "no"
+            let req = describe(c.requested, k).map { unacked ? "\($0) · \(notAcknowledgedMark)" : $0 }
+            let back = describe(c.readback, k)
             return .init(channel: "Channel \(n)", requested: req ?? "—", readback: back ?? "—",
-                         differs: back != nil && back != req)
+                         differs: unacked || (back != nil && back != describe(c.requested, k)))
         }
     }
 
-    /// Nil when the readback has per-channel values.
+    /// Nil when the readback has per-channel register values.
     static func readbackNote(_ c: RecordingManifest.BoardConfiguration) -> String? {
-        if c.readback.isEmpty { return noReadback }
-        return c.readback["ch01.gain"] == nil ? rawOnly : nil
+        if CytonRegisterReadback.hasRegisters(c.readback) { return nil }
+        return c.readback["raw"] == nil ? noReadback : rawOnly
     }
 
     /// Record is disabled with this when any channel reports another gain.
     static func gainMismatch(_ c: RecordingManifest.BoardConfiguration) -> String? {
-        CytonRegisterReadback.gainMismatch(c.readback).map {
-            "Channel \($0.channel) reports gain \($0.gain); µV scaling assumes \(DefaultChannelSettings.gain). Reconnect to reset."
+        CytonRegisterReadback.gainMismatch(c.readback).map { message(.gainMismatch(channel: $0.channel, gain: $0.gain)) }
+    }
+
+    static func message(_ p: AcquisitionSession.ConfigurationProblem) -> String {
+        switch p {
+        case .gainMismatch(let n, let g):
+            return "Channel \(n) reports gain \(g); µV scaling assumes \(DefaultChannelSettings.gain). Reconnect to reset."
+        case .notAcknowledged(let n):
+            return "Channel \(n) did not acknowledge its settings, so µV scaling can't be trusted. Reconnect to retry."
+        case .changedOnReconnect:
+            return "The board came back from the reconnect with different settings."
         }
     }
 
@@ -183,6 +202,15 @@ enum ChannelMapModel {
     static let withoutPositionsCaption = "Labels stay BrainFlow's names and the montage is stored as \"undeclared\"; no electrode positions are shown."
     static let undecided = "Confirm a channel map, or choose Record without positions."
 
+    static func mismatch(mapChannels: Int, boardChannels: Int) -> String {
+        "This channel map's \(mapChannels) channels don't match this board's \(boardChannels) EEG channels. Pick another map or Record without positions."
+    }
+
+    /// Under the picker when saved maps were skipped as unreadable or invalid; nil for none.
+    static func unreadable(_ n: Int) -> String? {
+        n == 0 ? nil : n == 1 ? "1 saved map couldn't be read and isn't listed." : "\(n) saved maps couldn't be read and aren't listed."
+    }
+
     /// A row of the saved-map picker.
     static func pickerTitle(_ m: ChannelMapRecord) -> String {
         "\(m.montage) · \(m.channels.count) channels · reference \(m.reference)"
@@ -201,11 +229,31 @@ enum ChannelMapModel {
 enum RecordGate {
     static let notStreaming = "Start the preview to record."
 
-    static func disabledReason(state: AcquisitionSession.State, configuration: RecordingManifest.BoardConfiguration?,
-                               map: ChannelMapChoice) -> String? {
+    static func disabledReason(state: AcquisitionSession.State, source: ConnectSource, board: BoardDescription?,
+                               configuration: RecordingManifest.BoardConfiguration?, map: ChannelMapChoice) -> String? {
         guard state == .streaming else { return notStreaming }
-        if let c = configuration, let mismatch = ConfigurationModel.gainMismatch(c) { return mismatch }
+        if let c = configuration, let problem = AcquisitionSession.problem(c, isDevice: source.isDevice) { return ConfigurationModel.message(problem) }
+        if case .confirmed(let m) = map, let board, !m.fits(board) {
+            return ChannelMapModel.mismatch(mapChannels: m.channels.count, boardChannels: board.eegChannelRows.count)
+        }
         return map == .none ? ChannelMapModel.undecided : nil
+    }
+
+    /// Shown next to an enabled Record: a real board that didn't report its registers.
+    static func warning(source: ConnectSource, configuration: RecordingManifest.BoardConfiguration?) -> String? {
+        guard case .serial = source, let c = configuration, !CytonRegisterReadback.hasRegisters(c.readback) else { return nil }
+        return ConfigurationModel.gainNotConfirmed
+    }
+
+    /// What a refused `startRecording` says.
+    static func message(_ e: AcquisitionSession.SessionError) -> String {
+        switch e {
+        case .notStreaming: return notStreaming
+        case .alreadyRecording: return "Already recording."
+        case .streamEnded: return "The stream ended while the recording was starting; nothing was recorded."
+        case .configuration(let p): return ConfigurationModel.message(p)
+        case .channelMapMismatch(let m, let b): return ChannelMapModel.mismatch(mapChannels: m, boardChannels: b)
+        }
     }
 }
 
@@ -236,7 +284,7 @@ enum HealthModel {
             rows.append(("Last commit", w.lastCommitMonotonicNanos.map { "\(Fmt.fixed(Double(nowNanos - $0) / 1e9, 1)) s ago" } ?? "none yet"))
         }
         if let free = h.freeBytes {
-            rows.append(("Free disk", "\(megabytes(free)) · " + (h.hoursLeft.map { "about \(Fmt.fixed($0, 1)) h of recording" } ?? "")))
+            rows.append(("Free disk", megabytes(free) + (h.hoursLeft.map { " · about \(Fmt.fixed($0, 1)) h of recording" } ?? "")))
         }
         return rows
     }
@@ -260,6 +308,11 @@ enum RecordingEndModel {
     static func diskWarning(hoursLeft: Double?, freeBytes: Int64?) -> String? {
         guard let hoursLeft, let freeBytes, hoursLeft < 1 else { return nil }
         return "Less than 1 hour of recording space left (\(HealthModel.megabytes(freeBytes))). Recording stops at 100 MB free."
+    }
+
+    /// A recording a reconnect ended (`Snapshot.recordingEndedByReconnect`).
+    static func endedByReconnect(_ p: AcquisitionSession.ConfigurationProblem) -> String {
+        "Recording ended at the reconnect, so no segment is stored with the wrong scaling: " + ConfigurationModel.message(p)
     }
 
     /// Nil for a plain Stop.

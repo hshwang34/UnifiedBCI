@@ -182,7 +182,12 @@ Three clocks, never mixed:
   resample of the other. It is `nil` for synthetic and imported sources.
 - `boardConfiguration.requested` is what the app sent; `boardConfiguration.readback` is
   what the board reported, empty when it offers no readback. Readback is never copied
-  from `requested`.
+  from `requested`. Keys are per channel, `chNN.<setting>` (`gain`, `input`, `bias`, `srb2`,
+  `power`). `requested` also holds `chNN.command` and `chNN.acknowledged`: `yes` only for a
+  Cyton "Success" reply, otherwise `no`, or `not applicable` for boards that aren't a device.
+  On a Cyton, `readback` holds each command's `chNN.reply`, plus `raw` (the `?` reply). A
+  recording's configuration covers every segment: a reconnect that finds different settings
+  ends the recording instead of adding a segment.
 
 ## Channel maps
 

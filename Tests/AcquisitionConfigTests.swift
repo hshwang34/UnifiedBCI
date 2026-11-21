@@ -99,8 +99,12 @@ final class AcquisitionConfigTests: XCTestCase {
         XCTAssertEqual(serial.snapshot.state, .ready)
         XCTAssertEqual(link.value(\.commands), DefaultChannelSettings.commands + ["?"])
         let c = try XCTUnwrap(serial.snapshot.configuration)
-        XCTAssertEqual(c.requested, DefaultChannelSettings.requested)
+        XCTAssertEqual(c.requested.filter { DefaultChannelSettings.requested[$0.key] != nil }, DefaultChannelSettings.requested)
+        XCTAssertEqual(c.requested["ch09.command"], "xQ060110X")
+        XCTAssertEqual(c.requested["ch16.acknowledged"], "yes")
+        XCTAssertEqual(c.readback["ch16.reply"], "Success: Channel set for 1$$$")
         XCTAssertEqual(c.readback["ch16.gain"], "24")
+        XCTAssertNil(RecordGate.warning(source: .serial(SerialPort(path: "/dev/cu.fake")), configuration: c))
         await serial.disconnect()
         XCTAssertNil(serial.snapshot.configuration)
 
@@ -109,6 +113,7 @@ final class AcquisitionConfigTests: XCTestCase {
         await synthetic.connect()
         XCTAssertEqual(synthLink.value(\.commands), DefaultChannelSettings.commands, "no `?` to a board without registers")
         XCTAssertEqual(synthetic.snapshot.configuration?.readback, [:], "readback is never copied from requested")
+        XCTAssertEqual(synthetic.snapshot.configuration?.requested["ch01.acknowledged"], "not applicable", "never a claimed success")
         await synthetic.disconnect()
     }
 
@@ -127,7 +132,7 @@ final class AcquisitionConfigTests: XCTestCase {
             try await session.startRecording(request, in: store)
             XCTFail("gain 8 must refuse Record")
         } catch let e as AcquisitionSession.SessionError {
-            XCTAssertEqual(e, .gainMismatch(channel: 1, gain: "8"))
+            XCTAssertEqual(e, .configuration(.gainMismatch(channel: 1, gain: "8")))
         }
         await session.disconnect()
 
@@ -137,7 +142,7 @@ final class AcquisitionConfigTests: XCTestCase {
         let id = try await session.startRecording(request, in: store)
         await session.disconnect()
         let m = try await store.recording(id: id).manifest
-        XCTAssertEqual(m.boardConfiguration.requested, DefaultChannelSettings.requested)
+        XCTAssertEqual(m.boardConfiguration.requested["ch01.acknowledged"], "yes")
         XCTAssertEqual(m.boardConfiguration.readback["ch01.gain"], "24")
         XCTAssertEqual(m.montage, "undeclared")
         XCTAssertEqual(m.reference, "SRB2")
@@ -148,7 +153,7 @@ final class AcquisitionConfigTests: XCTestCase {
     func testChannelMaps_saveListAndPick_defaultsAreUndeclared() async throws {
         let store = try ProjectStore.create(at: scratch.appendingPathComponent("m.bciproj"), name: "m")
         let none = try await store.channelMaps()
-        XCTAssertEqual(none, [])
+        XCTAssertEqual(none.maps, [])
         var d = ChannelMapRecord.defaults(for: daisy)
         d.createdAt = Date(timeIntervalSince1970: 1_800_000_000)     // whole seconds: exact round trip
         XCTAssertEqual(d.montage, "undeclared")
@@ -159,31 +164,39 @@ final class AcquisitionConfigTests: XCTestCase {
         declared.montage = "10-20"; declared.channels[0].label = "C3"
         try await store.saveChannelMap(d)
         try await store.saveChannelMap(declared)
-        let maps = try await store.channelMaps()
+        let (maps, unreadable) = try await store.channelMaps()
+        XCTAssertEqual(unreadable, 0)
         XCTAssertEqual(maps.map(\.mapID), [declared.mapID, d.mapID], "newest first")
         XCTAssertEqual(maps[0], declared)
         XCTAssertEqual(ChannelMapModel.pickerTitle(maps[0]), "10-20 · 16 channels · reference SRB2")
         // A reopened project still lists them; the directory is the truth.
         let reopened = try ProjectStore.open(at: store.directory)
         let again = try await reopened.channelMaps()
-        XCTAssertEqual(again.count, 2)
+        XCTAssertEqual(again.maps.count, 2)
         // An older project without montages/ lists none.
         try FileManager.default.removeItem(at: store.directory.appendingPathComponent("montages"))
         let old = try await reopened.channelMaps()
-        XCTAssertEqual(old, [])
+        XCTAssertEqual(old.maps, [])
     }
 
     // MARK: Screen models
 
     func testRecordGate_followsStateGainAndMapChoice() {
         let ok = RecordingManifest.BoardConfiguration(requested: DefaultChannelSettings.requested, readback: [:])
-        XCTAssertEqual(RecordGate.disabledReason(state: .ready, configuration: ok, map: .withoutPositions), "Start the preview to record.")
-        XCTAssertEqual(RecordGate.disabledReason(state: .streaming, configuration: ok, map: .none),
-                       "Confirm a channel map, or choose Record without positions.")
-        XCTAssertNil(RecordGate.disabledReason(state: .streaming, configuration: ok, map: .withoutPositions))
-        XCTAssertNil(RecordGate.disabledReason(state: .streaming, configuration: ok, map: .confirmed(.defaults(for: daisy))))
+        func gate(_ c: RecordingManifest.BoardConfiguration, _ map: ChannelMapChoice, state: AcquisitionSession.State = .streaming,
+                  source: ConnectSource = .synthetic) -> String? {
+            RecordGate.disabledReason(state: state, source: source, board: daisy, configuration: c, map: map)
+        }
+        XCTAssertEqual(gate(ok, .withoutPositions, state: .ready), "Start the preview to record.")
+        XCTAssertEqual(gate(ok, .none), "Confirm a channel map, or choose Record without positions.")
+        XCTAssertNil(gate(ok, .withoutPositions))
+        XCTAssertNil(gate(ok, .confirmed(.defaults(for: daisy))))
+        var eight = ChannelMapRecord.defaults(for: daisy)
+        eight.channels = Array(eight.channels.prefix(8))
+        XCTAssertEqual(gate(ok, .confirmed(eight)),
+                       "This channel map's 8 channels don't match this board's 16 EEG channels. Pick another map or Record without positions.")
         let bad = RecordingManifest.BoardConfiguration(requested: ok.requested, readback: ["ch05.gain": "12"])
-        XCTAssertEqual(RecordGate.disabledReason(state: .streaming, configuration: bad, map: .withoutPositions),
+        XCTAssertEqual(gate(bad, .withoutPositions),
                        "Channel 5 reports gain 12; µV scaling assumes 24. Reconnect to reset.")
         XCTAssertEqual(ChannelMapModel.request(for: .withoutPositions, board: daisy)?.montage, "undeclared")
         XCTAssertNil(ChannelMapModel.request(for: .none, board: daisy))
@@ -270,5 +283,155 @@ final class AcquisitionConfigTests: XCTestCase {
                        "The disk could not keep up. Recording stopped: 10 s recorded and saved, 2 s could not be saved.")
         var stopped = RecordingWriter.Status(); stopped.endReason = .stopped
         XCTAssertNil(RecordingEndModel.message(stopped, rateHz: 125))
+    }
+}
+
+/// PR #25 review round: hostile maps, unacknowledged commands, reconnect re-check, headers.
+final class AcquisitionConfigReviewTests: XCTestCase {
+    private var scratch: URL!
+    private let daisy = try! BrainFlowBoard.describe(boardID: KnownBoard.cytonDaisy)
+
+    override func setUpWithError() throws {
+        scratch = FileManager.default.temporaryDirectory.appendingPathComponent("bci-cfg2-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: scratch) }
+
+    private func dump() throws -> String {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "cyton_daisy_register_dump.constructed", withExtension: "txt"))
+        return try String(contentsOf: url, encoding: .ascii)
+    }
+
+    private func plant(_ json: Data, as name: String, in store: ProjectStore) throws {
+        let dir = store.directory.appendingPathComponent("montages").appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try json.write(to: dir.appendingPathComponent(ProjectStore.channelMapFileName))
+    }
+
+    func testHostileSavedMapsAreSkippedAndCounted_andInvalidMapsAreNotSaved() async throws {
+        let store = try ProjectStore.create(at: scratch.appendingPathComponent("h.bciproj"), name: "h")
+        let good = ChannelMapRecord.defaults(for: daisy)
+        try await store.saveChannelMap(good)
+        let enc = ContractJSON.encoder()
+        var moved = ChannelMapRecord.defaults(for: daisy)                      // id ≠ directory
+        try plant(try enc.encode(moved), as: UUID().uuidString, in: store)
+        var dupRow = ChannelMapRecord.defaults(for: daisy)
+        dupRow.channels[1].sourceRow = dupRow.channels[0].sourceRow
+        try plant(try enc.encode(dupRow), as: dupRow.mapID.uuidString, in: store)
+        var future = ChannelMapRecord.defaults(for: daisy)
+        future.formatVersion = 99
+        try plant(try enc.encode(future), as: future.mapID.uuidString, in: store)
+        var control = ChannelMapRecord.defaults(for: daisy)
+        control.channels[0].label = "C3\u{0}"
+        try plant(try enc.encode(control), as: control.mapID.uuidString, in: store)
+        let garbage = UUID().uuidString
+        try plant(Data("{not json".utf8), as: garbage, in: store)
+        let (maps, unreadable) = try await store.channelMaps()
+        XCTAssertEqual(maps.map(\.mapID), [good.mapID])
+        XCTAssertEqual(unreadable, 5)
+        XCTAssertEqual(ChannelMapModel.unreadable(unreadable), "5 saved maps couldn't be read and aren't listed.")
+        XCTAssertEqual(ChannelMapModel.unreadable(1), "1 saved map couldn't be read and isn't listed.")
+        XCTAssertNil(ChannelMapModel.unreadable(0))
+        moved.channels[2].label = "   "
+        do {
+            try await store.saveChannelMap(moved)
+            XCTFail("a blank label is refused")
+        } catch ProjectStoreError.invalidChannelMap {}
+    }
+
+    func testStartRecording_refusesAMapThatIsNotThisBoardsEEGRows() async throws {
+        let link = FakeLink()
+        let store = try ProjectStore.create(at: scratch.appendingPathComponent("r.bciproj"), name: "r")
+        let session = AcquisitionSession(source: .synthetic, projectDirectory: nil, makeBoard: link.factory)
+        await session.connect()
+        await session.startStreaming()
+        var accel = ChannelMapRecord.defaults(for: daisy)
+        accel.channels[15].sourceRow = 20                    // an accelerometer row, not EEG
+        var short = ChannelMapRecord.defaults(for: daisy)
+        short.channels.removeLast()
+        for map in [accel, short] {
+            do {
+                try await session.startRecording(.init(map: map), in: store)
+                XCTFail("map must not fit")
+            } catch let e as AcquisitionSession.SessionError {
+                XCTAssertEqual(e, .channelMapMismatch(mapChannels: map.channels.count, boardChannels: 16))
+                XCTAssertTrue(RecordGate.message(e).hasPrefix("This channel map's"))
+            }
+        }
+        let ids = try await store.recordingIDs()
+        XCTAssertEqual(ids, [], "nothing written")
+        await session.disconnect()
+    }
+
+    func testUnacknowledgedChannelCommand_isMarked_andRefusesRecordOnTheCyton() async throws {
+        let link = FakeLink()
+        link.set { $0.channelReply = "Failure: 9th char not X$$$"; $0.registerReply = try? self.dump() }
+        let store = try ProjectStore.create(at: scratch.appendingPathComponent("a.bciproj"), name: "a")
+        let session = AcquisitionSession(source: .serial(port: "/dev/cu.fake"), projectDirectory: nil, makeBoard: link.factory)
+        await session.connect()
+        let c = try XCTUnwrap(session.snapshot.configuration)
+        XCTAssertEqual(c.requested["ch01.acknowledged"], "no")
+        XCTAssertEqual(c.readback["ch01.reply"], "Failure: 9th char not X$$$")
+        let row = ConfigurationModel.rows(c)[0]
+        XCTAssertTrue(row.requested.hasSuffix("· not acknowledged by the board"), row.requested)
+        XCTAssertTrue(row.differs)
+        await session.startStreaming()
+        do {
+            try await session.startRecording(.init(map: .defaults(for: daisy)), in: store)
+            XCTFail("unacknowledged settings refuse Record")
+        } catch let e as AcquisitionSession.SessionError {
+            XCTAssertEqual(e, .configuration(.notAcknowledged(channel: 1)))
+            XCTAssertEqual(RecordGate.message(e), "Channel 1 did not acknowledge its settings, so µV scaling can't be trusted. Reconnect to retry.")
+        }
+        XCTAssertEqual(RecordGate.disabledReason(state: .streaming, source: .serial(SerialPort(path: "/dev/cu.fake")), board: daisy,
+                                                 configuration: c, map: .withoutPositions),
+                       "Channel 1 did not acknowledge its settings, so µV scaling can't be trusted. Reconnect to retry.")
+        await session.disconnect()
+    }
+
+    func testReconnectWithChangedGain_endsTheRecordingNamed_nothingMisScaled() async throws {
+        let link = FakeLink()
+        link.set { $0.registerReply = try? self.dump() }
+        let store = try ProjectStore.create(at: scratch.appendingPathComponent("g.bciproj"), name: "g")
+        var options = AcquisitionSession.Options()
+        options.noSampleTimeout = .milliseconds(400); options.retryInterval = .milliseconds(50); options.retryWindow = .seconds(2)
+        let session = AcquisitionSession(source: .serial(port: "/dev/cu.fake"), projectDirectory: nil, options: options, makeBoard: link.factory)
+        await session.connect()
+        await session.startStreaming()
+        let id = try await session.startRecording(.init(map: .defaults(for: daisy)), in: store)
+        var lines = try dump().components(separatedBy: "\r\n")
+        let ch1 = try XCTUnwrap(lines.firstIndex { $0.hasPrefix("CH1SET") })
+        lines[ch1] = "CH1SET, 05, 48, 0, 1, 0, 0, 1, 0, 0, 0"
+        link.set { $0.registerReply = lines.joined(separator: "\r\n"); $0.readErrors = 1 }
+        let deadline = ContinuousClock.now + .seconds(20)
+        while session.snapshot.recordingEndedByReconnect == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(session.snapshot.recordingEndedByReconnect, .gainMismatch(channel: 1, gain: "8"))
+        XCTAssertNil(session.snapshot.recordingID)
+        XCTAssertEqual(session.snapshot.state, .streaming, "preview goes on")
+        XCTAssertTrue(RecordingEndModel.endedByReconnect(.gainMismatch(channel: 1, gain: "8")).hasSuffix("Reconnect to reset."))
+        while session.snapshot.lastRecordingEnd == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(session.snapshot.lastRecordingEnd?.endReason, .disconnect)
+        await session.disconnect()
+        let m = try await store.recording(id: id).manifest
+        XCTAssertEqual(m.segments.map(\.endReason), [.disconnect], "no segment with the wrong gain")
+        XCTAssertEqual(m.boardConfiguration.readback["ch01.gain"], "24")
+    }
+
+    func testBlockHeadersMustBeBoardThenDaisy_andWarningsAndIdentity() throws {
+        let swapped = try dump().replacingOccurrences(of: "Board ADS Registers", with: "X").replacingOccurrences(of: "Daisy ADS Registers", with: "Board ADS Registers")
+            .replacingOccurrences(of: "\r\nX\r\n", with: "\r\nDaisy ADS Registers\r\n")
+        XCTAssertEqual(CytonRegisterReadback.parse(swapped).keys.sorted(), ["raw"])
+        let rawOnly = RecordingManifest.BoardConfiguration(requested: DefaultChannelSettings.requested, readback: ["raw": "?"])
+        XCTAssertEqual(RecordGate.warning(source: .serial(SerialPort(path: "/dev/cu.x")), configuration: rawOnly),
+                       "Gain not confirmed by the board; µV scaling assumes 24.")
+        XCTAssertNil(RecordGate.warning(source: .synthetic, configuration: rawOnly))
+        XCTAssertNil(RecordGate.disabledReason(state: .streaming, source: .serial(SerialPort(path: "/dev/cu.x")), board: daisy,
+                                               configuration: rawOnly, map: .withoutPositions), "warned, not disabled")
+        let demo = Dictionary(uniqueKeysWithValues: IdentityModel.rows(board: daisy, source: .demo, brainflowVersion: "5", firmware: nil))
+        XCTAssertEqual(demo["Board"], "Demo")
+        var h = StreamHealth()
+        h.freeBytes = 5_000_000_000
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: HealthModel.rows(h, nowNanos: 0))["Free disk"], "5000 MB free")
     }
 }

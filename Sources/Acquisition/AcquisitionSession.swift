@@ -43,6 +43,17 @@ public actor AcquisitionSession {
         /// connect or reconnect (brief 004, "Configuration").
         public var board: BoardDescription?
         public var configuration: RecordingManifest.BoardConfiguration?
+        /// Set when a reconnect found the board configured differently from what the
+        /// recording describes, so the recording was ended rather than continued.
+        public var recordingEndedByReconnect: ConfigurationProblem?
+    }
+
+    /// Why a board configuration can't carry a recording (µV scaling would be wrong or
+    /// unconfirmed), or how it changed across a reconnect.
+    public enum ConfigurationProblem: Sendable, Equatable {
+        case gainMismatch(channel: Int, gain: String)
+        case notAcknowledged(channel: Int)
+        case changedOnReconnect
     }
 
     /// The declared parts of a recording; the session fills in source, timing, clocks and
@@ -71,8 +82,9 @@ public actor AcquisitionSession {
 
     public enum SessionError: Error, Equatable {
         case notStreaming, alreadyRecording, streamEnded
-        /// Readback shows a gain other than 24; µV scaling would be wrong.
-        case gainMismatch(channel: Int, gain: String)
+        case configuration(ConfigurationProblem)
+        /// The map's channels aren't exactly this board's EEG rows.
+        case channelMapMismatch(mapChannels: Int, boardChannels: Int)
     }
 
     public nonisolated let source: AcquisitionSource
@@ -109,6 +121,8 @@ public actor AcquisitionSession {
     /// The newest recording started; only its end is published (a late finish of an older
     /// one never overwrites it).
     private var latestRecordingID: UUID?
+    /// The configuration the current recording's manifest stores; every segment must match it.
+    private var recordingConfiguration: RecordingManifest.BoardConfiguration?
     private var lastSampleNanos: Int64 = 0
     private var lastPublishNanos: Int64 = 0
 
@@ -187,8 +201,10 @@ public actor AcquisitionSession {
         guard state == .streaming, let board else { throw SessionError.notStreaming }
         guard writer == nil, !recordingStarting else { throw SessionError.alreadyRecording }
         let configuration = snapshot.configuration ?? .init(requested: [:], readback: [:])
-        if let m = CytonRegisterReadback.gainMismatch(configuration.readback) {
-            throw SessionError.gainMismatch(channel: m.channel, gain: m.gain)
+        if let problem = Self.problem(configuration, isDevice: source.readsBackRegisters) { throw SessionError.configuration(problem) }
+        let map = ChannelMapRecord(montage: request.montage, reference: request.reference, channels: request.channels)
+        guard map.fits(board.description), Set(request.channels.map(\.id)).count == request.channels.count else {
+            throw SessionError.channelMapMismatch(mapChannels: request.channels.count, boardChannels: board.description.eegChannelRows.count)
         }
         recordingStarting = true
         defer { recordingStarting = false }
@@ -213,6 +229,8 @@ public actor AcquisitionSession {
             throw SessionError.streamEnded
         }
         writer = w
+        recordingConfiguration = configuration
+        published.withLock { $0.recordingEndedByReconnect = nil }
         power?.release()
         power = PowerAssertion.take("Recording EEG")
         published.withLock { $0.recordingID = w.recordingID; $0.holdsPowerAssertion = power != nil }
@@ -367,7 +385,23 @@ public actor AcquisitionSession {
                 published.withLock { $0.configuration = configuration }
                 recordingStarts += 1
                 beginStreamSegment(b, reconnect: true)
-                writer?.beginSegment(startedAtWall: Date(), startedAtMonotonicNanos: HostMonotonicClock.nowNanos())
+                // The manifest holds one configuration: a reconnect that finds the board set
+                // differently (or wrongly) ends the recording instead of mis-scaling a segment.
+                if let w = writer, let stored = recordingConfiguration {
+                    let change = Self.problem(configuration, isDevice: source.readsBackRegisters)
+                        ?? (CytonRegisterReadback.settings(configuration) == CytonRegisterReadback.settings(stored) ? nil : .changedOnReconnect)
+                    if let change {
+                        _ = detachRecording()
+                        published.withLock { $0.recordingEndedByReconnect = change }
+                        // Its last segment already ended `disconnect`; finish off the actor.
+                        Task.detached { [weak self] in
+                            let status = await w.finish(.disconnect)
+                            await self?.noteEnded(status, of: w)
+                        }
+                    } else {
+                        w.beginSegment(startedAtWall: Date(), startedAtMonotonicNanos: HostMonotonicClock.nowNanos())
+                    }
+                }
                 set(.streaming)
                 return true
             } catch {
@@ -413,6 +447,7 @@ public actor AcquisitionSession {
     private func detachRecording() -> RecordingWriter? {
         guard let w = writer else { return nil }
         writer = nil
+        recordingConfiguration = nil
         power?.release()
         power = nil
         published.withLock { $0.recordingID = nil; $0.holdsPowerAssertion = false }
@@ -443,6 +478,14 @@ public actor AcquisitionSession {
     private func set(_ s: State) { published.withLock { $0.state = s } }
     private var isFailed: Bool { if case .failed = state { true } else { false } }
     private var isInterrupted: Bool { if case .interrupted = state { true } else { false } }
+
+    /// Gain other than 24 in the readback, or (on the Cyton) a channel command without a
+    /// success reply: either way the stored µV would not be what the manifest claims.
+    static func problem(_ c: RecordingManifest.BoardConfiguration, isDevice: Bool) -> ConfigurationProblem? {
+        if let m = CytonRegisterReadback.gainMismatch(c.readback) { return .gainMismatch(channel: m.channel, gain: m.gain) }
+        if isDevice, let n = CytonRegisterReadback.unacknowledged(c.requested) { return .notAcknowledged(channel: n) }
+        return nil
+    }
 
     static func describe(_ error: Error) -> String {
         (error as? BrainFlowError)?.description ?? "\(error)"

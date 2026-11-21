@@ -346,6 +346,25 @@ public struct ChannelMapRecord: Codable, Sendable, Equatable, Identifiable {
         self.mapID = mapID; self.createdAt = createdAt; self.montage = montage
         self.reference = reference; self.channels = channels
     }
+
+    /// Why a stored map can't be trusted, or nil. A `.bciproj` may come from anyone: the map
+    /// must be this format, live in its own id's directory, and have unique ids and sane text.
+    public func problem(directoryID: UUID) -> String? {
+        guard formatVersion >= 1, formatVersion <= ContractVersion.format else { return "format \(formatVersion)" }
+        guard mapID == directoryID else { return "id does not match its directory" }
+        guard !channels.isEmpty, Set(channels.map(\.id)).count == channels.count,
+              Set(channels.map(\.sourceRow)).count == channels.count, channels.allSatisfy({ $0.sourceRow >= 0 }) else {
+            return "channels are empty or repeat an id or row"
+        }
+        let texts = channels.map(\.label) + [montage, reference]
+        guard texts.allSatisfy(Self.isSane) else { return "a label, reference or montage is empty, too long or has control characters" }
+        return nil
+    }
+
+    static func isSane(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        return !t.isEmpty && t.count <= 64 && !t.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+    }
 }
 
 public struct EventRecord: Codable, Sendable, Equatable {
