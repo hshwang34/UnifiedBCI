@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import SwiftUI
@@ -186,9 +187,73 @@ final class ProjectSession: Identifiable {
     /// The acquisition screen's Disconnect: a recording ends `stopped`, the board goes.
     func endLive() async {
         guard let live else { return }
+        runs?.tearDown()
+        runs = nil
         await live.close()
         if self.live === live { self.live = nil }
         liveShown = false
+    }
+
+    // MARK: Protocol runs (brief 005)
+
+    /// The session of protocol runs on the live stream; kept after Finish for its summaries.
+    private(set) var runs: RunController?
+    var startRunForm: StartRunForm?
+    private(set) var startRunError: String?
+    /// The protocol a recording's run plans name; absent for any other recording.
+    private(set) var recordingProtocols: [UUID: ProtocolRecord] = [:]
+
+    var startRunDisabledReason: String? {
+        guard let live else { return RecordGate.notStreaming }
+        if runs.map({ !$0.isFinished }) ?? false { return StartRunCopy.alreadyRecording }
+        return live.recordDisabledReason ?? (live.isRecordingNow ? StartRunCopy.alreadyRecording : nil)
+    }
+
+    /// Start run…: the protocols (the default added to a project without any) and displays.
+    func showStartRun(operatorScreen: NSScreen?) async {
+        guard startRunDisabledReason == nil else { return }
+        startRunError = nil
+        do {
+            _ = try await store.ensureDefaultProtocol()
+            let list = try await store.protocols()
+            startRunForm = StartRunForm(protocols: list.protocols.filter { !list.mislinked.contains($0.protocolID) },
+                                        displays: CueWindowController.displays(operatorScreen: operatorScreen),
+                                        remembered: CueDisplayPicker.remembered(in: .standard))
+        } catch {
+            startRunError = ProtocolCopy.unreadableList(error)
+        }
+    }
+
+    /// Opens the participant window on the chosen display and starts the first run.
+    func startRuns(_ form: StartRunForm) {
+        guard form.disabledReason(streamReason: startRunDisabledReason) == nil, let p = form.selected, let seed = form.seed,
+              let display = form.display, let host = live?.runHost(), let screen = CueWindowController.screen(for: display) else { return }
+        CueDisplayPicker.remember(display, in: .standard)
+        let setup = RunController.Setup(protocolRecord: p, sessionSeed: seed, runsPerSession: form.runsPerSession, display: display,
+                                        framePeriodNanos: 1_000_000_000 / Int64(max(1, screen.maximumFramesPerSecond)))
+        startRunForm = nil
+        startRuns(setup, host: host, surface: CueWindowController(scheduler: CueFrameScheduler(), screen: screen))
+    }
+
+    /// Tests pass a fake surface and host.
+    func startRuns(_ setup: RunController.Setup, host: any ProtocolRunHost, surface: any CueSurface, options: ProtocolRunner.Options = .init()) {
+        runs?.tearDown()
+        let live = live
+        let r = RunController(setup: setup, host: host, store: store, surface: surface, options: options,
+                              onRecording: { [weak live] id in live?.adoptRecording(id) },
+                              stopRecording: { [weak live] in await live?.stopRecording() })
+        runs = r
+        r.startNextRun()
+    }
+
+    func finishRuns() async {
+        await runs?.finish()
+        await liveReload?.value
+    }
+
+    func dismissRuns() {
+        guard runs?.isFinished ?? true else { return }
+        runs = nil
     }
 
     /// "Show Recording": selects a recording the live board made.
@@ -238,8 +303,16 @@ final class ProjectSession: Identifiable {
                 handles.append(handle)
                 events[id] = try await store.events(for: id)
             }
+            var protocols: [UUID: ProtocolRecord] = [:]
+            if let known = try? await store.protocols().protocols, !known.isEmpty {
+                for id in ids {
+                    guard let plan = try? await store.runPlans(recording: id).plans.first else { continue }
+                    protocols[id] = known.first { $0.protocolID == plan.protocolID }
+                }
+            }
             recordings = handles
             eventsByRecording = events
+            recordingProtocols = protocols
             if selectedRecordingID == nil || !ids.contains(selectedRecordingID!) { selectedRecordingID = ids.first }
             try await reloadResults()
             loadError = nil
@@ -402,7 +475,10 @@ final class ProjectSession: Identifiable {
         return false
     }
 
-    var canEvaluate: Bool { selectedRecordingID != nil && !isRunning && !liveShown }
+    var canEvaluate: Bool {
+        guard let handle = selectedRecording, !isRunning, !liveShown else { return false }
+        return RunCountModel.runs(handle.manifest) >= RunCountModel.minimumRuns
+    }
 
     var progress: ProgressDisplay? {
         guard case .running(let p) = runner.state else { return nil }
@@ -436,6 +512,11 @@ final class ProjectSession: Identifiable {
             r.cspComponents = d.csp_components
             r.leftLabel = d.labels.left
             r.rightLabel = d.labels.right
+        }
+        // A protocol recording evaluates its own classes (brief 005), not the worker's defaults.
+        if let p = recordingProtocols[recordingID], p.classes.count == 2 {
+            r.leftLabel = p.classes[0].label
+            r.rightLabel = p.classes[1].label
         }
         if let v = parameters.windowOffsetSeconds { r.windowOffsetSeconds = v }
         if let v = parameters.windowLengthSeconds { r.windowLengthSeconds = v }
@@ -622,6 +703,7 @@ final class ProjectSession: Identifiable {
         recipesTask?.cancel()
         isClosing = true
         // Stops a recording (`stopped`, partial chunk flushed) and releases the board.
+        runs?.tearDown()
         await live?.close()
         // The inspection worker stops alongside the evaluation, inside the same budget.
         async let inspection: Void = inspector.shutdown()

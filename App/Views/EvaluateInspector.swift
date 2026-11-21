@@ -10,13 +10,22 @@ struct EvaluateInspector: View {
         if let handle = session.selectedRecording {
             let model = EvaluateInspectorModel(manifest: handle.manifest, events: session.eventsByRecording[handle.id] ?? [],
                                                latest: session.latestReport[handle.id], defaults: session.workerDefaults,
-                                               recipes: session.recipes, modelName: session.modelName)
+                                               recipes: session.recipes, modelName: session.modelName,
+                                               protocol: session.recordingProtocols[handle.id], windowEndMs: session.evaluationWindowEndMs)
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Space.l) {
                     section("Evaluate") {
                         VStack(spacing: Theme.Space.s) {
                             row("Recording", model.recordingTitle)
                             row("Seed", "\(session.makeRequest(recordingID: handle.id).seed)")
+                        }
+                        if let classes = model.classes {
+                            Text(classes).font(.callout).foregroundStyle(Theme.textPrimary).fixedSize(horizontal: false, vertical: true)
+                        }
+                        if model.hasEnoughRuns {
+                            Text(model.runs).font(.callout).foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            StatusChip(kind: .info, text: model.runs)
                         }
                         Button {
                             session.evaluate()

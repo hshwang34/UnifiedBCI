@@ -13,6 +13,9 @@ struct AcquisitionView: View {
             VStack(alignment: .leading, spacing: Theme.Space.cardGap) {
                 header
                 notices
+                if let runs = session.runs {
+                    OperatorPanel(session: session, runs: runs, streaming: live.state == .streaming)
+                }
                 PreviewCard(live: live)
                 HealthCard(live: live)
             }
@@ -20,7 +23,19 @@ struct AcquisitionView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .softScrollEdge(.top)
+        .sheet(item: Binding(get: { session.startRunForm.map(FormBox.init) }, set: { session.startRunForm = $0?.form })) { box in
+            StartRunSheet(session: session, form: box.form)
+        }
     }
+
+    /// `sheet(item:)` needs an identity; one form is open at a time.
+    private struct FormBox: Identifiable {
+        let form: StartRunForm
+        var id: Int { 0 }
+    }
+
+    /// A session of protocol runs owns the recording: Record and Stop step aside for its panel.
+    private var runsOpen: Bool { session.runs.map { !$0.isFinished } ?? false }
 
     private var source: ConnectSource { live.source ?? .demo }
 
@@ -70,7 +85,16 @@ struct AcquisitionView: View {
             } message: {
                 Text(LiveScreenModel.disconnectInfo)
             }
-            if live.isRecording {
+            if !runsOpen, !live.isRecording {
+                Button(StartRunCopy.button) {
+                    Task { await session.showStartRun(operatorScreen: NSApp.keyWindow?.screen) }
+                }
+                .help(session.startRunDisabledReason ?? StartRunCopy.buttonHelp)
+                .disabled(session.startRunDisabledReason != nil)
+            }
+            if runsOpen {
+                EmptyView()
+            } else if live.isRecording {
                 Button { Task { await live.perform(.stopRecording) } } label: {
                     Label(AcquisitionAction.stopRecording.rawValue, systemImage: "stop.fill")
                 }
@@ -93,6 +117,7 @@ struct AcquisitionView: View {
     }
 
     @ViewBuilder private var notices: some View {
+        if let error = session.startRunError { StatusChip(kind: .danger, text: error) }
         if let banner = AcquisitionStateModel.banner(live.state) {
             let failed = live.state.isFailed
             HStack(alignment: .center, spacing: Theme.Space.m) {

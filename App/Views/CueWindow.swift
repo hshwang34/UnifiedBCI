@@ -36,6 +36,9 @@ final class CueWindowController {
     /// Shows the window without activating the app or taking focus.
     func show() { panel.orderFrontRegardless() }
 
+    /// Steps aside (one display, between runs); `show` brings it back.
+    func hide() { panel.orderOut(nil) }
+
     var isVisible: Bool { panel.isVisible }
 
     /// Stops the display link and drops frames not yet drawn (never reported).
