@@ -274,7 +274,7 @@ struct RecordingDetailModel {
         if let subject = m.source.subject {
             return "\(subject) · \(m.segments.count) run\(m.segments.count == 1 ? "" : "s")"
         }
-        return m.runID
+        return liveTitle(for: m) ?? m.runID
     }
 
     static func summary(for m: RecordingManifest) -> String {

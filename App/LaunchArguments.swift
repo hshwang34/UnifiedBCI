@@ -39,6 +39,14 @@ import Foundation
 ///                                              (brief 004 PR 5); snapshots "connect-picker"
 ///     -BCIConnectSource demo|synthetic         then connect that source; snapshots
 ///                                              "connect-connecting", "connect-ready", "connect-map"
+///                                              Without -BCIConnectSheet: connect it, choose Record
+///                                              without positions, start the preview on the
+///                                              acquisition screen (brief 004 PR 6); snapshots
+///                                              "live-preview" after 12 s of streaming
+///     -BCILiveRecordSeconds N                  then record N s and stop; snapshots "live-recording",
+///                                              "live-stopped", then the recording in Recordings:
+///                                              "live-recorded", "live-recorded-segments",
+///                                              "live-recorded-quality"
 @MainActor
 enum LaunchArguments {
     private static var done = false
@@ -95,6 +103,15 @@ enum LaunchArguments {
         return RecordingTab.allCases.first { $0.rawValue.lowercased() == raw.lowercased() }
         #else
         return nil
+        #endif
+    }
+
+    /// `-BCILiveRecordSeconds`: the recorded-recording snapshots bring the tabs into view.
+    static var liveSnapshots: Bool {
+        #if DEBUG
+        return UserDefaults.standard.integer(forKey: "BCILiveRecordSeconds") > 0
+        #else
+        return false
         #endif
     }
 
@@ -199,6 +216,10 @@ enum LaunchArguments {
             await connectSheet(session, source: defaults.string(forKey: "BCIConnectSource"), snap: snap)
             return
         }
+        if let source = defaults.string(forKey: "BCIConnectSource") {
+            await liveRun(session, source: source, recordSeconds: defaults.integer(forKey: "BCILiveRecordSeconds"), snap: snap)
+            return
+        }
         await snap("recordings")
         if snapshots != nil {
             session.recordingTab = .events
@@ -274,7 +295,7 @@ enum LaunchArguments {
     /// Opens the Connect sheet and walks it through its states for snapshots.
     private static func connectSheet(_ session: ProjectSession, source: String?, snap: (String, Duration) async -> Void) async {
         session.showConnectSheet()
-        guard let model = session.connectSheet else { return }
+        guard let model = session.live else { return }
         await model.refresh()
         model.selectedID = source
         await snap("connect-picker", .seconds(1.5))
@@ -296,9 +317,45 @@ enum LaunchArguments {
         // AppKit refuses to quit while a sheet is open, so -BCIQuitWhenDone closes it first.
         if UserDefaults.standard.bool(forKey: "BCIQuitWhenDone") {
             await model.close()
-            session.connectSheet = nil
+            session.showsConnectSheet = false
             try? await Task.sleep(for: .seconds(1))          // let the sheet finish closing
         }
+    }
+
+    /// Brief 004 PR 6: connect, start the preview on the acquisition screen, optionally record
+    /// and stop, then show the recording as Recordings lists it. Quitting afterwards goes
+    /// through the normal shutdown (the board is released there).
+    private static func liveRun(_ session: ProjectSession, source: String, recordSeconds: Int,
+                                snap: (String, Duration) async -> Void) async {
+        session.showConnectSheet()
+        guard let model = session.live else { return }
+        await model.refresh()
+        model.selectedID = source
+        guard model.selected != nil else { return }
+        await model.perform(.connect)
+        guard model.state == .ready else { return await snap("live-failed", .seconds(1)) }
+        model.recordWithoutPositions()
+        await model.perform(.startPreview)               // the sheet hands over to the screen
+        await snap("live-preview", .seconds(12))         // the 10 s window is full
+        guard recordSeconds > 0 else { return }
+        await model.perform(.record)
+        guard model.isRecording else { return await snap("live-record-refused", .seconds(1)) }
+        let shown = min(recordSeconds, 6)
+        await snap("live-recording", .seconds(shown))
+        if recordSeconds > shown { try? await Task.sleep(for: .seconds(recordSeconds - shown)) }
+        await model.perform(.stopRecording)
+        await session.liveReload?.value
+        await snap("live-stopped", .seconds(1.5))
+        guard let id = model.lastRecordingID else { return }
+        session.recordingTab = .channels
+        session.showInspector = false                    // room for every Segments column
+        session.showRecording(id)
+        await snap("live-recorded", .seconds(1.5))
+        session.recordingTab = .segments
+        await snap("live-recorded-segments", .seconds(1))
+        session.recordingTab = .quality
+        await session.awaitInspection()
+        await snap("live-recorded-quality", .seconds(1.5))
     }
 
     /// Captures every visible titled window of this app into `<name>-<n>-<title>.png`.

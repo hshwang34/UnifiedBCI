@@ -1,9 +1,11 @@
 import Foundation
 import Observation
 
-/// The Connect sheet's state (brief 004 PR 5): the source list, one `AcquisitionSession`,
-/// and the channel-map editor. The session's snapshot is polled (it is a lock read, no
-/// actor hop), so nothing here waits on the board. All copy comes from AcquisitionModels.
+/// One project's live board (brief 004 PRs 5–6): the Connect sheet's source list and
+/// channel-map editor, then the acquisition screen's preview, Record / Stop and health. It
+/// outlives the sheet once the stream has started. The session's snapshot is polled (a
+/// lock read, no actor hop), so nothing here waits on the board. All copy comes from
+/// AcquisitionModels / LiveModels.
 @MainActor @Observable
 final class ConnectController: Identifiable {
     private(set) var ports: [SerialPort] = []
@@ -28,6 +30,27 @@ final class ConnectController: Identifiable {
     private(set) var choice: ChannelMapChoice = .none
     private(set) var mapMessage: String?
 
+    // Acquisition screen (PR 6).
+    /// The last 10 s, fed off the main actor from the session's newest-wins preview stream.
+    private(set) var preview: PreviewBuffer?
+    var scale: LivePreviewModel.Scale = .auto
+    /// Wall time Record succeeded (the screen's elapsed clock).
+    private(set) var recordingStartedAt: Date?
+    /// Why Record was refused, or how the last recording ended (disk full, error, …).
+    private(set) var recordMessage: (danger: Bool, text: String)?
+    /// The last recording that ended, for "Show Recording".
+    private(set) var lastRecordingID: UUID?
+    private(set) var isStartingRecording = false
+    /// Called once the stream starts (the sheet hands over to the acquisition screen) and
+    /// whenever a recording ends (the project reloads its list).
+    @ObservationIgnored var onStreamStarted: (() -> Void)?
+    @ObservationIgnored var onRecordingEnded: ((UUID) -> Void)?
+    @ObservationIgnored private var previewTask: Task<Void, Never>?
+    private var watchedRecordingID: UUID?
+    /// `lastRecordingEnd` when the watched recording started: the writer publishes a new
+    /// one only after its last commit, so the list reloads a finished recording.
+    @ObservationIgnored private var endBeforeRecording: RecordingWriter.Status?
+
     let demoFile: URL?
     /// Read once: the identity panel shows it, and `body` must not call into BrainFlow.
     let brainflowVersion = (try? BrainFlowBoard.libraryVersion()) ?? ConnectSheetModel.unknownVersion
@@ -50,9 +73,23 @@ final class ConnectController: Identifiable {
     var selected: ConnectSource? { sources.first { $0.id == selectedID } }
     var state: AcquisitionSession.State { snapshot.state }
     var actions: [AcquisitionAction] {
-        // Record belongs to the acquisition screen (PR 6); the sheet stops at preview.
-        AcquisitionStateModel.actions(state, recording: false, afterStreaming: hasStreamed).filter { $0 != .record && $0 != .stopRecording }
+        // Record belongs to the acquisition screen; the sheet stops at preview.
+        screenActions.filter { $0 != .record && $0 != .stopRecording }
     }
+    var screenActions: [AcquisitionAction] {
+        AcquisitionStateModel.actions(state, recording: isRecording, afterStreaming: hasStreamed)
+    }
+    var isRecording: Bool { snapshot.recordingID != nil }
+    /// Stopped but not yet finished (the writer is committing its last chunk).
+    var isFinishingRecording: Bool { watchedRecordingID != nil && !isRecording }
+    /// Why Record is disabled; nil when it can be pressed.
+    var recordDisabledReason: String? {
+        guard let source else { return RecordGate.notStreaming }
+        return RecordGate.disabledReason(state: state, source: source, board: snapshot.board,
+                                         configuration: snapshot.configuration, map: choice)
+    }
+    /// The board's channel labels as the preview shows them: the edited map's.
+    var laneLabels: [String] { labels }
     var canPickSource: Bool { session == nil || state == .disconnected || (state.isFailed && !hasStreamed) }
 
     func isAvailable(_ s: ConnectSource) -> Bool { s != .demo || demoFile != nil }
@@ -89,7 +126,8 @@ final class ConnectController: Identifiable {
         case .cancel, .disconnect: await session?.disconnect()
         case .retry, .reconnect, .reconnectNow: await session?.reconnect()
         case .startPreview: await session?.startStreaming()
-        case .record, .stopRecording: break
+        case .record: await record()
+        case .stopRecording: await stopRecording()
         }
         sync()
     }
@@ -105,6 +143,8 @@ final class ConnectController: Identifiable {
         source = picked
         hasStreamed = false
         choice = .none
+        recordMessage = nil
+        stopPreview()
         startPolling()
         await s.connect()
         // Closed while the board was opening: `close()` may have run before `s` existed
@@ -125,11 +165,47 @@ final class ConnectController: Identifiable {
         }
     }
 
-    /// Disconnects (stopping a stream) and stops polling; the sheet calls it on dismiss.
+    /// Disconnects (a recording ends `stopped`, the board is released) and stops polling.
+    /// Window close and quit come here through `ProjectSession.shutdown`.
     func close() async {
         isClosed = true
         poll?.cancel()
         await session?.disconnect()
+        sync()
+        stopPreview()
+    }
+
+    /// The sheet's Close: before the stream has run it disconnects; once the acquisition
+    /// screen has taken over it only closes the sheet.
+    func closeSheet() async {
+        if !hasStreamed || session == nil { await close() }
+    }
+
+    // MARK: Recording
+
+    func record() async {
+        guard let session, let board = snapshot.board, !isStartingRecording, !isFinishingRecording, recordDisabledReason == nil,
+              let request = ChannelMapModel.request(for: choice, board: board) else { return }
+        isStartingRecording = true
+        defer { isStartingRecording = false }
+        recordMessage = nil
+        endBeforeRecording = snapshot.lastRecordingEnd
+        do {
+            let id = try await session.startRecording(request, in: store)
+            watchedRecordingID = id
+            recordingStartedAt = Date()
+        } catch let e as AcquisitionSession.SessionError {
+            recordMessage = (true, RecordGate.message(e))
+        } catch {
+            recordMessage = (true, "The recording could not start: \(error)")
+        }
+        sync()
+    }
+
+    func stopRecording() async {
+        guard let session else { return }
+        _ = await session.stopRecording()
+        sync()
     }
 
     private func startPolling() {
@@ -148,9 +224,52 @@ final class ConnectController: Identifiable {
         let next = session.snapshot
         guard next != snapshot else { return }
         let boardArrived = next.board != nil && next.board != snapshot.board
+        let firstStream = next.state == .streaming && !hasStreamed
         snapshot = next
         if next.state == .streaming { hasStreamed = true }
-        if boardArrived, let board = next.board { resetMap(to: .defaults(for: board)) }
+        if boardArrived, let board = next.board {
+            resetMap(to: .defaults(for: board))
+            startPreview(session, board: board)
+        }
+        // Detached first, finished (last chunk committed, segment closed) later.
+        if let id = watchedRecordingID, next.recordingID != id, next.lastRecordingEnd != endBeforeRecording {
+            recordingEnded(id, status: next.lastRecordingEnd)
+        }
+        if firstStream { onStreamStarted?() }
+    }
+
+    /// A recording ended: by Stop, by Disconnect, or by itself (disk full, error, retries out).
+    private func recordingEnded(_ id: UUID, status: RecordingWriter.Status?) {
+        watchedRecordingID = nil
+        recordingStartedAt = nil
+        lastRecordingID = id
+        let rate = Double(snapshot.board?.samplingRate ?? 125)
+        if let reconnect = snapshot.recordingEndedByReconnect {
+            recordMessage = (true, RecordingEndModel.endedByReconnect(reconnect))
+        } else if let status, let text = RecordingEndModel.message(status, rateHz: rate) {
+            recordMessage = (true, text)
+        } else {
+            recordMessage = (false, LiveScreenModel.saved(seconds: Double(status?.committedSamples ?? 0) / rate))
+        }
+        onRecordingEnded?(id)
+    }
+
+    // MARK: Preview
+
+    /// One buffer per connect (a reconnect keeps it, with a break at the new segment).
+    private func startPreview(_ session: AcquisitionSession, board: BoardDescription) {
+        guard preview == nil || preview?.rows != board.eegChannelRows || preview?.rate != board.samplingRate else { return }
+        previewTask?.cancel()
+        let buffer = PreviewBuffer(rows: board.eegChannelRows, rate: board.samplingRate)
+        preview = buffer
+        let stream = session.preview
+        previewTask = Task.detached(priority: .userInitiated) { await buffer.consume(stream) }
+    }
+
+    private func stopPreview() {
+        previewTask?.cancel()
+        previewTask = nil
+        preview = nil
     }
 
     // MARK: Channel map

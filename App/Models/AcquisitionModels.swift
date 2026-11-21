@@ -340,7 +340,7 @@ enum ConnectSheetModel {
     static let noPorts = "No serial ports found. Plug in the dongle and choose Refresh."
     static let refresh = "Refresh"
     static let close = "Close"
-    static let closeHelp = "Close the sheet; a connected board is disconnected first."
+    static let closeHelp = "Close the sheet. A board that isn't streaming yet is disconnected; a streaming one stays on the acquisition screen."
     static let demoMissing = "The Demo file isn't in this build (it is generated at build time with uv)."
     static let connecting = "Opening the board, sending the channel settings and reading them back…"
     static let pickSource = "Pick a source to connect."

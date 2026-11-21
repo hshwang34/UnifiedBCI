@@ -65,7 +65,7 @@ struct RecordingDetailView: View {
         }
         // Debug `-BCIRecordingTab`: bring the tabs to the top for snapshots.
         .onChange(of: [tab.rawValue, "\(flaggedChannels.count)"], initial: true) {
-            guard LaunchArguments.recordingTab != nil else { return }
+            guard LaunchArguments.recordingTab != nil || (LaunchArguments.liveSnapshots && tab != .channels) else { return }
             if LaunchArguments.qualityTrace, tab == .quality, !flaggedChannels.isEmpty {
                 proxy.scrollTo(SignalTraceCard.anchor, anchor: .top)
             } else {

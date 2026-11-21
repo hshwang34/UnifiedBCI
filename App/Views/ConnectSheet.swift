@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Brief 004 PR 5: pick a source, connect, see identity and requested-vs-readback, declare
-/// the channel map. Reachable only from Debug (`-BCIConnectSheet YES`, Debug ▸ New
-/// Recording…) until PR 6 wires "Connect hardware" and the acquisition screen.
+/// Brief 004: pick a source, connect, see identity and requested-vs-readback, declare the
+/// channel map. Start preview hands over to the acquisition screen under Recordings.
+/// Reachable only from Debug (Debug ▸ New Recording…, `-BCIConnectSheet`, `-BCIConnectSource`)
+/// until PR 6b wires New Recording… and the welcome screen's Connect hardware.
 struct ConnectSheet: View {
     @Bindable var model: ConnectController
     let dismiss: () -> Void
@@ -50,7 +51,8 @@ struct ConnectSheet: View {
             Text(ConnectSheetModel.title).font(Theme.Fonts.title).foregroundStyle(Theme.textPrimary)
                 .accessibilityAddTraits(.isHeader)
             if let source = model.source {
-                Text(AcquisitionStateModel.statusLine(model.state, source: source, recording: false, reconnects: 0))
+                Text(AcquisitionStateModel.statusLine(model.state, source: source, recording: model.isRecording,
+                                                      reconnects: model.snapshot.health.reconnects))
                     .font(.callout).foregroundStyle(Theme.textSecondary)
             }
         }
@@ -59,7 +61,7 @@ struct ConnectSheet: View {
     private var footer: some View {
         HStack {
             Button(ConnectSheetModel.close) {
-                Task { await model.close(); dismiss() }
+                Task { await model.closeSheet(); dismiss() }
             }
             .keyboardShortcut(.cancelAction)
             .help(ConnectSheetModel.closeHelp)
