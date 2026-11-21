@@ -165,6 +165,21 @@ final class SequenceAccountingTests: XCTestCase {
         ])
     }
 
+    func testDuplicateOrStaleHalfAcrossAnUnreadableCounterIsNotReported() {
+        // 10, ?, 10 on a step-2 board: without the unreadable sample this would be a stale
+        // half, but the slot's true counter is unknown, so only the invalid counter is
+        // reported and accounting resyncs on 10 (12 next is normal, 16 loses 14).
+        var acc = SequenceAccounting(expectedStep: 2)
+        XCTAssertEqual(acc.ingest(counters: [10, 7.5, 10, 12, 16][...], timestamps: [0, 1, 2, 3, 4][...]), [
+            .init(afterSampleIndex: 0, kind: .invalidCounter(value: 7.5)),
+            .init(afterSampleIndex: 3, kind: .gap(estimatedMissing: 1, ambiguous: true, parityViolation: false)),
+        ])
+        // The same on a step-1 board: no duplicateCounter.
+        var one = SequenceAccounting(expectedStep: 1)
+        XCTAssertEqual(one.ingest(counters: [10, 3.5, 10, 11][...], timestamps: [0, 1, 2, 3][...]),
+                       [.init(afterSampleIndex: 0, kind: .invalidCounter(value: 3.5))])
+    }
+
     func testOverflowSuspectedNearBufferCapacity() {
         XCTAssertTrue(SequenceAccounting.overflowSuspected(available: 44_900, bufferSize: 45_000))
         XCTAssertTrue(SequenceAccounting.overflowSuspected(available: 45_000, bufferSize: 45_000))
@@ -284,6 +299,7 @@ final class PlaybackBoardTests: XCTestCase {
         XCTAssertEqual(markers, [3])
     }
 
+    #if DEBUG
     func testFailedPlaybackSetupReleasesTheSession() async throws {
         let board = try BrainFlowBoard.playback(file: fixtureURL())
         let d = board.description
@@ -297,14 +313,15 @@ final class PlaybackBoardTests: XCTestCase {
         let preparedAfterFailure = try await board.isSessionPrepared()
         XCTAssertFalse(preparedAfterFailure, "no session may survive without old_timestamps")
 
-        // A retry prepares from scratch and keeps the file's timestamps.
-        await board.injectSetupFault(nil)
+        // The hook fired once and cleared; a retry prepares from scratch and keeps the
+        // file's timestamps.
         try await board.startStream()
         let chunks = try await drain(board, until: 1)
         try await board.release()
         let first = try XCTUnwrap(chunks.first { $0.count > 0 })
         XCTAssertEqual(first.row(d.timestampRow).first, try fixtureSamples()[0][d.timestampRow])
     }
+    #endif
 
     func testMissingPlaybackFileFailsToPrepare() async throws {
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent("no-such-\(UUID()).csv")
