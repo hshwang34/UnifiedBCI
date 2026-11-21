@@ -117,6 +117,29 @@ final class LiveScreenTests: XCTestCase {
         XCTAssertNil(RecordingDetailModel.liveTitle(for: m))
     }
 
+    func testDemoRecording_isJustDemoOnScreen_provenanceStaysStored() throws {
+        var m = try ContractJSON.decoder().decode(RecordingManifest.self, from: Data(contentsOf: fixtureManifest()))
+        let csv = try XCTUnwrap(AcquisitionSource.bundledDemo())
+        m.source = AcquisitionSource.playback(file: csv, loop: true).recordingSource(daisy, appVersion: "t")
+        let model = RecordingDetailModel(manifest: m, events: [])
+        XCTAssertEqual(model.badge, "Demo")
+        XCTAssertNil(model.warning, "decision #42: no playback / not-a-device banner on screen")
+        XCTAssertEqual(model.sourceFields.first { $0.label == "Device" }?.value, "Demo")
+        XCTAssertNil(model.sourceFields.first { $0.label == "Runs" }, "no raw run UUID")
+        let shown = ([model.title] + model.sourceFields.map(\.value)).joined(separator: " ").lowercased()
+        XCTAssertFalse(shown.contains("playback"), shown)
+        XCTAssertFalse(shown.contains("not a device") || shown.contains("not from a device"), shown)
+        // The stored provenance is untouched, and the export still carries it.
+        XCTAssertEqual(m.source.kind, "playback")
+        XCTAssertTrue(m.source.warning?.hasPrefix("Derived demo input") == true)
+        XCTAssertTrue(ProjectStore.attribution(for: m).contains("Derived demo input"))
+        // Synthetic keeps its warning.
+        m.source = AcquisitionSource.synthetic.recordingSource(daisy, appVersion: "t")
+        let synthetic = RecordingDetailModel(manifest: m, events: [])
+        XCTAssertEqual(synthetic.warning, "Synthetic board — generated signal, not a device")
+        XCTAssertNil(synthetic.badge)
+    }
+
     private func fixtureManifest() throws -> URL {
         let recordings = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/tiny.bciproj/recordings")
         let first = try XCTUnwrap(try FileManager.default.contentsOfDirectory(atPath: recordings.path).first { !$0.hasPrefix(".") })

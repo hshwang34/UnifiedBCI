@@ -203,6 +203,8 @@ struct RecordingDetailModel {
 
     let title: String
     let warning: String?
+    /// A neutral chip beside the title: "Demo" for a Demo recording (decision #42), else nil.
+    let badge: String?
     let sourceFields: [Field]
     let citations: [Citation]
     let derivations: [String]
@@ -225,16 +227,21 @@ struct RecordingDetailModel {
         isPublicDataset = s.kind == "public_dataset"
         // The manifest's own warning is the first line of the source panel (Records.swift);
         // a public dataset without one still gets the spec's line, built from its name.
-        warning = s.warning ?? (isPublicDataset ? "Public recording (\(s.dataset ?? "public dataset")) — not recorded on your device." : nil)
+        // Decision #42: on screen the Demo is just "Demo". Its stored provenance (playback
+        // kind, file, hash, derivation, warning) stays in the manifest and every export.
+        let demo = Self.isDemo(m)
+        badge = demo ? Self.demo : nil
+        warning = demo ? nil : s.warning ?? (isPublicDataset ? "Public recording (\(s.dataset ?? "public dataset")) — not recorded on your device." : nil)
 
         var fields: [Field] = []
         if let dataset = s.dataset { fields.append(Field(label: "Dataset", value: dataset)) }
         if let doi = s.doi { fields.append(Field(label: "DOI", value: doi)) }
         if let subject = s.subject { fields.append(Field(label: "Subject", value: subject)) }
-        fields.append(Field(label: "Runs", value: (s.runs ?? m.segments.map(\.runID)).joined(separator: ", ")))
+        // A live run id is a UUID: not shown for the Demo, whose run is the app's own.
+        if !demo { fields.append(Field(label: "Runs", value: (s.runs ?? m.segments.map(\.runID)).joined(separator: ", "))) }
         fields.append(Field(label: "Sample rate", value: Fmt.hertz(m.timing.nominalSampleRateHz)))
         fields.append(Field(label: "Reference", value: Self.declared(m.reference) ?? Self.undeclared))
-        fields.append(Field(label: "Device", value: Self.declared(s.boardName) ?? Self.undeclared))
+        fields.append(Field(label: "Device", value: demo ? Self.demo : Self.declared(s.boardName) ?? Self.undeclared))
         if let license = s.license { fields.append(Field(label: "License", value: license)) }
         sourceFields = fields
         citations = (s.attribution ?? []).map { Citation(text: $0.text, doi: $0.doi) }
@@ -261,6 +268,13 @@ struct RecordingDetailModel {
                      onsetSeconds: e.sampleAssociation.flatMap { rate > 0 ? Double($0.sampleIndex) / rate : nil },
                      runID: e.runID, trial: e.trialID ?? "—", segment: e.sampleAssociation?.segment ?? Int.max)
         }.sorted { ($0.segment, $0.onsetSortKey) < ($1.segment, $1.onsetSortKey) }
+    }
+
+    static let demo = "Demo"
+
+    /// Recorded from the bundled Demo source: playback of the Demo file.
+    static func isDemo(_ m: RecordingManifest) -> Bool {
+        m.source.kind == "playback" && m.source.sourceFiles?.first?.name == AcquisitionSource.demoFileName
     }
 
     /// A stored string, or nil when it declares nothing.

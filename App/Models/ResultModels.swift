@@ -232,7 +232,9 @@ struct ResultDetailModel {
     /// - Parameters:
     ///   - allResults: every result in the project, to name the original of a reproduction.
     ///   - modelName: display names for the worker's model keys (from `fit_evaluate_defaults`).
-    init(stored: StoredResult, allResults: [ResultMeta] = [], modelName: (String) -> String = { $0 }) throws {
+    /// `isDemo`: the recording came from the Demo source, whose stored warning is not shown
+    /// on screen (decision #42).
+    init(stored: StoredResult, allResults: [ResultMeta] = [], modelName: (String) -> String = { $0 }, isDemo: Bool = false) throws {
         let r = try EvaluationReport.decode(stored.evaluationJSON)
         report = r
         meta = stored.meta
@@ -259,7 +261,7 @@ struct ResultDetailModel {
         let ci = accuracyInterval.map { "95 percent confidence interval \(Fmt.fixed($0.lowerBound)) to \(Fmt.fixed($0.upperBound))" } ?? "no confidence interval"
         heroAccessibilityLabel = "Balanced accuracy \(Fmt.fixed(h.balancedAccuracy)). Accuracy \(Fmt.fixed(h.accuracy)), \(ci), trial-level, \(h.nTestTrials) trials. \(headline.balancedAccuracyInterval)"
         trialsLine = "n = \(h.nTestTrials) held-out trials in \(h.nTestRuns) run\(h.nTestRuns == 1 ? "" : "s") · \(EvidenceText.short(r.splitPolicy.evidence))"
-        warning = r.dataSource?.warning
+        warning = isDemo ? nil : r.dataSource?.warning
         evidence = EvidenceText.describe(r.splitPolicy.evidence)
 
         let original = stored.meta.reproductionOf ?? stored.meta.divergedFrom
