@@ -42,7 +42,7 @@ Connect
       project both open the Connect sheet (Q1). Without an open project the welcome button
       asks the user to open or create one first.
 - [ ] The sheet lists serial ports (`/dev/cu.*`, USB-serial devices first, with vendor/product
-      names from IOKit when available), plus "Synthetic board (no hardware)". Refresh re-scans;
+      names from IOKit when available), plus "Synthetic board (no hardware)" and "Demo" (decision #42). Refresh re-scans;
       a port that disappears while selected is named as gone.
 - [ ] Session state is one of PRD §7's seven states — disconnected, connecting, ready,
       streaming, interrupted, stopping, failed — shown in the project window's status line in
@@ -121,6 +121,12 @@ Recording
       Channels, Segments (with end reasons and gaps), Events (empty until brief 005), Quality.
 
 Honesty
+- [ ] **Demo source (decision #42):** "Demo" streams the bundled example recording (S001)
+      through BrainFlow's playback-file board with Cyton+Daisy as master board, so the whole
+      live path (drain, health, preview, record) runs on real EEG without hardware. The sheet
+      and status line call it "Demo" only. Its recordings store source kind `playback` with
+      the played file named in the source panel, so a stored recording never says it came
+      from a device.
 - [ ] A synthetic-board session and recording say "Synthetic board — generated signal, not a
       device" in the sheet, the status line and the recording's source panel.
 - [ ] The README's support matrix lists Cyton+Daisy as "built, not yet hand-tested" until the

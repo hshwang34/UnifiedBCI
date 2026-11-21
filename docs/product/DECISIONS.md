@@ -127,3 +127,6 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #41 · 2026-11-20 · The live per-trial outcome is the one cue-locked window matching the training window; time on the correct side is a secondary figure.
 *Why:* PM decision; comparable to the offline held-out score with an honest trial-level interval. Brief 006 Q4.
+
+#42 · 2026-11-20 · The Connect sheet offers a "Demo" source next to the serial ports and the synthetic board: the bundled example EEG streamed through BrainFlow's playback-file board along the full live path. On screen it is labelled "Demo" only; the stored recording keeps source kind `playback` and names the played file.
+*Why:* PM decision; lets anyone see live acquisition on real EEG without the kit (and makes honest screenshots possible), while stored provenance stays exact. Brief 004.
