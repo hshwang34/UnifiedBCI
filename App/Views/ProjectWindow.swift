@@ -704,7 +704,7 @@ private struct NoticeView: View {
     }
 
     @ViewBuilder private var finderButton: some View {
-        if case .exported(let url, _) = notice {
+        if case .exported(let url, _, _) = notice {
             Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
                 .buttonStyle(.bordered)
         }

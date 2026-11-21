@@ -177,10 +177,10 @@ Two models of one evaluation's fit share a file.
   `feedback` entry.
 
 Check each model's arrays against their hash and count each run's complete prediction lines
-(numpy and the standard library; an export without `live.json` prints `0 models, 0 live runs`):
+(numpy and the standard library, every file read and closed through `pathlib`; an export without `live.json` prints `0 models, 0 live runs`):
 
 ```sh
-python -I -c "import json,os,sys,hashlib,numpy as np;d=sys.argv[1];p=d+'/live.json';e=json.load(open(p)) if os.path.exists(p) else {'models':[],'liveRuns':[]};[print(m['name'],hashlib.sha256(open(d+'/'+m['arrays'],'rb').read()).hexdigest()==m['fittedSHA256'],list(np.load(d+'/'+m['arrays'],allow_pickle=False).files)) for m in e['models']];[print(r['kind'],sum(1 for l in open(d+'/'+r['predictions']['file']) if l[-1:]==chr(10))) for r in e['liveRuns']];print(len(e['models']),'models,',len(e['liveRuns']),'live runs')" /path/to/export
+python -I -c "import json,sys,hashlib,numpy as np;from pathlib import Path as P;d=P(sys.argv[1]);p=d/'live.json';e=json.loads(p.read_text()) if p.exists() else {'models':[],'liveRuns':[]};[print(m['name'],hashlib.sha256((d/m['arrays']).read_bytes()).hexdigest()==m['fittedSHA256'],list(np.load(d/m['arrays'],allow_pickle=False).files)) for m in e['models']];[print(r['kind'],(d/r['predictions']['file']).read_text().count(chr(10))) for r in e['liveRuns']];print(len(e['models']),'models,',len(e['liveRuns']),'live runs')" /path/to/export
 ```
 
 `docs/data-contracts.md` describes the records' fields.

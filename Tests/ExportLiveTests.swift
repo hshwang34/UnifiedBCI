@@ -125,8 +125,9 @@ final class ExportLiveTests: XCTestCase {
         let (result, models, runs, excluded) = try await scene()
         let out = scratch.appendingPathComponent("export")
         let summary = try await store.export(result: result.resultID, to: out)
-        XCTAssertEqual(summary, ExportSummary())
+        XCTAssertEqual(summary, ExportSummary(modelsFromOtherResults: 1, liveRunsOnOtherRecordings: 1))
         XCTAssertNil(ExportNoticeText.leftOut(summary))
+        XCTAssertEqual(ExportNoticeText.added(summary), "Also includes 1 model frozen from another result and 1 live run on another recording.")
         let files = try tree(out)
         let e = try evidence(out)
         XCTAssertEqual(Set(e.models.map(\.modelID)), Set(models.map(\.modelID)))
@@ -167,6 +168,20 @@ final class ExportLiveTests: XCTestCase {
                 XCTAssertNil(r.feedback, "a replay has no feedback log")
             }
         }
+    }
+
+    func testNotice_namesWhatWasAddedBeyondTheRecording() {
+        XCTAssertNil(ExportNoticeText.added(ExportSummary()))
+        XCTAssertEqual(ExportNoticeText.added(ExportSummary(modelsFromOtherResults: 1, liveRunsOnOtherRecordings: 2)),
+                       "Also includes 1 model frozen from another result and 2 live runs on other recordings.")
+        XCTAssertEqual(ExportNoticeText.added(ExportSummary(modelsFromOtherResults: 3)), "Also includes 3 models frozen from other results.")
+        XCTAssertEqual(ExportNoticeText.added(ExportSummary(liveRunsOnOtherRecordings: 1)), "Also includes 1 live run on another recording.")
+        let url = URL(fileURLWithPath: "/tmp/out")
+        XCTAssertEqual(ExportNoticeText.exported(url, leftOut: "1 live run folder couldn't be read and was left out.",
+                                                 added: "Also includes 1 live run on another recording."),
+                       "Exported to /tmp/out. Also includes 1 live run on another recording. 1 live run folder couldn't be read and was left out.")
+        XCTAssertFalse(ProjectSession.Notice.exported(url, leftOut: nil, added: "Also includes 1 live run on another recording.").isPersistent,
+                       "an addition is information, not a warning")
     }
 
     func testTwoExportsAreByteIdentical() async throws {

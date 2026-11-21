@@ -533,9 +533,18 @@ extension ResultDetailModel {
 /// Copy for the export notice (brief 005 PR 7). Run plans the export left out are named, so
 /// a user never takes a partial export for a complete one.
 enum ExportNoticeText {
-    static func exported(_ url: URL, leftOut: String?) -> String {
-        let base = "Exported to \((url.path as NSString).abbreviatingWithTildeInPath)."
-        return leftOut.map { base + " " + $0 } ?? base
+    static func exported(_ url: URL, leftOut: String?, added: String? = nil) -> String {
+        (["Exported to \((url.path as NSString).abbreviatingWithTildeInPath)."] + [added, leftOut].compactMap { $0 }).joined(separator: " ")
+    }
+
+    /// What the export carries beyond the chosen result and its recording (brief 006), so a
+    /// reader isn't surprised by a model or live run from elsewhere; nil when nothing.
+    static func added(_ s: ExportSummary) -> String? {
+        let m = s.modelsFromOtherResults, r = s.liveRunsOnOtherRecordings
+        var parts: [String] = []
+        if m > 0 { parts.append(m == 1 ? "1 model frozen from another result" : "\(m) models frozen from other results") }
+        if r > 0 { parts.append(r == 1 ? "1 live run on another recording" : "\(r) live runs on other recordings") }
+        return parts.isEmpty ? nil : "Also includes " + parts.joined(separator: " and ") + "."
     }
 
     /// Nil when nothing was left out.

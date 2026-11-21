@@ -96,6 +96,10 @@ extension ProjectStore {
             guard exported[run.modelID] != nil else { unverifiedRuns.append(run.liveRunID); continue }
             // The logs are read from the exact folder whose run.json was checked, and only if it
             // is still a real directory inside a real `live/` (not swapped for a link since).
+            // A swap between this check and the read is still possible, but the window is narrow
+            // and harmless: BoundedRead opens with O_NOFOLLOW, so a final-component link is
+            // refused, and a swapped directory can only offer a file that must still decode,
+            // validate and be a regular file within its cap.
             guard Self.isRealDirectory(dir.deletingLastPathComponent()), Self.isRealDirectory(dir) else { unreadableRuns += 1; continue }
             guard case .read(let predictions) = Self.readLog(dir, Self.predictionsFileName, as: PredictionRecord.self) else { unreadableRuns += 1; continue }
             let feedback = Self.readLog(dir, Self.feedbackFileName, as: FeedbackRecord.self)
@@ -116,7 +120,9 @@ extension ProjectStore {
         let evidence = ExportedLiveEvidence(models: exported.values.sorted { $0.modelID.uuidString < $1.modelID.uuidString }, liveRuns: liveRuns,
                                             unreadableModels: models.found - models.valid.count, unverifiedModels: unverifiedModels,
                                             unreadableLiveRuns: unreadableRuns, unverifiedLiveRuns: unverifiedRuns)
-        try ContractJSON.encoder().encode(evidence).write(to: out.appendingPathComponent(Self.liveExportFileName))
+        // Atomic (temp → fsync → rename → fsync dir), like every manifest; the whole folder is
+        // also renamed into place at the end, so a reader never sees a half-written index.
+        try AtomicFile.write(try ContractJSON.encoder().encode(evidence), to: out.appendingPathComponent(Self.liveExportFileName))
         return evidence
     }
 

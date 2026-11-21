@@ -86,6 +86,10 @@ public struct ExportSummary: Sendable, Equatable {
     public var unverifiedLiveRuns: Int = 0
     /// `live/` folders in the project whose run or logs couldn't be read or failed validation.
     public var unreadableLiveRuns: Int = 0
+    /// Exported models frozen from another result (a live run on this recording used them).
+    public var modelsFromOtherResults: Int = 0
+    /// Exported live runs and replays on another recording (their samples aren't in the folder).
+    public var liveRunsOnOtherRecordings: Int = 0
 }
 
 /// `channels.json`: the channel map alone, for readers that want nothing else.
@@ -197,7 +201,9 @@ extension ProjectStore {
         let live = try writeLiveEvidence(for: stored, into: out)
         return ExportSummary(unverifiedRunPlans: runPlans?.unverified ?? [], unreadableRunPlans: runPlans?.unreadable ?? 0,
                              unverifiedModels: live?.unverifiedModels.count ?? 0, unreadableModels: live?.unreadableModels ?? 0,
-                             unverifiedLiveRuns: live?.unverifiedLiveRuns.count ?? 0, unreadableLiveRuns: live?.unreadableLiveRuns ?? 0)
+                             unverifiedLiveRuns: live?.unverifiedLiveRuns.count ?? 0, unreadableLiveRuns: live?.unreadableLiveRuns ?? 0,
+                             modelsFromOtherResults: live?.models.filter { $0.sourceResultID != stored.meta.resultID }.count ?? 0,
+                             liveRunsOnOtherRecordings: live?.liveRuns.filter { !$0.recordingIncluded }.count ?? 0)
     }
 
     /// Copies the recording's verified run plans and exactly the protocol versions they name,
