@@ -1,0 +1,31 @@
+{
+  "classes" : [
+    {
+      "cue" : "left_arrow",
+      "displayName" : "Left hand",
+      "label" : "cue_left_hand"
+    },
+    {
+      "cue" : "right_arrow",
+      "displayName" : "Right hand",
+      "label" : "cue_right_hand"
+    }
+  ],
+  "contentHash" : "7bbbb908f6201a21f34453b05a0bb3d6f3fa06fbc2fc2624afb03daac2a3b7e8",
+  "createdAt" : "2027-01-15T08:00:00.000Z",
+  "formatVersion" : 1,
+  "instructions" : "Look at the cross. When an arrow appears, imagine squeezing that hand until the arrow goes away. Keep still and relax when the screen is blank.",
+  "lineageID" : "00000000-0000-4000-8000-000000000002",
+  "name" : "Left vs right hand (Graz-style)",
+  "order" : "seeded_shuffle_v1",
+  "protocolID" : "00000000-0000-4000-8000-000000000002",
+  "runsPerSession" : 4,
+  "timing" : {
+    "cueMs" : 4000,
+    "fixationMs" : 2000,
+    "restMaxMs" : 2500,
+    "restMinMs" : 1500
+  },
+  "trialsPerClass" : 3,
+  "version" : 1
+}

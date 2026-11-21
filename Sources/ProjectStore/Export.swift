@@ -70,6 +70,15 @@ public struct ExportedRecording: Codable, Sendable, Equatable {
     }
 }
 
+/// What an export left out, for the notice the user sees (empty when nothing was).
+public struct ExportSummary: Sendable, Equatable {
+    /// Run ids of valid plans not exported because their protocol couldn't be verified.
+    public var unverifiedRunPlans: [String] = []
+    /// Plan files in the project that couldn't be read or failed validation.
+    public var unreadableRunPlans: Int = 0
+    public var leftOutRunPlans: Int { unverifiedRunPlans.count + unreadableRunPlans }
+}
+
 /// `channels.json`: the channel map alone, for readers that want nothing else.
 public struct ExportedChannels: Codable, Sendable, Equatable {
     public var sampleRateHz: Double
@@ -87,7 +96,8 @@ extension ProjectStore {
     /// place, so `destination` is complete or absent; any failure removes the temp.
     /// Every segment must be tiled by its chunks contiguously from sample 0 (the rule the
     /// worker applies too); a gap or overlap fails the export rather than shifting samples.
-    public func export(result id: UUID, to destination: URL) throws {
+    @discardableResult
+    public func export(result id: UUID, to destination: URL) throws -> ExportSummary {
         let fm = FileManager.default
         guard !fm.fileExists(atPath: destination.path) else { throw ProjectStoreError.alreadyExists(destination) }
         // Confinement first: `O_NOFOLLOW` guards only the last component, so a hostile
@@ -102,17 +112,18 @@ extension ProjectStore {
         if (try? fm.attributesOfItem(atPath: tmp.path)) != nil { try fm.removeItem(at: tmp) }
         try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
         do {
-            try writeExport(stored, handle, into: tmp)
+            let summary = try writeExport(stored, handle, into: tmp)
             try AtomicFile.syncTree(tmp)
             try AtomicFile.rename(tmp, to: destination)
             try AtomicFile.syncDirectory(destination.deletingLastPathComponent())
+            return summary
         } catch {
             try? fm.removeItem(at: tmp)
             throw error
         }
     }
 
-    private func writeExport(_ stored: StoredResult, _ handle: RecordingHandle, into out: URL) throws {
+    private func writeExport(_ stored: StoredResult, _ handle: RecordingHandle, into out: URL) throws -> ExportSummary {
         let manifest = handle.manifest
         let channelRows = manifest.channels.map(\.sourceRow)
         let segments = manifest.segments.sorted(by: { $0.index < $1.index })
@@ -152,9 +163,10 @@ extension ProjectStore {
         }
 
         let encoder = ContractJSON.encoder()
+        let runPlans = try writeRunPlans(recording: handle.id, into: out)
         let recording = ExportedRecording(manifest: manifest, samples: .init(channelCount: channelRows.count,
                                                                              sampleRateHz: manifest.timing.nominalSampleRateHz, files: files),
-                                          runPlans: try writeRunPlans(recording: handle.id, into: out))
+                                          runPlans: runPlans)
         try encoder.encode(recording).write(to: out.appendingPathComponent("recording.json"))
         try encoder.encode(ExportedChannels(sampleRateHz: manifest.timing.nominalSampleRateHz, reference: manifest.reference,
                                             montage: manifest.montage, channels: manifest.channels))
@@ -173,6 +185,7 @@ extension ProjectStore {
         try stored.evaluationJSON.write(to: out.appendingPathComponent("evaluation.json"))
         try encoder.encode(stored.meta).write(to: out.appendingPathComponent("result.meta.json"))
         try Data(Self.attribution(for: manifest).utf8).write(to: out.appendingPathComponent("ATTRIBUTION.md"))
+        return ExportSummary(unverifiedRunPlans: runPlans?.unverified ?? [], unreadableRunPlans: runPlans?.unreadable ?? 0)
     }
 
     /// Copies the recording's verified run plans and exactly the protocol versions they name,

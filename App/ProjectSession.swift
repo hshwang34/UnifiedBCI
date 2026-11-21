@@ -20,7 +20,8 @@ final class ProjectSession: Identifiable {
         case reproduced(original: Date?)
         case diverged(original: Date?)
         case cancelled
-        case exported(URL)
+        /// `leftOut`: what the export had to leave out (ExportNoticeText), shown as a warning.
+        case exported(URL, leftOut: String?)
         case exportFailed(String)
 
         /// Persistent notices are solid warning chips that stay until dismissed; the rest
@@ -28,6 +29,7 @@ final class ProjectSession: Identifiable {
         var isPersistent: Bool {
             switch self {
             case .diverged, .exportFailed: return true
+            case .exported(_, let leftOut): return leftOut != nil
             default: return false
             }
         }
@@ -506,7 +508,7 @@ final class ProjectSession: Identifiable {
         case .reproduced(let d): return "Reproduced — identical to \(d.map(Self.time) ?? "the") original"
         case .diverged(let d): return "Differs from original (\(d.map(Self.time) ?? "earlier run")). Same recording, configuration and seed gave different bytes; this is a bug."
         case .cancelled: return "Cancelled — nothing saved."
-        case .exported(let url): return "Exported to \((url.path as NSString).abbreviatingWithTildeInPath)"
+        case .exported(let url, let leftOut): return ExportNoticeText.exported(url, leftOut: leftOut)
         case .exportFailed(let why): return "Export failed: \(why)"
         }
     }
@@ -597,8 +599,8 @@ final class ProjectSession: Identifiable {
     /// Writes the export folder for `resultID` at `destination`; the outcome is a notice.
     func export(resultID: UUID, to destination: URL) async {
         do {
-            try await store.export(result: resultID, to: destination)
-            notice = .exported(destination)
+            let summary = try await store.export(result: resultID, to: destination)
+            notice = .exported(destination, leftOut: ExportNoticeText.leftOut(summary))
         } catch ProjectStoreError.alreadyExists {
             notice = .exportFailed("\(destination.lastPathComponent) already exists. Export never overwrites; choose a new name.")
         } catch {

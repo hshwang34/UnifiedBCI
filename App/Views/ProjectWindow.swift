@@ -659,6 +659,7 @@ private struct NoticeView: View {
         if notice.isPersistent {
             HStack(spacing: Theme.Space.s) {
                 StatusChip(kind: .warning, text: text)
+                finderButton
                 dismissButton
             }
         } else {
@@ -666,15 +667,19 @@ private struct NoticeView: View {
                 Image(systemName: symbol).foregroundStyle(tint).accessibilityHidden(true)
                 Text(text).font(.callout).foregroundStyle(Theme.textPrimary)
                 Spacer(minLength: Theme.Space.s)
-                if case .exported(let url) = notice {
-                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
-                        .buttonStyle(.bordered)
-                }
+                finderButton
                 dismissButton
             }
             .padding(.horizontal, Theme.Space.l)
             .padding(.vertical, Theme.Space.m)
             .glassSurface(cornerRadius: Theme.Radius.hero)
+        }
+    }
+
+    @ViewBuilder private var finderButton: some View {
+        if case .exported(let url, _) = notice {
+            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                .buttonStyle(.bordered)
         }
     }
 
