@@ -21,8 +21,9 @@ public actor ProjectStore {
     public static let resultMetaFileName = "result.meta.json"
 
     public static let stagingLockFileName = ".staging.lock"
-    /// `montages/` holds saved channel maps (brief 004); older readers ignore it.
-    static let childDirectories = ["recordings", "pipelines", "results", "montages"]
+    /// `montages/` holds saved channel maps (brief 004), `protocols/` cued protocols (brief
+    /// 005); older readers ignore both.
+    static let childDirectories = ["recordings", "pipelines", "results", "montages", "protocols"]
 
     public nonisolated let directory: URL
     public private(set) var manifest: ProjectManifest
@@ -67,6 +68,7 @@ public actor ProjectStore {
         }
         let manifest = ProjectManifest(name: name, created: now)
         try AtomicFile.write(try ContractJSON.encoder().encode(manifest), to: url.appendingPathComponent(projectFileName))
+        try writeProtocol(ProtocolRecord(draft: .grazDefault, parent: nil, createdAt: now), in: url)   // decision #28
         return ProjectStore(directory: url, manifest: manifest)
     }
 
@@ -388,7 +390,7 @@ public actor ProjectStore {
         return try ContractJSON.decoder().decode(ResultMeta.self, from: data)
     }
 
-    private func childIDs(in child: String, requiring file: String) throws -> [UUID] {
+    func childIDs(in child: String, requiring file: String) throws -> [UUID] {
         try Self.childIDs(in: directory, child: child, requiring: file)
     }
 
@@ -463,6 +465,7 @@ public actor ProjectStore {
                 guard !isSymlink(entry) else { continue }
                 sweep(entry)
                 sweep(entry.appendingPathComponent("chunks", isDirectory: true))
+                sweep(entry.appendingPathComponent(runsDirectoryName, isDirectory: true))
             }
         }
         return result

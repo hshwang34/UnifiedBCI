@@ -147,9 +147,14 @@ public struct TimingSemantics: Codable, Sendable, Equatable {
     /// (BrainFlow writes the even Daisy packet's counter once per packet pair).
     public var sequenceStep: Int
     public var notes: String
+    /// BrainFlow's marker row: 0 on every sample, except the one sample written after the app
+    /// called `insert_marker` (brief 005 cue association). Nil for imports and recordings made
+    /// before brief 005; an older reader ignores the key, so no format bump.
+    public var markerRow: Int?
 
     public init(nominalSampleRateHz: Double, timestampClock: ClockDomain, timestampGeneratedBy: String,
-                sequenceCounterRow: Int?, sequenceStep: Int, notes: String) {
+                sequenceCounterRow: Int?, sequenceStep: Int, notes: String, markerRow: Int? = nil) {
+        self.markerRow = markerRow
         self.nominalSampleRateHz = nominalSampleRateHz
         self.timestampClock = timestampClock
         self.timestampGeneratedBy = timestampGeneratedBy
@@ -410,7 +415,7 @@ public struct EventRecord: Codable, Sendable, Equatable {
         public var recordingID: UUID
         public var segment: Int
         public var sampleIndex: Int
-        public var method: String             // "nearest_receipt_timestamp"
+        public var method: String             // "brainflow_marker" | "nearest_receipt_timestamp"
 
         public init(recordingID: UUID, segment: Int, sampleIndex: Int, method: String) {
             self.recordingID = recordingID; self.segment = segment; self.sampleIndex = sampleIndex; self.method = method

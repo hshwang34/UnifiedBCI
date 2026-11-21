@@ -29,7 +29,7 @@ public struct RecordingHandle: Sendable {
 
     /// Structural checks a decoder cannot make: every chunk's dimensions are positive, its
     /// sample range end and byte size fit an `Int`, its `fileName` is exactly the canonical name for its
-    /// index, indices are unique, every channel's `sourceRow` is a row of every chunk, and no
+    /// index, indices are unique, every channel's `sourceRow` (and the marker row) is a row of every chunk, and no
     /// monotonic time is negative.
     static func validate(_ manifest: RecordingManifest) throws {
         // Monotonic times are nanoseconds since boot: never negative. Readers subtract them.
@@ -57,6 +57,9 @@ public struct RecordingHandle: Sendable {
             _ = try expectedByteCount(entry)
             for channel in manifest.channels where !(0..<entry.rowCount).contains(channel.sourceRow) {
                 throw ProjectStoreError.invalidManifest("channel \(channel.id) reads row \(channel.sourceRow), but chunk \(entry.index) has \(entry.rowCount) rows")
+            }
+            if let row = manifest.timing.markerRow, !(0..<entry.rowCount).contains(row) {
+                throw ProjectStoreError.invalidManifest("marker row \(row) is not a row of chunk \(entry.index)")
             }
         }
     }
