@@ -65,6 +65,9 @@ private struct ResultHero: View {
                 Text("\(m.referenceName) · stored \(stored.meta.createdAt.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption).foregroundStyle(Theme.textSecondary)
                 Spacer()
+                Button(ReplayCopy.freezeButton) { session.showFreeze(stored) }
+                    .buttonStyle(.bordered)
+                    .help(ReplayCopy.freezeHelp)
                 Button { workspace.exportPanel(for: session) } label: { Label("Export…", systemImage: "square.and.arrow.up") }
                     .buttonStyle(.bordered)
             }

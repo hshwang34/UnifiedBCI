@@ -162,9 +162,30 @@ struct ParityViewModel: Equatable {
     let firstValid: String
     let chunkings: String
     let mismatches: [String]
+    /// "Cue-locked trial windows: 40 of 40 match offline", from the stored predictions.
+    let cueLocked: String
+    /// "At threshold 0.60: 12 of 140 valid windows abstained".
+    let abstentions: String
 
-    init?(record: LiveRunRecord, sampleRateHz: Double) {
+    /// `predictions`: the replay's stored `predictions.jsonl` (the first chunking), which
+    /// carry the offline reference for every window; empty when they couldn't be read.
+    init?(record: LiveRunRecord, sampleRateHz: Double, predictions: [PredictionRecord] = []) {
         guard let p = record.parity else { return nil }
+        let scoreTolerance = p.deviations.first { $0.quantity == "score" }?.allowed ?? 1e-8
+        let cl = predictions.filter { $0.windowKind == "cue_locked" && $0.offline != nil }
+        if cl.isEmpty {
+            cueLocked = p.cueLockedCompared.map { "Cue-locked trial windows compared: \($0)" } ?? "No cue-locked trial windows were compared"
+        } else {
+            let matched = cl.filter { q in
+                guard let o = q.offline, o.validity == q.validity else { return false }
+                guard let a = q.score, let b = o.score else { return q.score == nil && o.score == nil }
+                return abs(a - b) <= scoreTolerance
+            }.count
+            cueLocked = "Cue-locked trial windows: \(matched) of \(cl.count) match offline (the windows each trial is scored on)"
+        }
+        let valid = record.summary?.byValidity[Validity.valid.rawValue] ?? 0
+        let threshold = Fmt.fixed(record.abstainThreshold)
+        abstentions = "At threshold \(threshold): \(record.summary?.abstained ?? 0) of \(valid) valid windows abstained (model confidence below \(threshold))"
         passed = p.passed
         headline = p.passed ? "Streaming matches offline within tolerance" : "Streaming differs from offline"
         symbol = p.passed ? "checkmark.seal" : "exclamationmark.triangle"
@@ -194,5 +215,84 @@ struct ParityViewModel: Equatable {
         case "score": return "LDA score"
         default: return q
         }
+    }
+}
+
+/// One frozen model in the Pipelines list (brief 006 Freeze criteria).
+struct FrozenModelRowModel: Equatable, Identifiable {
+    let id: UUID
+    let name: String
+    let source: String
+    let usage: String
+
+    init(model: ModelRecord, sourceResultDate: Date?, liveRuns: Int) {
+        id = model.modelID
+        name = model.name
+        source = "\(FreezeSheetModel.recipeName(model.recipe)) · from the result of "
+            + (sourceResultDate.map(FreezeSheetModel.dateText) ?? "a result no longer in this project")
+        usage = liveRuns == 0 ? "Not used in a live run yet" : "Used in \(liveRuns) live run\(liveRuns == 1 ? "" : "s")"
+    }
+
+    /// The model's facts on its detail page.
+    static func facts(_ m: ModelRecord) -> [FreezeSheetModel.Row] {
+        [
+            .init(label: "Channels", value: "\(m.expectedChannelIDs.count), in this order: \(m.expectedChannelIDs.joined(separator: ", "))"),
+            .init(label: "Sample rate", value: Fmt.hertz(m.expectedSampleRateHz)),
+            .init(label: "Band-pass", value: "\(Fmt.fixed(m.bandpass.lowHz, 1))–\(Fmt.fixed(m.bandpass.highHz, 1)) Hz, causal, order \(m.bandpass.order)"),
+            .init(label: "Window", value: "\(Fmt.seconds(m.window.lengthSeconds)) starting \(Fmt.seconds(m.window.offsetSeconds)) after the cue"),
+            .init(label: "Filter warm-up", value: "\(m.warmupSamples) samples (\(Fmt.seconds(Double(m.warmupSamples) / max(m.expectedSampleRateHz, 1))))"),
+            .init(label: "Classes", value: "\(m.classLabels[0]) vs \(m.classLabels[1])"),
+            .init(label: "Training runs", value: m.trainingRunIDs.isEmpty ? "not recorded" : m.trainingRunIDs.joined(separator: ", ")),
+            .init(label: "Frozen", value: FreezeSheetModel.dateText(m.frozenAt)),
+            .init(label: "Arrays SHA-256", value: String(m.fittedSHA256.prefix(16)) + "…"),
+        ]
+    }
+}
+
+/// Copy for Freeze and Replay outside the two models above.
+enum ReplayCopy {
+    static let freezeButton = "Freeze for live use…"
+    static let freezeHelp = "Freeze this result's fitted model for replay and live feedback"
+    static let replayButton = "Replay…"
+    static let replayHelp = "Run a recording through a frozen model chunk by chunk and compare with offline"
+    static let modelsSection = "Frozen models"
+    static let recipesSection = "Recipes"
+    static let noModels = "No frozen models. Open a result and choose Freeze for live use…."
+    static let noModelForReplay = "No frozen model yet. Open a result and choose Freeze for live use… first."
+    static let replaysTitle = "Replays"
+    static let noReplays = "Not replayed yet. Replay… runs a recording through this model chunk by chunk."
+    static let thresholdHelp = "Model confidence below this counts as an abstention (decision #39). It is stored with the replay."
+    static let replayExplainer = "The recording is fed through the model in pieces of 1, 7, 13 and 125 samples and a seeded random mix, "
+        + "and every window is compared with the offline evaluation. Channels must match the model exactly; nothing is reordered or resampled."
+
+    static func frozen(_ name: String) -> String { "Frozen as \u{201C}\(name)\u{201D}. It is listed under Pipelines." }
+
+    static func replayRow(_ r: LiveRunRecord, recording: String) -> String {
+        "\(FreezeSheetModel.dateText(r.startedAt)) · \(recording) · " + (r.parity?.passed == true ? "matches" : "differs")
+    }
+
+    /// The Replay sheet's status line for the runner's state.
+    static func state(_ s: ReplayRunner.State) -> String? {
+        switch s {
+        case .idle, .done: return nil
+        case .running(.starting): return "Starting the analysis worker…"
+        case .running(.loading): return "Loading the recording and the model…"
+        case .running(.replaying): return "Replaying chunk by chunk at five chunkings…"
+        case .running(.storing): return "Saving the replay…"
+        case .analysisUnavailable(let why): return "Analysis unavailable: the worker stopped (\(why)). Nothing was saved."
+        case .refused(let code, let message): return ModelErrorText.describe(code: code, message: message)
+        case .failed(let why): return "Replay failed; nothing was saved. \(why)"
+        case .cancelled: return "Cancelled — nothing saved."
+        }
+    }
+
+    /// Why Freeze failed, in words: the worker's model codes, or the store's refusal.
+    static func freezeFailed(_ error: Error) -> String {
+        if let e = error as? WorkerError {
+            return ModelErrorText.modelCodes.contains(e.code) ? ModelErrorText.describe(code: e.code, message: e.message)
+                : "The analysis worker couldn't check the model (\(e.message)). Nothing was frozen."
+        }
+        if case ProjectStoreError.invalidModel(let why) = error { return "Not frozen: \(why)." }
+        return "Not frozen: \(error)"
     }
 }

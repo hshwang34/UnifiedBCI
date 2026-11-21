@@ -59,6 +59,11 @@ import Foundation
 ///                                              operator panel and the participant window mid-run),
 ///                                              "run-summary", then evaluates the recording:
 ///                                              "run-evaluated"
+///     -BCIFreezeAndReplay YES                  with -BCIAutoEvaluate: Freeze for live use… on the
+///                                              first result ("freeze-sheet"), freeze it, the model
+///                                              under Pipelines ("pipelines-models"), Replay… over its
+///                                              recording ("replay-sheet") and the parity view
+///                                              ("replay-parity", "replay-parity-full"); brief 006 PR 5
 @MainActor
 enum LaunchArguments {
     private static var done = false
@@ -289,6 +294,7 @@ enum LaunchArguments {
                 await snap("reproduction")
             }
         }
+        if evaluations > 0, defaults.bool(forKey: "BCIFreezeAndReplay") { await freezeAndReplay(session, snap: snap) }
         for name in ["pipelines", "protocols"] where snapshots != nil {
             session.section = SidebarSection(rawValue: name)!
             if session.section == .protocols { await session.awaitProtocols() }
@@ -306,6 +312,36 @@ enum LaunchArguments {
     }
 
     #if DEBUG
+    /// Brief 006 PR 5: freeze the first result, then replay its recording through the model.
+    private static func freezeAndReplay(_ session: ProjectSession, snap: (String, Duration) async -> Void) async {
+        guard let root = session.resultTree.first else { return }
+        session.section = .results
+        session.selectedResultID = root.id
+        await session.awaitSelectedResult()
+        guard let stored = session.selectedResult else { return }
+        session.showFreeze(stored)
+        await snap("freeze-sheet", .seconds(1.5))
+        guard let model = await session.freeze() else { return await snap("freeze-refused", .seconds(1)) }
+        try? await Task.sleep(for: .seconds(1))          // the sheet finishes closing first
+        session.section = .pipelines
+        session.frozen.selectedModelID = model.modelID
+        await snap("pipelines-models", .seconds(1.5))
+        session.showReplay(model: model.modelID, recording: model.sourceRecordingID)
+        await snap("replay-sheet", .seconds(1))
+        let state = await session.replay()
+        await session.frozen.awaitLoads()
+        guard case .done = state else { return await snap("replay-refused", .seconds(1)) }
+        try? await Task.sleep(for: .seconds(1))
+        session.replaySheetClosed()
+        await snap("replay-parity", .seconds(1.5))
+        if let window = NSApp.windows.first(where: { $0.title == session.name }) {
+            let frame = window.frame
+            window.setFrame(NSRect(x: frame.minX, y: frame.maxY - 1500, width: frame.width, height: 1500), display: true)
+            await snap("replay-parity-full", .seconds(1.5))
+            window.setFrame(frame, display: true)
+        }
+    }
+
     /// Brief 005 PR 4: the Protocols section and the "New version…" editor: as opened,
     /// with broken rules, valid with the cue warning, then saved as the next version.
     private static func protocolEditor(_ session: ProjectSession, snap: (String, Duration) async -> Void) async {
