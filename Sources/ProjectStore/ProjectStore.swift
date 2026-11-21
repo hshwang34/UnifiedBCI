@@ -21,8 +21,9 @@ public actor ProjectStore {
     public static let resultMetaFileName = "result.meta.json"
 
     public static let stagingLockFileName = ".staging.lock"
-    /// `montages/` holds saved channel maps (brief 004); older readers ignore it.
-    static let childDirectories = ["recordings", "pipelines", "results", "montages"]
+    /// `montages/` holds saved channel maps (brief 004), `protocols/` cued protocols (brief
+    /// 005); older readers ignore both.
+    static let childDirectories = ["recordings", "pipelines", "results", "montages", "protocols"]
 
     public nonisolated let directory: URL
     public private(set) var manifest: ProjectManifest
@@ -67,6 +68,7 @@ public actor ProjectStore {
         }
         let manifest = ProjectManifest(name: name, created: now)
         try AtomicFile.write(try ContractJSON.encoder().encode(manifest), to: url.appendingPathComponent(projectFileName))
+        try writeProtocol(ProtocolRecord(draft: .grazDefault, parent: nil, createdAt: now), in: url)   // decision #28
         return ProjectStore(directory: url, manifest: manifest)
     }
 
@@ -388,18 +390,19 @@ public actor ProjectStore {
         return try ContractJSON.decoder().decode(ResultMeta.self, from: data)
     }
 
-    private func childIDs(in child: String, requiring file: String) throws -> [UUID] {
+    func childIDs(in child: String, requiring file: String) throws -> [UUID] {
         try Self.childIDs(in: directory, child: child, requiring: file)
     }
 
     /// Child directories named by a UUID that contain `file`. Temp directories, stray
-    /// files and directories missing the file are not children, whatever else they hold.
+    /// files, symbolic links and directories missing the file are not children.
     private static func childIDs(in project: URL, child: String, requiring file: String) throws -> [UUID] {
         let fm = FileManager.default
         let dir = project.appendingPathComponent(child, isDirectory: true)
         let names = try fm.contentsOfDirectory(atPath: dir.path)
         return names.compactMap { name -> UUID? in
-            guard let id = UUID(uuidString: name),
+            // A child is a real directory: a symlinked one could point outside the project.
+            guard let id = UUID(uuidString: name), isRealDirectory(dir.appendingPathComponent(name)),
                   fm.fileExists(atPath: dir.appendingPathComponent(name).appendingPathComponent(file).path) else { return nil }
             return id
         }.sorted { $0.uuidString < $1.uuidString }
@@ -463,6 +466,7 @@ public actor ProjectStore {
                 guard !isSymlink(entry) else { continue }
                 sweep(entry)
                 sweep(entry.appendingPathComponent("chunks", isDirectory: true))
+                sweep(entry.appendingPathComponent(runsDirectoryName, isDirectory: true))
             }
         }
         return result

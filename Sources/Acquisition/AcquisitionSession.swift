@@ -221,7 +221,8 @@ public actor AcquisitionSession {
             source: source.recordingSource(d, appVersion: options.appVersion), channels: request.channels,
             reference: request.reference, montage: request.montage,
             timing: .init(nominalSampleRateHz: Double(d.samplingRate), timestampClock: .brainflowReceipt, timestampGeneratedBy: "host",
-                          sequenceCounterRow: d.packageNumRow, sequenceStep: d.sequenceStep, notes: Self.timingNotes(source)),
+                          sequenceCounterRow: d.packageNumRow, sequenceStep: d.sequenceStep, notes: Self.timingNotes(source),
+                          markerRow: d.markerRow),
             clockMapping: .init(anchorMonotonicNanos: now, anchorWall: wall),
             boardConfiguration: configuration, chunks: [], segments: [])
         var writerOptions = options.writer

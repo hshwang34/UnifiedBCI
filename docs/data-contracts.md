@@ -15,11 +15,14 @@ MyExperiment.bciproj/
     recording.json             RecordingManifest
     chunks/000000.f64 …        append-only sample chunks (see below)
     events.jsonl               one EventRecord per line, append-only
+    runs/<runID>.plan.json     RunPlan of a cued run (brief 005), written before its first cue
   pipelines/<uuid>/
     pipeline.json              PipelineRecord
     fitted.npz                 explicit arrays only (filters, CSP patterns, LDA weights)
   montages/<uuid>/
     montage.json               ChannelMapRecord: a saved channel map (made on first save)
+  protocols/<uuid>/
+    protocol.json              ProtocolRecord: one immutable cued-protocol version
   results/<uuid>/
     evaluation.json            worker evaluation record (verbatim bytes from the worker)
     result.meta.json           ResultMeta: wall clock, durations, worker build, reproduction link
@@ -180,6 +183,48 @@ Three clocks, never mixed:
   band-pass runs once over the whole segment from zero state, and trials whose window
   starts inside the filter's warm-up are excluded and listed. Nothing is ever concatenated
   across segments, and no values are interpolated into raw data.
+
+## Protocols and run plans
+
+Added for brief 005 without a format bump: older readers never open `protocols/` or
+`runs/`, and `TimingSemantics.markerRow` is an optional key they ignore.
+
+- `protocols/<uuid>/protocol.json` (`ProtocolRecord`) is one version, written once (temp
+  directory → fsync → rename) and never edited. Editing makes a new directory with
+  `version` + 1, `basedOn` = the version it was edited from, and the same `lineageID` (the
+  id of v1). A new project gets the default (decision #28) as v1. Durations are whole
+  milliseconds. `contentHash` is SHA-256 over compact sorted-key JSON of the class labels
+  and cue symbols, `timing`, `trialsPerClass` and `order`, the fields that decide what the
+  participant sees and when; it is recomputed on read, and a mismatch makes the file
+  unreadable. Each file is read with a size cap and validated (ids, two classes, labels
+  `[a-z0-9_]` and not a protocol event name such as `rest` or `trial_abort`, durations 1 ms–30 s, rest min ≤ max, 1–100 trials per class); a file that
+  fails is skipped and counted, never fatal. A new version's parent is re-read from the
+  store; a draft identical to any version of its lineage is refused. A stored version whose
+  `lineageID` differs from its parent's is flagged ("mislinked") and grouped as a lineage of
+  its own, never merged into the one it claims; so is every version on a `basedOn` cycle and
+  every version more than 256 below its root. The chain is walked iteratively.
+- `recordings/<uuid>/runs/<runID>.plan.json` (`RunPlan`) is written atomically before the
+  run's first cue and never replaced. It names the protocol id, version and content hash,
+  the session seed, the run index and `seed` = session seed + run index (run seeds stay
+  below 2^52 so they are exact in any JSON reader), and the planned trials: id
+  `<runID>-t<nn>`, label, drawn rest and nominal offsets in ms from the first fixation
+  (fixation, cue, cue end, end; pauses shift what happens, never the plan). Run ids are
+  `[A-Za-z0-9_-]`, 1–64 characters, because they name the file. A plan is used only when the
+  protocol version it names is stored with the same content hash; otherwise it is listed as a
+  protocol mismatch. "Used in n runs" counts the plans that are used. Plans are never written
+  through a symbolic link: a symlinked recording (or `runs/`) directory is not a child of the
+  project at all.
+- Order `seeded_shuffle_v1`: SplitMix64 started at the run seed; Fisher–Yates from the end
+  over the class-balanced list (class 0 × N, then class 1 × N) with an unbiased
+  rejection draw `below(n)`; then one `below(restMax − restMin + 1)` per trial for rest, on
+  a 1 ms grid (the runner shows each phase at the first frame on or after its time). It is
+  integer arithmetic only. `Sources/Protocol/ProtocolSchedule.swift` and
+  `worker/src/bciworkspace_worker/protocol_schedule.py` implement it, and both are tested
+  against `Tests/Fixtures/protocol_schedule_golden.json`.
+- `TimingSemantics.markerRow` is BrainFlow's marker row for live recordings (0 except on the
+  sample written after `insert_marker`), validated as a row of every chunk; `nil` for imports
+  and older recordings. Cue events associate through it with `method: "brainflow_marker"`,
+  or `nearest_receipt_timestamp` when the marker is not found.
 
 ## Source and configuration
 
