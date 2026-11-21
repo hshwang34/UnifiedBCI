@@ -2,6 +2,11 @@
 
 Version 0.1 · October 16, 2026 · Research-informed proposal, not a validated market claim
 
+> **Build status (2026-11-21):** phases 1–3 of the roadmap (section 9) are built on main
+> (briefs 001–006). The hand-run hardware checklists of briefs 004, 005 and 006 on the real
+> Cyton + Daisy are pending (decision #26). The PRD text below is unchanged; the README tracks
+> what is built.
+
 ## 1. Sponsor recommendation
 
 Build a native macOS workspace that helps an individual BCI developer produce, inspect, reproduce, and test an experiment. Build it in Xcode. Use your Cyton + Daisy as the first supported live device, and your CSP/LDA motor-imagery work as the first complete decoding example. Make recorded-data workflows useful before hardware is connected.
