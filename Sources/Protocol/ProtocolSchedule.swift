@@ -17,9 +17,10 @@ public struct SplitMix64: Sendable {
     }
 
     /// An unbiased integer in `0..<n` by rejection: draws until `x >= (2^64 − n) mod n`,
-    /// then returns `x mod n`. Always draws at least once. `n` must be ≥ 1.
+    /// then returns `x mod n`. Always draws at least once. `n == 0` stands for 2^64 (one
+    /// raw draw), so no input traps; the schedule never asks for it.
     public mutating func below(_ n: UInt64) -> UInt64 {
-        precondition(n >= 1)
+        guard n != 0 else { return next() }
         let threshold = (0 &- n) % n
         while true {
             let x = next()
@@ -40,8 +41,27 @@ public struct SplitMix64: Sendable {
 /// 4. Offsets from the first fixation onset: cue = fixation + `fixationMs`, cue end = cue +
 ///    `cueMs`, end = cue end + rest = the next trial's fixation.
 public enum ProtocolSchedule {
-    public static func trials(_ p: ProtocolRecord, seed: UInt64, runID: String) -> [RunPlan.PlannedTrial] {
-        precondition(ProtocolRecord.problems(p.draft).isEmpty && p.order == ProtocolRecord.orderSeededShuffleV1, "schedule needs a valid protocol")
+    public enum ScheduleError: Error, Equatable, CustomStringConvertible {
+        case invalidProtocol(String)
+        case invalidRunID
+        case runIndex(Int)
+        case seedOutOfRange
+
+        public var description: String {
+            switch self {
+            case .invalidProtocol(let why): return "protocol can't be scheduled: \(why)"
+            case .invalidRunID: return "run id must be 1–64 characters of A–Z, a–z, 0–9, _ and -"
+            case .runIndex(let i): return "run index \(i) is outside 0–\(ProtocolRecord.maxRunsPerSession - 1)"
+            case .seedOutOfRange: return "session seed + run index must stay below 2^52"
+            }
+        }
+    }
+
+    /// The trials of one run. Throws for a protocol that fails validation (never traps).
+    public static func trials(_ p: ProtocolRecord, seed: UInt64, runID: String) throws -> [RunPlan.PlannedTrial] {
+        if let first = ProtocolRecord.problems(p.draft).first { throw ScheduleError.invalidProtocol(first.description) }
+        guard p.order == ProtocolRecord.orderSeededShuffleV1 else { throw ScheduleError.invalidProtocol(ProtocolProblem.order(p.order).description) }
+        guard RunPlan.isValidRunID(runID) else { throw ScheduleError.invalidRunID }
         var rng = SplitMix64(seed: seed)
         var order = p.classes.flatMap { Array(repeating: $0.label, count: p.trialsPerClass) }
         var i = order.count - 1
@@ -62,19 +82,22 @@ public enum ProtocolSchedule {
         return out
     }
 
-    /// A fresh session seed, below `RunPlan.sessionSeedLimit`. The one random draw a session
-    /// makes; everything after it is reproducible from the stored value.
+    /// A fresh session seed, low enough that every run's seed stays below
+    /// `RunPlan.sessionSeedLimit`. The one random draw a session makes; everything after it
+    /// is reproducible from the stored value.
     public static func drawSessionSeed() -> UInt64 {
-        UInt64.random(in: 0..<RunPlan.sessionSeedLimit)
+        UInt64.random(in: 0..<(RunPlan.sessionSeedLimit - UInt64(ProtocolRecord.maxRunsPerSession)))
     }
 
     /// The plan for run `runIndex` of a session, ready to store before the first cue.
     public static func plan(_ p: ProtocolRecord, recordingID: UUID, sessionID: String?, runID: String, runIndex: Int,
-                            sessionSeed: UInt64, createdAt: Date = Date()) -> RunPlan {
+                            sessionSeed: UInt64, createdAt: Date = Date()) throws -> RunPlan {
+        guard (0..<ProtocolRecord.maxRunsPerSession).contains(runIndex) else { throw ScheduleError.runIndex(runIndex) }
+        guard sessionSeed < RunPlan.sessionSeedLimit - UInt64(runIndex) else { throw ScheduleError.seedOutOfRange }
         let seed = sessionSeed + UInt64(runIndex)
         return RunPlan(recordingID: recordingID, sessionID: sessionID, runID: runID, runIndex: runIndex,
                        protocolID: p.protocolID, protocolVersion: p.version, protocolContentHash: p.contentHash,
-                       order: p.order, sessionSeed: sessionSeed, seed: seed, trials: trials(p, seed: seed, runID: runID),
+                       order: p.order, sessionSeed: sessionSeed, seed: seed, trials: try trials(p, seed: seed, runID: runID),
                        createdAt: createdAt)
     }
 }

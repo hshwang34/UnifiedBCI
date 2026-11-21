@@ -184,14 +184,21 @@ Added for brief 005 without a format bump: older readers never open `protocols/`
   participant sees and when; it is recomputed on read, and a mismatch makes the file
   unreadable. Each file is read with a size cap and validated (ids, two classes, labels
   `[a-z0-9_]` and not a protocol event name such as `rest` or `trial_abort`, durations 1 ms–30 s, rest min ≤ max, 1–100 trials per class); a file that
-  fails is skipped and counted, never fatal.
+  fails is skipped and counted, never fatal. A new version's parent is re-read from the
+  store; a draft identical to any version of its lineage is refused. A stored version whose
+  `lineageID` differs from its parent's is flagged ("mislinked") and grouped as a lineage of
+  its own, never merged into the one it claims.
 - `recordings/<uuid>/runs/<runID>.plan.json` (`RunPlan`) is written atomically before the
   run's first cue and never replaced. It names the protocol id, version and content hash,
-  the session seed, the run index and `seed` = session seed + run index (session seeds stay
+  the session seed, the run index and `seed` = session seed + run index (run seeds stay
   below 2^52 so they are exact in any JSON reader), and the planned trials: id
   `<runID>-t<nn>`, label, drawn rest and nominal offsets in ms from the first fixation
   (fixation, cue, cue end, end; pauses shift what happens, never the plan). Run ids are
-  `[A-Za-z0-9_-]`, 1–64 characters, because they name the file. "Used in n runs" counts plans.
+  `[A-Za-z0-9_-]`, 1–64 characters, because they name the file. A plan is used only when the
+  protocol version it names is stored with the same content hash; otherwise it is listed as a
+  protocol mismatch. "Used in n runs" counts the plans that are used. Plans are never written
+  through a symbolic link: a symlinked recording (or `runs/`) directory is not a child of the
+  project at all.
 - Order `seeded_shuffle_v1`: SplitMix64 started at the run seed; Fisher–Yates from the end
   over the class-balanced list (class 0 × N, then class 1 × N) with an unbiased
   rejection draw `below(n)`; then one `below(restMax − restMin + 1)` per trial for rest, on

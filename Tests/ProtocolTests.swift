@@ -80,7 +80,7 @@ final class ProtocolTests: XCTestCase {
             XCTAssertEqual(String(decoding: ProtocolRecord.canonicalContent(classes: p.classes, timing: p.timing, trialsPerClass: p.trialsPerClass, order: p.order), as: UTF8.self),
                            c.contentCanonical, c.name)
             XCTAssertEqual(p.contentHash, c.contentHash, c.name)
-            XCTAssertEqual(ProtocolSchedule.trials(p, seed: try hex(c.seed), runID: c.runID), c.trials, c.name)
+            XCTAssertEqual(try ProtocolSchedule.trials(p, seed: try hex(c.seed), runID: c.runID), c.trials, c.name)
         }
     }
 
@@ -95,7 +95,7 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(ProtocolRecord.problems(d), [])
         let p = ProtocolRecord(draft: d, parent: nil)
         XCTAssertEqual(p.contentHash, try golden().schedules[0].contentHash)
-        let trials = ProtocolSchedule.trials(p, seed: 9, runID: "RUN")
+        let trials = try ProtocolSchedule.trials(p, seed: 9, runID: "RUN")
         XCTAssertEqual(trials.count, 40)
         XCTAssertEqual(trials.filter { $0.label == "cue_left_hand" }.count, 20, "exactly N per class")
         XCTAssertTrue(trials.allSatisfy { (1500...2500).contains($0.restMs) })
@@ -104,15 +104,15 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(RunPlan.trialID(runID: "R", index: 99), "R-t100")
     }
 
-    func testRunSeedIsSessionSeedPlusRunIndex_andPlansAreDeterministic() {
+    func testRunSeedIsSessionSeedPlusRunIndex_andPlansAreDeterministic() throws {
         let p = ProtocolRecord(draft: .grazDefault, parent: nil)
         let rec = UUID(), at = Date(timeIntervalSince1970: 1_800_000_000)
-        let a = ProtocolSchedule.plan(p, recordingID: rec, sessionID: "S", runID: "R2", runIndex: 2, sessionSeed: 42, createdAt: at)
-        let b = ProtocolSchedule.plan(p, recordingID: rec, sessionID: "S", runID: "R2", runIndex: 2, sessionSeed: 42, createdAt: at)
+        let a = try ProtocolSchedule.plan(p, recordingID: rec, sessionID: "S", runID: "R2", runIndex: 2, sessionSeed: 42, createdAt: at)
+        let b = try ProtocolSchedule.plan(p, recordingID: rec, sessionID: "S", runID: "R2", runIndex: 2, sessionSeed: 42, createdAt: at)
         XCTAssertEqual(a, b)
         XCTAssertEqual(a.seed, 44)
-        XCTAssertEqual(a.trials, ProtocolSchedule.trials(p, seed: 44, runID: "R2"))
-        XCTAssertNotEqual(a.trials, ProtocolSchedule.trials(p, seed: 45, runID: "R2"))
+        XCTAssertEqual(a.trials, try ProtocolSchedule.trials(p, seed: 44, runID: "R2"))
+        XCTAssertNotEqual(a.trials, try ProtocolSchedule.trials(p, seed: 45, runID: "R2"))
         XCTAssertEqual(a.protocolContentHash, p.contentHash)
         XCTAssertNil(a.problem(recordingID: rec, fileRunID: "R2"))
         XCTAssertLessThan(ProtocolSchedule.drawSessionSeed(), RunPlan.sessionSeedLimit)
@@ -170,7 +170,8 @@ final class ProtocolTests: XCTestCase {
 
     func testNewProjectHasTheDefaultV1_andEditsMakeNewVersions() async throws {
         let store = try newStore()
-        let (initial, unreadable) = try await store.protocols()
+        let list = try await store.protocols()
+        let (initial, unreadable) = (list.protocols, list.unreadable)
         XCTAssertEqual(unreadable, 0)
         let v1 = try XCTUnwrap(initial.first)
         XCTAssertEqual(initial.count, 1)
@@ -249,7 +250,8 @@ final class ProtocolTests: XCTestCase {
         try enc.encode(linked).write(to: outside)
         try fm.createSymbolicLink(at: try file(linked.protocolID), withDestinationURL: outside)
         XCTAssertEqual(mkfifo(try file(UUID()).path, 0o600), 0)
-        let (listed, unreadable) = try await store.protocols()             // a FIFO open would block here
+        let list = try await store.protocols()                             // a FIFO open would block here
+        let (listed, unreadable) = (list.protocols, list.unreadable)
         XCTAssertEqual(listed.count, 1, "only the project's own default")
         XCTAssertEqual(unreadable, 6)
         let usage = try await store.protocolUsage()
@@ -264,9 +266,9 @@ final class ProtocolTests: XCTestCase {
         edit.trialsPerClass = 2
         let v2 = try await store.createProtocolVersion(edit, basedOn: v1)
         let at = Date(timeIntervalSince1970: 1_800_000_000)
-        let plans = [ProtocolSchedule.plan(v1, recordingID: rec, sessionID: "S", runID: "run-0", runIndex: 0, sessionSeed: 7, createdAt: at),
-                     ProtocolSchedule.plan(v1, recordingID: rec, sessionID: "S", runID: "run-1", runIndex: 1, sessionSeed: 7, createdAt: at),
-                     ProtocolSchedule.plan(v2, recordingID: rec, sessionID: "S", runID: "run-2", runIndex: 2, sessionSeed: 7, createdAt: at)]
+        let plans = [try ProtocolSchedule.plan(v1, recordingID: rec, sessionID: "S", runID: "run-0", runIndex: 0, sessionSeed: 7, createdAt: at),
+                     try ProtocolSchedule.plan(v1, recordingID: rec, sessionID: "S", runID: "run-1", runIndex: 1, sessionSeed: 7, createdAt: at),
+                     try ProtocolSchedule.plan(v2, recordingID: rec, sessionID: "S", runID: "run-2", runIndex: 2, sessionSeed: 7, createdAt: at)]
         for plan in plans { try await store.writeRunPlan(plan) }
         let back = try await store.runPlans(recording: rec)
         XCTAssertEqual(back.plans, plans)
@@ -283,7 +285,7 @@ final class ProtocolTests: XCTestCase {
             try await store.writeRunPlan(unsafe)
             XCTFail("a run id that is not a plain file name is refused")
         } catch ProjectStoreError.invalidRunPlan {}
-        let nowhere = ProtocolSchedule.plan(v1, recordingID: UUID(), sessionID: nil, runID: "x", runIndex: 0, sessionSeed: 1)
+        let nowhere = try ProtocolSchedule.plan(v1, recordingID: UUID(), sessionID: nil, runID: "x", runIndex: 0, sessionSeed: 1)
         do {
             try await store.writeRunPlan(nowhere)
             XCTFail("a plan needs its recording")
@@ -296,7 +298,7 @@ final class ProtocolTests: XCTestCase {
         let store = try newStore()
         let rec = try await recording(in: store)
         let v1 = try await store.protocols().protocols[0]
-        let good = ProtocolSchedule.plan(v1, recordingID: rec, sessionID: nil, runID: "good", runIndex: 0, sessionSeed: 1,
+        let good = try ProtocolSchedule.plan(v1, recordingID: rec, sessionID: nil, runID: "good", runIndex: 0, sessionSeed: 1,
                                          createdAt: Date(timeIntervalSince1970: 1_800_000_000))
         try await store.writeRunPlan(good)
         let runs = store.directory.appendingPathComponent("recordings/\(rec.uuidString)/runs")
@@ -322,7 +324,8 @@ final class ProtocolTests: XCTestCase {
         label.trials[0].label = "Left"
         try plant(label, as: "label")
         try Data("[]".utf8).write(to: runs.appendingPathComponent("junk" + ProjectStore.runPlanSuffix))
-        let (plans, unreadable) = try await store.runPlans(recording: rec)
+        let read = try await store.runPlans(recording: rec)
+        let (plans, unreadable) = (read.plans, read.unreadable)
         XCTAssertEqual(plans, [good])
         XCTAssertEqual(unreadable, 7)
         // A `runs` symlink planted in a hostile project is neither read nor written through.
@@ -331,7 +334,7 @@ final class ProtocolTests: XCTestCase {
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: store.directory.appendingPathComponent("recordings/\(rec2.uuidString)/runs"), withDestinationURL: outside)
         do {
-            try await store.writeRunPlan(ProtocolSchedule.plan(v1, recordingID: rec2, sessionID: nil, runID: "r", runIndex: 0, sessionSeed: 1))
+            try await store.writeRunPlan(try ProtocolSchedule.plan(v1, recordingID: rec2, sessionID: nil, runID: "r", runIndex: 0, sessionSeed: 1))
             XCTFail("writes never follow a planted link")
         } catch ProjectStoreError.invalidManifest {}
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), [])
@@ -348,6 +351,121 @@ final class ProtocolTests: XCTestCase {
         let reopened = try ProjectStore.open(at: store.directory)
         let removed = await reopened.removedOrphans
         XCTAssertEqual(removed, ["runs/.tmp-R.plan.json"])
+    }
+
+    // MARK: Fix round (PR #33 review)
+
+    func testScheduleThrowsInsteadOfTrapping() throws {
+        let p = ProtocolRecord(draft: .grazDefault, parent: nil)
+        let rec = UUID()
+        XCTAssertThrowsError(try ProtocolSchedule.plan(p, recordingID: rec, sessionID: nil, runID: "r", runIndex: -1, sessionSeed: 0)) {
+            XCTAssertEqual($0 as? ProtocolSchedule.ScheduleError, .runIndex(-1))
+        }
+        XCTAssertThrowsError(try ProtocolSchedule.plan(p, recordingID: rec, sessionID: nil, runID: "r", runIndex: 3, sessionSeed: RunPlan.sessionSeedLimit - 3)) {
+            XCTAssertEqual($0 as? ProtocolSchedule.ScheduleError, .seedOutOfRange)
+        }
+        XCTAssertNoThrow(try ProtocolSchedule.plan(p, recordingID: rec, sessionID: nil, runID: "r", runIndex: 3, sessionSeed: RunPlan.sessionSeedLimit - 4))
+        XCTAssertThrowsError(try ProtocolSchedule.plan(p, recordingID: rec, sessionID: nil, runID: "a/b", runIndex: 0, sessionSeed: 0)) {
+            XCTAssertEqual($0 as? ProtocolSchedule.ScheduleError, .invalidRunID)
+        }
+        var bad = p
+        bad.trialsPerClass = 0
+        XCTAssertThrowsError(try ProtocolSchedule.trials(bad, seed: 1, runID: "r")) {
+            XCTAssertEqual($0 as? ProtocolSchedule.ScheduleError, .invalidProtocol("trials per class must be 1–100, not 0"))
+        }
+        var rng = SplitMix64(seed: 0)
+        XCTAssertEqual(rng.below(0), 0xe220a8397b1dcdaf, "n = 0 stands for 2^64: one raw draw, no trap")
+        let limit = RunPlan.sessionSeedLimit - UInt64(ProtocolRecord.maxRunsPerSession)
+        XCTAssertTrue((0..<100).allSatisfy { _ in ProtocolSchedule.drawSessionSeed() < limit })
+    }
+
+    func testNewVersionsReReadTheParentFromTheStore_andRefuseAnyEarlierDraft() async throws {
+        let store = try newStore()
+        let v1 = try await store.protocols().protocols[0]
+        var forged = v1
+        forged.lineageID = UUID(); forged.version = 7                     // the caller's copy lies
+        var edit = v1.draft
+        edit.timing.cueMs = 5000
+        let v2 = try await store.createProtocolVersion(edit, basedOn: forged)
+        XCTAssertEqual(v2.version, 2)
+        XCTAssertEqual(v2.lineageID, v1.lineageID)
+        XCTAssertEqual(v2.basedOn, v1.protocolID)
+        do {
+            _ = try await store.createProtocolVersion(.grazDefault, basedOn: v2)
+            XCTFail("going back to v1's draft is not a new version")
+        } catch ProjectStoreError.invalidProtocol(let why) { XCTAssertEqual(why, "nothing changed from version 1") }
+        var instructions = v2.draft
+        instructions.instructions = "Different words."
+        let v3 = try await store.createProtocolVersion(instructions, basedOn: v2)
+        XCTAssertEqual(v3.contentHash, v2.contentHash, "an instructions edit is a real version with the same stimulus hash")
+        let stranger = ProtocolRecord(draft: .grazDefault, parent: nil)
+        do {
+            _ = try await store.createProtocolVersion(edit, basedOn: stranger)
+            XCTFail("a parent that isn't stored is refused")
+        } catch ProjectStoreError.invalidProtocol {}
+    }
+
+    func testAVersionClaimingAnotherLineageIsFlaggedAndGroupedAlone() async throws {
+        let store = try newStore()
+        let v1 = try await store.protocols().protocols[0]
+        var draft = v1.draft
+        draft.trialsPerClass = 5
+        var liar = ProtocolRecord(draft: draft, parent: v1, version: 2)
+        liar.lineageID = UUID()
+        liar.contentHash = ProtocolRecord.contentHash(of: liar)
+        try ProjectStore.writeProtocol(liar, in: store.directory)
+        let list = try await store.protocols()
+        XCTAssertEqual(list.mislinked, [liar.protocolID])
+        XCTAssertEqual(list.lineage(of: liar), liar.protocolID)
+        XCTAssertEqual(list.lineage(of: v1), v1.lineageID)
+        draft.trialsPerClass = 6
+        do {
+            _ = try await store.createProtocolVersion(draft, basedOn: liar)
+            XCTFail("a mislinked version can't be extended")
+        } catch ProjectStoreError.invalidProtocol {}
+        let next = try await store.createProtocolVersion(draft, basedOn: v1)
+        XCTAssertEqual(next.version, 2, "the mislinked v2 isn't counted in v1's lineage")
+    }
+
+    func testRunPlansNeverWriteThroughASymlinkedRecording_andMismatchedProtocolsAreFlagged() async throws {
+        let store = try newStore()
+        let v1 = try await store.protocols().protocols[0]
+        let fm = FileManager.default
+        // A recording directory that is a link to a real recording outside the project.
+        let outsideProject = try ProjectStore.create(at: scratch.appendingPathComponent("other.bciproj"), name: "o")
+        let outsideRec = try await recording(in: outsideProject)
+        try fm.createSymbolicLink(at: store.directory.appendingPathComponent("recordings/\(outsideRec.uuidString)"),
+                                  withDestinationURL: outsideProject.directory.appendingPathComponent("recordings/\(outsideRec.uuidString)"))
+        let ids = try await store.recordingIDs()
+        XCTAssertEqual(ids, [], "a symlinked recording is not a child")
+        do {
+            try await store.writeRunPlan(try ProtocolSchedule.plan(v1, recordingID: outsideRec, sessionID: nil, runID: "r", runIndex: 0, sessionSeed: 1))
+            XCTFail("never write outside the project")
+        } catch ProjectStoreError.missingRecording {}
+        XCTAssertFalse(fm.fileExists(atPath: outsideProject.directory.appendingPathComponent("recordings/\(outsideRec.uuidString)/runs").path))
+
+        let rec = try await recording(in: store)
+        var wrongHash = try ProtocolSchedule.plan(v1, recordingID: rec, sessionID: nil, runID: "h", runIndex: 0, sessionSeed: 1)
+        wrongHash.protocolContentHash = String(repeating: "a", count: 64)
+        do {
+            try await store.writeRunPlan(wrongHash)
+            XCTFail("a plan must name a stored version and its hash")
+        } catch ProjectStoreError.invalidRunPlan {}
+        let runs = store.directory.appendingPathComponent("recordings/\(rec.uuidString)/runs")
+        try fm.createDirectory(at: runs, withIntermediateDirectories: true)
+        try ContractJSON.encoder().encode(wrongHash).write(to: runs.appendingPathComponent("h.plan.json"))
+        var wrongVersion = try ProtocolSchedule.plan(v1, recordingID: rec, sessionID: nil, runID: "v", runIndex: 0, sessionSeed: 1)
+        wrongVersion.protocolVersion = 2
+        try ContractJSON.encoder().encode(wrongVersion).write(to: runs.appendingPathComponent("v.plan.json"))
+        let good = try ProtocolSchedule.plan(v1, recordingID: rec, sessionID: nil, runID: "g", runIndex: 1, sessionSeed: 1,
+                                             createdAt: Date(timeIntervalSince1970: 1_800_000_000))
+        try await store.writeRunPlan(good)
+        let read = try await store.runPlans(recording: rec)
+        XCTAssertEqual(read.plans, [good])
+        XCTAssertEqual(read.protocolMismatch, ["h", "v"])
+        XCTAssertEqual(read.unreadable, 0)
+        let usage = try await store.protocolUsage()
+        XCTAssertEqual(usage, [v1.protocolID: 1])
     }
 
     // MARK: Marker row

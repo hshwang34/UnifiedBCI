@@ -228,7 +228,7 @@ public struct ProtocolRecord: Codable, Sendable, Equatable, Identifiable {
 /// from the first fixation onset (pauses shift what happens, not the plan).
 public struct RunPlan: Codable, Sendable, Equatable {
     public static let maxFileBytes = 1024 * 1024
-    /// Session seeds stay below 2^52 so every seed is exact as a JSON number in any reader.
+    /// Run seeds (session seed + run index) stay below 2^52, exact as a JSON number in any reader.
     public static let sessionSeedLimit: UInt64 = 1 << 52
 
     public var formatVersion: Int = ContractVersion.format
@@ -290,7 +290,7 @@ public struct RunPlan: Codable, Sendable, Equatable {
         guard protocolVersion >= 1, protocolContentHash.utf8.count == 64,
               protocolContentHash.utf8.allSatisfy({ (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }) else { return "protocol reference is malformed" }
         guard (0..<ProtocolRecord.maxRunsPerSession).contains(runIndex), sessionSeed < Self.sessionSeedLimit,
-              seed == sessionSeed + UInt64(runIndex) else { return "seed is not session seed + run index" }
+              seed == sessionSeed + UInt64(runIndex), seed < Self.sessionSeedLimit else { return "seed is not session seed + run index below 2^52" }
         let maxTrials = 2 * ProtocolRecord.trialsPerClassRange.upperBound
         guard (2...maxTrials).contains(trials.count) else { return "trial count \(trials.count) out of range" }
         var next = 0
