@@ -24,6 +24,8 @@ final class ProjectSession: Identifiable {
         /// `leftOut`: what the export had to leave out (ExportNoticeText), shown as a warning.
         case exported(URL, leftOut: String?)
         case exportFailed(String)
+        /// Brief 006: a result's fit was frozen under this name.
+        case frozen(name: String)
 
         /// Persistent notices are solid warning chips that stay until dismissed; the rest
         /// are toasts that dismiss themselves and clear on a section change (§2.5).
@@ -64,6 +66,8 @@ final class ProjectSession: Identifiable {
     let inspector: InspectionRunner
     /// Brief 002 signal view: trace windows on the inspection worker.
     let traces: SignalWindowRunner
+    /// Brief 006: frozen models and replays, on a worker of their own.
+    let frozen: FrozenModelsController
     nonisolated var id: URL { url }
 
     private(set) var name: String
@@ -93,6 +97,7 @@ final class ProjectSession: Identifiable {
         didSet {
             if section != oldValue, let n = notice, !n.isPersistent { notice = nil }
             if section == .protocols, section != oldValue { loadProtocols(addingDefault: true) }
+            if section == .pipelines, section != oldValue { frozen.reloadInBackground() }
         }
     }
 
@@ -282,6 +287,7 @@ final class ProjectSession: Identifiable {
         self.runner = EvaluationRunner(store: store, launch: launch)
         self.inspector = InspectionRunner(projectDirectory: url, launch: launch)
         self.traces = SignalWindowRunner(inspector: inspector)
+        self.frozen = FrozenModelsController(store: store, launch: launch)
         self.name = name
     }
 
@@ -324,6 +330,7 @@ final class ProjectSession: Identifiable {
             recordingProtocols = protocols
             if selectedRecordingID == nil || !ids.contains(selectedRecordingID!) { selectedRecordingID = ids.first }
             try await reloadResults()
+            await frozen.reload()
             loadError = nil
         } catch {
             loadError = "\(error)"
@@ -598,6 +605,7 @@ final class ProjectSession: Identifiable {
         case .cancelled: return "Cancelled — nothing saved."
         case .exported(let url, let leftOut): return ExportNoticeText.exported(url, leftOut: leftOut)
         case .exportFailed(let why): return "Export failed: \(why)"
+        case .frozen(let name): return ReplayCopy.frozen(name)
         }
     }
 
@@ -682,6 +690,55 @@ final class ProjectSession: Identifiable {
         return m
     }
 
+    // MARK: Freeze and replay (brief 006)
+
+    /// Freeze for live use…: the sheet for `stored`, with its training sessions (from the
+    /// recording) and the protocol's cue length (nil for imported data).
+    func showFreeze(_ stored: StoredResult) {
+        let report = try? EvaluationReport.decode(stored.evaluationJSON)
+        let segments = recordings.first { $0.id == stored.meta.recordingID }?.manifest.segments ?? []
+        let sessions = (report?.splitManifest.trainingRuns ?? []).map { run in segments.first { $0.runID == run }?.sessionID }
+        let sheet = FreezeSheetModel(result: stored, report: report, role: .reference, sessions: sessions,
+                                     cueLengthSeconds: cueLength(stored.meta.recordingID))
+        frozen.freezeDraft = .init(result: stored, report: report, sessions: sessions, cueLengthSeconds: cueLength(stored.meta.recordingID),
+                                   name: sheet.defaultName)
+    }
+
+    @discardableResult
+    func freeze() async -> ModelRecord? {
+        guard let model = await frozen.freeze() else { return nil }
+        notice = .frozen(name: model.name)
+        announce(noticeText(notice!))
+        return model
+    }
+
+    /// Replay… from a recording (model to pick) or a model (recording to pick).
+    func showReplay(model: UUID? = nil, recording: UUID? = nil) {
+        frozen.replayDraft = .init(modelID: model ?? frozen.models.first?.modelID, recordingID: recording ?? selectedRecordingID ?? recordings.first?.id)
+    }
+
+    @discardableResult
+    func replay() async -> ReplayRunner.State? {
+        let state = await frozen.replay(cueLength: cueLength)
+        // The parity view is under Pipelines; switched to once the sheet has closed
+        // (changing the section while a sheet closes can leave it stuck on screen).
+        if case .done = state { showPipelinesAfterSheet = true }
+        return state
+    }
+
+    /// Set by a finished replay; the Replay sheet's dismissal shows Pipelines.
+    var showPipelinesAfterSheet = false
+
+    func replaySheetClosed() {
+        if showPipelinesAfterSheet { section = .pipelines }
+        showPipelinesAfterSheet = false
+    }
+
+    /// The protocol's cue length for a recording its run plans name, else nil.
+    func cueLength(_ recording: UUID) -> Double? {
+        recordingProtocols[recording].map { Double($0.timing.cueMs) / 1000 }
+    }
+
     // MARK: Export
 
     /// Writes the export folder for `resultID` at `destination`; the outcome is a notice.
@@ -716,9 +773,11 @@ final class ProjectSession: Identifiable {
         await live?.close()
         // The inspection worker stops alongside the evaluation, inside the same budget.
         async let inspection: Void = inspector.shutdown()
+        async let models: Void = frozen.shutdown()
         await runner.stop(within: Self.stopLimit)
         await runner.shutdown()
         await inspection
+        await models
         isShutDown = true
     }
 
