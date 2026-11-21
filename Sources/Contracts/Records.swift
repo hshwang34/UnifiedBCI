@@ -87,6 +87,8 @@ public enum Validity: String, Codable, Sendable {
     case disconnected
     case workerUnavailable = "worker_unavailable"
     case channelMismatch = "channel_mismatch"
+    /// The worker refused the window's samples (brief 006: non-finite input).
+    case invalidInput = "invalid_input"
 }
 
 public enum GapEvidence: String, Codable, Sendable {
@@ -497,15 +499,46 @@ public struct PredictionRecord: Codable, Sendable, Equatable {
     public var inputSampleRange: SampleRange?
     public var score: Double?
     public var validity: Validity
-    public var emittedAtMonotonicNanos: Int64
+    /// When the app had the prediction; nil for a replay, which has no emission clock.
+    public var emittedAtMonotonicNanos: Int64?
     public var action: Action
+    /// Stays nil in live logs: what was shown, and when, lives in `feedback.jsonl`.
     public var feedbackPresentedAtMonotonicNanos: Int64?
+    // Brief 006, all optional (no older reader writes or reads predictions).
+    /// Position in its run's `predictions.jsonl`, from 0; `feedback.jsonl` keys on it.
+    public var sequence: Int?
+    /// Why a window isn't valid (`window_spans_detected_gap`, `window_starts_before_filter_warmup`, …).
+    public var validityDetail: String?
+    /// Drain time of the chunk holding the window's last sample.
+    public var acquisitionReceiptMonotonicNanos: Int64?
+    public var workerComputeNanos: Int64?
+    /// Model confidence, max(σ(s), 1 − σ(s)): the uncalibrated shrinkage-LDA posterior.
+    public var confidence: Double?
+    /// `hop` (every 16 samples) or `cue_locked` (the trial's training window).
+    public var windowKind: String?
+    public var trialID: String?
+    public var feedbackEligible: Bool?
+    /// Replay only: the offline reference for the same window.
+    public var offline: Offline?
 
     public init(pipelineID: UUID, inputSegment: Int, inputSampleRange: SampleRange?, score: Double?, validity: Validity,
-                emittedAtMonotonicNanos: Int64, action: Action, feedbackPresentedAtMonotonicNanos: Int64?) {
+                emittedAtMonotonicNanos: Int64?, action: Action, feedbackPresentedAtMonotonicNanos: Int64?,
+                sequence: Int? = nil, validityDetail: String? = nil, acquisitionReceiptMonotonicNanos: Int64? = nil,
+                workerComputeNanos: Int64? = nil, confidence: Double? = nil, windowKind: String? = nil, trialID: String? = nil,
+                feedbackEligible: Bool? = nil, offline: Offline? = nil) {
         self.pipelineID = pipelineID; self.inputSegment = inputSegment; self.inputSampleRange = inputSampleRange
         self.score = score; self.validity = validity; self.emittedAtMonotonicNanos = emittedAtMonotonicNanos
         self.action = action; self.feedbackPresentedAtMonotonicNanos = feedbackPresentedAtMonotonicNanos
+        self.sequence = sequence; self.validityDetail = validityDetail
+        self.acquisitionReceiptMonotonicNanos = acquisitionReceiptMonotonicNanos; self.workerComputeNanos = workerComputeNanos
+        self.confidence = confidence; self.windowKind = windowKind; self.trialID = trialID
+        self.feedbackEligible = feedbackEligible; self.offline = offline
+    }
+
+    public struct Offline: Codable, Sendable, Equatable {
+        public var validity: Validity
+        public var score: Double?
+        public init(validity: Validity, score: Double?) { self.validity = validity; self.score = score }
     }
 
     /// `start` + `count` rather than a closed range: unambiguous for empty windows and in JSON.

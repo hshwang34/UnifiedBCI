@@ -240,7 +240,7 @@ final class ProjectStoreTests: XCTestCase {
         try Data([1, 2, 3]).write(to: recDir.appendingPathComponent("chunks/.tmp-000001"))
         try Data("{".utf8).write(to: recDir.appendingPathComponent(".tmp-recording.json"))
         // Temp directories from a crash an hour ago (younger ones may still be in use).
-        for child in ["results", "pipelines"] {
+        for child in ["results", "pipelines", "models", "live"] {
             let dir = url.appendingPathComponent("\(child)/.tmp-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try Self.age(dir)
@@ -248,7 +248,7 @@ final class ProjectStoreTests: XCTestCase {
 
         let reopened = try ProjectStore.open(at: url)
         let removed = await reopened.removedOrphans
-        XCTAssertEqual(removed.count, 4)
+        XCTAssertEqual(removed.count, 6)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: recDir.appendingPathComponent("chunks").path), ["000000.f64"])
         let issues = try await reopened.verify(recording: manifest.recordingID)
         XCTAssertEqual(issues, [])

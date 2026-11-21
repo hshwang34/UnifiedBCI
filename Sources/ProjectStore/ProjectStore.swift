@@ -22,8 +22,9 @@ public actor ProjectStore {
 
     public static let stagingLockFileName = ".staging.lock"
     /// `montages/` holds saved channel maps (brief 004), `protocols/` cued protocols (brief
-    /// 005); older readers ignore both.
-    static let childDirectories = ["recordings", "pipelines", "results", "montages", "protocols"]
+    /// 005), `models/` frozen models and `live/` live runs and replays (brief 006); older
+    /// readers ignore all four.
+    static let childDirectories = ["recordings", "pipelines", "results", "montages", "protocols", "models", "live"]
 
     public nonisolated let directory: URL
     public private(set) var manifest: ProjectManifest
