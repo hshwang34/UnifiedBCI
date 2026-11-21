@@ -9,7 +9,7 @@ enum LiveRunCopy {
     static let setupIntro = "Runs a cued protocol on the connected source and shows the participant a bar with the model's confidence during each cue. The run is recorded, and afterwards replayed through the same model as a check."
     static let modelLabel = "Frozen model"
     static let thresholdLabel = "Abstention threshold"
-    static let thresholdHelp = "Model confidence below this hides the bar and shows \"Not confident\". Stored with the live run (default 0.60)."
+    static let thresholdHelp = "Model confidence below this hides the bar and shows \"Model unsure\". Stored with the live run (default 0.60)."
     static let start = "Start Live Run"
     static let starting = "Starting the analysis worker…"
     static let noModels = "Freeze a result for live use first (Results → Freeze for live use…)."
