@@ -267,27 +267,73 @@ final class AcquisitionSessionTests: XCTestCase {
 
     // MARK: Reentrancy
 
-    func testDoubleRetry_runsOneReconnectLoop_noLeakedSession() async throws {
+    func testSecondRetryDuringTheHandover_isIgnored_oneSessionNothingLeaked() async throws {
+        let link = FakeLink()
+        let session = AcquisitionSession(source: .synthetic, projectDirectory: nil, options: fastOptions(), makeBoard: link.factory)
+        await session.connect()
+        await session.startStreaming()
+        try await waitFor("samples") { link.delivered > 50 }
+        // The auto-retry loop is now stuck in a prepare that cancellation can't cut short,
+        // so the first Retry spends ~0.3-0.6 s handing over from it.
+        link.set { $0.silent = true; $0.prepareFails = true; $0.stickyPrepareDelay = .milliseconds(300) }
+        try await waitFor("interrupted") { if case .interrupted = session.snapshot.state { true } else { false } }
+        try await waitFor("an attempt in flight") { link.boardsMade >= 2 }
+        link.set { $0.silent = false; $0.prepareFails = false }
+        let firstDone = Mutex(false)
+        let first = Task { await session.reconnect(); firstDone.withLock { $0 = true } }
+        try await Task.sleep(for: .milliseconds(50))
+        await session.reconnect()
+        XCTAssertFalse(firstDone.withLock { $0 }, "the second press returned at once, during the first's handover")
+        await first.value
+        try await waitFor("streaming") { session.snapshot.state == .streaming }
+        XCTAssertEqual(link.live, 1, "one board session, nothing leaked")
+        XCTAssertEqual(session.snapshot.health.reconnects, 1)
+        XCTAssertEqual(link.value(\.maxLive), 1)
+        await session.disconnect()
+        XCTAssertEqual(link.live, 0)
+    }
+
+    func testReconnectNowWhileRetrying_restartsTheWindow() async throws {
         let link = FakeLink()
         var options = fastOptions()
-        options.retryWindow = .milliseconds(200)
+        options.retryWindow = .milliseconds(800)
         let session = AcquisitionSession(source: .synthetic, projectDirectory: nil, options: options, makeBoard: link.factory)
         await session.connect()
         await session.startStreaming()
         try await waitFor("samples") { link.delivered > 50 }
         link.set { $0.silent = true; $0.prepareFails = true }
+        try await waitFor("interrupted") { if case .interrupted = session.snapshot.state { true } else { false } }
+        await session.reconnect()                       // window 1: 0-0.8 s
+        try await Task.sleep(for: .milliseconds(500))
+        await session.reconnect()                       // window 2: 0.5-1.3 s
+        try await Task.sleep(for: .milliseconds(500))   // past window 1's end
+        guard case .interrupted = session.snapshot.state else { return XCTFail("window restarted, still retrying: \(session.snapshot.state)") }
         try await waitFor("failed") { if case .failed = session.snapshot.state { true } else { false } }
-        link.set { $0.silent = false; $0.prepareFails = false; $0.prepareDelay = .milliseconds(100) }
-        async let a: Void = session.reconnect()
-        async let b: Void = session.reconnect()
-        _ = await (a, b)
-        try await waitFor("streaming") { session.snapshot.state == .streaming }
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(link.live, 1, "one board session, nothing leaked")
-        XCTAssertEqual(session.snapshot.health.reconnects, 1)
+        XCTAssertEqual(link.live, 0)
+        await session.disconnect()
+    }
+
+    func testDisconnectDuringRetryHandover_staysDisconnected_noSecondSession() async throws {
+        let link = FakeLink()
+        let session = AcquisitionSession(source: .synthetic, projectDirectory: nil, options: fastOptions(), makeBoard: link.factory)
+        await session.connect()
+        await session.startStreaming()
+        try await waitFor("samples") { link.delivered > 50 }
+        link.set { $0.silent = true; $0.prepareFails = true; $0.stickyPrepareDelay = .milliseconds(300) }
+        try await waitFor("an attempt in flight") { link.boardsMade >= 2 }
+        link.set { $0.prepareFails = false; $0.silent = false }
+        let retry = Task { await session.reconnect() }
+        try await Task.sleep(for: .milliseconds(50))
+        await session.disconnect()                      // waits for the old attempt too
+        XCTAssertEqual(session.snapshot.state, .disconnected)
+        XCTAssertEqual(link.live, 0, "the in-flight attempt finished and released before Disconnect returned")
+        link.set { $0.stickyPrepareDelay = .zero }
+        await session.connect()
+        await retry.value
+        XCTAssertEqual(session.snapshot.state, .ready)
+        XCTAssertEqual(link.value(\.maxLive), 1, "never two sessions on the port")
         await session.disconnect()
         XCTAssertEqual(link.live, 0)
-        XCTAssertEqual(link.value(\.maxLive), 1)
     }
 
     func testDoubleStart_startsTheStreamOnce_andStaysHealthy() async throws {
@@ -413,6 +459,8 @@ final class FakeLink: Sendable {
         var silent = false
         var prepareFails = false
         var prepareDelay: Duration = .zero
+        /// A prepare delay cancellation cannot cut short, like a blocking BrainFlow call.
+        var stickyPrepareDelay: Duration = .zero
         var readErrors = 0
         var counter = 0            // keeps counting across boards: a reconnect's first counter jumps
         var delivered = 0
@@ -455,6 +503,8 @@ actor FakeBoard: AcquisitionBoard {
     func prepare() async throws {
         let delay = link.value(\.prepareDelay)
         if delay > .zero { try? await Task.sleep(for: delay) }
+        let sticky = link.value(\.stickyPrepareDelay)
+        if sticky > .zero { await Task.detached { try? await Task.sleep(for: sticky) }.value }
         if link.value(\.prepareFails) {
             throw BrainFlowError(code: BrainFlowExitCode.boardNotReady.rawValue, operation: "prepare_session")
         }
