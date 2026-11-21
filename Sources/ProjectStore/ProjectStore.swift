@@ -520,7 +520,9 @@ public actor ProjectStore {
 /// ("3 disk_full 1234 987654321") without allocating.
 struct RecordingLock: Sendable {
     static let fileName = ".writer.lock"
-    static let noteSize = 64
+    /// Room for the longest possible note: three 19-digit Int64s, the longest reason and
+    /// three separators (about 70 bytes), so a note never extends the file on a full disk.
+    static let noteSize = 96
     let fd: Int32
     let path: String
 
@@ -565,7 +567,8 @@ struct RecordingLock: Sendable {
         write(text + String(repeating: " ", count: max(0, Self.noteSize - text.utf8.count)))
     }
 
-    /// Blanks the note once the segment it described is closed on disk.
+    /// Blanks the note once the segment it described is closed on disk. A failed blanking
+    /// is harmless: the stale note names its segment, and `open` applies it to no other.
     func clearNote() { write(String(repeating: " ", count: Self.noteSize)) }
 
     func readNote() -> Note? {
