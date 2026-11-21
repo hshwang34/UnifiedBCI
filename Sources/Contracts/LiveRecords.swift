@@ -108,6 +108,10 @@ public struct LiveRunRecord: Codable, Sendable, Equatable, Identifiable {
     public var replayCheck: ReplayCheck?
     /// Why logging stopped before the run ended (a log reached its size limit), or nil.
     public var loggingStopped: String?
+    /// Lines that could not be appended to `feedback.jsonl` / `predictions.jsonl` (a write or
+    /// fsync failed, or logging had stopped); nil when none failed. Each is missing from its log.
+    public var feedbackWriteFailures: Int?
+    public var predictionWriteFailures: Int?
     public var id: UUID { liveRunID }
 
     public init(liveRunID: UUID = UUID(), kind: Kind, modelID: UUID, recordingID: UUID, runIDs: [String], hopSamples: Int,
@@ -205,6 +209,9 @@ public struct LiveRunRecord: Codable, Sendable, Equatable, Identifiable {
         guard hopSamples > 0, hopSamples <= 100_000 else { return "hop out of range" }
         guard abstainThreshold.isFinite, abstainThreshold >= 0.5, abstainThreshold < 1 else { return "abstention threshold out of range" }
         guard runIDs.count <= 1_000, staleLimitMillis.map({ (1...60_000).contains($0) }) ?? true else { return "runs or stale limit out of range" }
+        guard [feedbackWriteFailures, predictionWriteFailures].allSatisfy({ $0.map { (0...Self.maxCount).contains($0) } ?? true }) else {
+            return "write-failure counts out of range"
+        }
         // Counts and times screens do arithmetic on: bounded, so a crafted file can't trap.
         if let c = replayCheck {
             guard (0...Self.maxCount).contains(c.windowsCompared), (0...c.windowsCompared).contains(c.windowsMatched),

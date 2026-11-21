@@ -2,7 +2,8 @@ import Foundation
 
 /// Portable evidence for one result (docs/export-format.md). Everything a reader needs
 /// without the app: the samples as documented flat binary, the event table, the channel
-/// map, the pipeline configuration, the fitted arrays, and `evaluation.json` byte-for-byte.
+/// map, the pipeline configuration, the fitted arrays, `evaluation.json` byte-for-byte, and
+/// the frozen models and live runs that belong to it (`live.json`, Export+Live.swift).
 public struct ExportedRecording: Codable, Sendable, Equatable {
     public var manifest: RecordingManifest
     public var samples: SamplesHeader
@@ -77,6 +78,18 @@ public struct ExportSummary: Sendable, Equatable {
     /// Plan files in the project that couldn't be read or failed validation.
     public var unreadableRunPlans: Int = 0
     public var leftOutRunPlans: Int { unverifiedRunPlans.count + unreadableRunPlans }
+    /// Frozen models of this export whose arrays are missing or changed since freezing.
+    public var unverifiedModels: Int = 0
+    /// `models/` folders in the project that couldn't be read or failed validation.
+    public var unreadableModels: Int = 0
+    /// Live runs of this export left out because their model couldn't be exported.
+    public var unverifiedLiveRuns: Int = 0
+    /// `live/` folders in the project whose run or logs couldn't be read or failed validation.
+    public var unreadableLiveRuns: Int = 0
+    /// Exported models frozen from another result (a live run on this recording used them).
+    public var modelsFromOtherResults: Int = 0
+    /// Exported live runs and replays on another recording (their samples aren't in the folder).
+    public var liveRunsOnOtherRecordings: Int = 0
 }
 
 /// `channels.json`: the channel map alone, for readers that want nothing else.
@@ -185,7 +198,12 @@ extension ProjectStore {
         try stored.evaluationJSON.write(to: out.appendingPathComponent("evaluation.json"))
         try encoder.encode(stored.meta).write(to: out.appendingPathComponent("result.meta.json"))
         try Data(Self.attribution(for: manifest).utf8).write(to: out.appendingPathComponent("ATTRIBUTION.md"))
-        return ExportSummary(unverifiedRunPlans: runPlans?.unverified ?? [], unreadableRunPlans: runPlans?.unreadable ?? 0)
+        let live = try writeLiveEvidence(for: stored, into: out)
+        return ExportSummary(unverifiedRunPlans: runPlans?.unverified ?? [], unreadableRunPlans: runPlans?.unreadable ?? 0,
+                             unverifiedModels: live?.unverifiedModels.count ?? 0, unreadableModels: live?.unreadableModels ?? 0,
+                             unverifiedLiveRuns: live?.unverifiedLiveRuns.count ?? 0, unreadableLiveRuns: live?.unreadableLiveRuns ?? 0,
+                             modelsFromOtherResults: live?.models.filter { $0.sourceResultID != stored.meta.resultID }.count ?? 0,
+                             liveRunsOnOtherRecordings: live?.liveRuns.filter { !$0.recordingIncluded }.count ?? 0)
     }
 
     /// Copies the recording's verified run plans and exactly the protocol versions they name,
