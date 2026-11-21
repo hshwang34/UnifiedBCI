@@ -183,9 +183,18 @@ public struct LiveRunRecord: Codable, Sendable, Equatable, Identifiable {
         public var windowsCompared: Int
         public var windowsMatched: Int
         public var differingSequences: [Int]
-        public init(windowsCompared: Int, windowsMatched: Int, differingSequences: [Int]) {
+        /// Differing windows a logged cause explains (frames dropped from the live buffer split
+        /// the live segment, so its windows sit elsewhere than the recording's), and that cause.
+        /// Only the rest are a bug. Optional; older readers ignore them.
+        public var explainedSequences: [Int]?
+        public var explanation: String?
+        public init(windowsCompared: Int, windowsMatched: Int, differingSequences: [Int], explainedSequences: [Int]? = nil, explanation: String? = nil) {
             self.windowsCompared = windowsCompared; self.windowsMatched = windowsMatched; self.differingSequences = differingSequences
+            self.explainedSequences = explainedSequences; self.explanation = explanation
         }
+
+        /// Differing windows no logged cause explains.
+        public var unexplained: [Int] { differingSequences.filter { !Set(explainedSequences ?? []).contains($0) } }
     }
 
     public static let maxFileBytes = 4 * 1024 * 1024
@@ -199,7 +208,8 @@ public struct LiveRunRecord: Codable, Sendable, Equatable, Identifiable {
         // Counts and times screens do arithmetic on: bounded, so a crafted file can't trap.
         if let c = replayCheck {
             guard (0...Self.maxCount).contains(c.windowsCompared), (0...c.windowsCompared).contains(c.windowsMatched),
-                  c.differingSequences.count <= 1_000 else { return "replay check counts out of range" }
+                  c.differingSequences.count <= 1_000, (c.explainedSequences?.count ?? 0) <= 1_000,
+                  (c.explanation?.count ?? 0) <= 500 else { return "replay check counts out of range" }
         }
         if let s = summary {
             guard (0...Self.maxCount).contains(s.predictions), (0...Self.maxCount).contains(s.abstained),
@@ -207,7 +217,8 @@ public struct LiveRunRecord: Codable, Sendable, Equatable, Identifiable {
         }
         if let l = latency {
             for p in [l.receiptToEmission, l.bufferWait, l.emissionToPresentation].compactMap({ $0 }) {
-                guard (0...Self.maxCount).contains(p.count), [p.p50, p.p95, p.max].allSatisfy({ $0.isFinite && abs($0) <= Self.maxMillis }) else {
+                guard (0...Self.maxCount).contains(p.count), [p.p50, p.p95, p.max].allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= Self.maxMillis }),
+                      p.p50 <= p.p95, p.p95 <= p.max else {
                     return "latency out of range"
                 }
             }
@@ -230,12 +241,16 @@ public struct FeedbackRecord: Codable, Sendable, Equatable {
     /// Class label the bar grows toward; nil when hidden.
     public var side: String?
     public var length: Double?
-    /// The one line shown instead of the bar ("Not confident", "Signal delayed", …).
+    /// The one line shown instead of the bar ("Model unsure", "Signal delayed", …).
     public var words: String?
     public var presentedAtMonotonicNanos: Int64?
+    /// Why the bar was hidden: `no_cue`, `outside_span`, `abstain`, `stale`, `delayed` (too old
+    /// at presentation, or a display stall), `invalid`, `disconnected`, `worker`, `stopped`.
+    public var reason: String?
 
-    public init(predictionSequence: Int, shown: Bool, side: String?, length: Double?, words: String?, presentedAtMonotonicNanos: Int64?) {
+    public init(predictionSequence: Int, shown: Bool, side: String?, length: Double?, words: String?, presentedAtMonotonicNanos: Int64?,
+                reason: String? = nil) {
         self.predictionSequence = predictionSequence; self.shown = shown; self.side = side
-        self.length = length; self.words = words; self.presentedAtMonotonicNanos = presentedAtMonotonicNanos
+        self.length = length; self.words = words; self.presentedAtMonotonicNanos = presentedAtMonotonicNanos; self.reason = reason
     }
 }

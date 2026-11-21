@@ -47,6 +47,8 @@ final class FrozenModelsController {
     /// Live runs (kind `live`), newest first, and what each one's card reads (brief 006 PR 8).
     private(set) var liveRuns: [LiveRunRecord] = []
     private(set) var liveInputs: [UUID: LiveRunInputs] = [:]
+    /// Each live run's card, built off the main thread when its inputs load.
+    private(set) var liveCards: [UUID: LiveRunCardModel] = [:]
     var selectedModelID: UUID? {
         didSet { if selectedModelID != oldValue { selectedReplayID = replays(of: selectedModelID).first?.liveRunID } }
     }
@@ -188,7 +190,7 @@ final class FrozenModelsController {
 
     /// Reads a live run's cue-locked windows, its recording's cues and sessions, and the
     /// source result's held-out figures, once per run (again with `force`, after it ended).
-    func loadInputs(_ run: LiveRunRecord, force: Bool = false) async {
+    func loadInputs(_ run: LiveRunRecord, force: Bool = false, classNames: [String: String] = [:]) async {
         guard force || liveInputs[run.liveRunID] == nil else { return }
         let store = store, model = models.first { $0.modelID == run.modelID }
         let inputs = await Task.detached { () -> LiveRunInputs in
@@ -211,7 +213,9 @@ final class FrozenModelsController {
             }
             return LiveRunInputs(cueLocked: preds.filter { $0.windowKind == "cue_locked" }, truth: truth, aborted: aborted, sessions: sessions, offline: offline)
         }.value
+        let card = await Task.detached { LiveRunCardModel(run: run, model: model, inputs: inputs, name: { classNames[$0] ?? ClassDisplay.name($0) }) }.value
         liveInputs[run.liveRunID] = inputs
+        liveCards[run.liveRunID] = card
     }
 
     func shutdown() async {

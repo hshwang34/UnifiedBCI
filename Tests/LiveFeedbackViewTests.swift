@@ -7,7 +7,7 @@ import XCTest
 @MainActor
 final class LiveFeedbackViewTests: XCTestCase {
     private let bar = FeedbackPolicy.Display.bar(side: "cue_right_hand", length: 0.4)
-    private let notConfident = FeedbackPolicy.Display.hidden(words: "Not confident")
+    private let notConfident = FeedbackPolicy.Display.hidden(words: "Model unsure")
 
     // MARK: Participant window
 
@@ -17,46 +17,95 @@ final class LiveFeedbackViewTests: XCTestCase {
         XCTAssertNil(s.take(cueOnScreen: false))
     }
 
+    private let ms = Int64(1_000_000)
+    private func u(_ seq: Int, _ d: FeedbackPolicy.Display, at e: Int64, reason: String? = nil) -> LiveInferenceRunner.Update {
+        .init(sequence: seq, display: d, emittedAt: e, reason: reason)
+    }
+
     func testFrameState_barOnlyWhileACueIsOnScreen_eachChangeOnce() {
-        var s = FeedbackFrameState()
-        s.submit(.init(sequence: 3, display: bar))
+        var s = FeedbackFrameState(staleLimitNanos: 250 * ms)
+        s.submit(u(3, bar, at: 0))
         // Fixation: nothing, reported once as hidden without words.
-        XCTAssertEqual(s.take(cueOnScreen: false), .init(sequence: 3, display: .hidden(words: nil)))
-        XCTAssertNil(s.take(cueOnScreen: false), "unchanged: nothing to draw or log")
-        XCTAssertEqual(s.take(cueOnScreen: true), .init(sequence: 3, display: bar))
-        XCTAssertNil(s.take(cueOnScreen: true))
-        s.submit(.init(sequence: 4, display: notConfident))
-        XCTAssertEqual(s.take(cueOnScreen: true), .init(sequence: 4, display: notConfident), "the words replace the bar")
-        XCTAssertEqual(s.take(cueOnScreen: false)?.display, .hidden(words: nil), "cue over: the words go too")
+        XCTAssertEqual(s.take(cueOnScreen: false, targetNanos: 10 * ms), .init(sequence: 3, display: .hidden(words: nil), reason: "no_cue", measured: true))
+        XCTAssertNil(s.take(cueOnScreen: false, targetNanos: 20 * ms), "unchanged: nothing to draw or log")
+        XCTAssertEqual(s.take(cueOnScreen: true, targetNanos: 30 * ms), .init(sequence: 3, display: bar, reason: nil, measured: false),
+                       "the cue appearing is not a new prediction: logged, not counted as latency")
+        XCTAssertNil(s.take(cueOnScreen: true, targetNanos: 40 * ms))
+        s.submit(u(4, notConfident, at: 50 * ms, reason: "abstain"))
+        XCTAssertEqual(s.take(cueOnScreen: true, targetNanos: 60 * ms), .init(sequence: 4, display: notConfident, reason: "abstain", measured: true))
+        XCTAssertEqual(s.take(cueOnScreen: false, targetNanos: 70 * ms)?.display, .hidden(words: nil), "cue over: the words go too")
+    }
+
+    /// The stale rule at presentation: a stalled main loop (or display link) never draws an
+    /// old bar; the window says "Signal delayed" and logs why.
+    func testFrameState_stalledLoopNeverDrawsAnOldBar() async throws {
+        var s = FeedbackFrameState(staleLimitNanos: 250 * ms)
+        s.submit(u(5, bar, at: 0))
+        let late = try XCTUnwrap(s.take(cueOnScreen: true, targetNanos: 900 * ms))
+        XCTAssertEqual(late.display, .hidden(words: "Signal delayed"))
+        XCTAssertEqual(late.reason, "delayed")
+        var t = FeedbackFrameState(staleLimitNanos: 250 * ms)
+        t.submit(u(6, bar, at: 0))
+        XCTAssertEqual(t.take(cueOnScreen: true, targetNanos: 16 * ms, stall: true)?.reason, "delayed", "a stalled refresh hides even a fresh bar")
+        XCTAssertEqual(t.take(cueOnScreen: true, targetNanos: 32 * ms)?.display, bar, "the next on-time refresh shows it")
+        XCTAssertEqual(t.take(cueOnScreen: true, targetNanos: nil)?.reason, "delayed", "an unknown refresh time is not trusted")
+
+        // …and the hidden state reaches feedback.jsonl with its reason.
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("bci-stale-\(UUID().uuidString).bciproj", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try ProjectStore.create(at: dir, name: "stale")
+        let writer = try await store.createLiveRun(LiveRunRecord(kind: .live, modelID: UUID(), recordingID: UUID(), runIDs: [], hopSamples: 16,
+                                                                 abstainThreshold: 0.6, staleLimitMillis: 250, startedAt: Date()))
+        let runner = LiveInferenceRunner(configuration: .init(model: Self.model, arraysPath: "/nonexistent", channelRows: [1], channelIDs: ["ch01"],
+                                                              sampleRateHz: 125, timestampRow: nil, markerRow: nil),
+                                         launch: nil, writer: writer, sourceState: { .streaming })
+        await runner.presented(sequence: late.sequence, display: late.display, at: 900 * ms, reason: late.reason, measured: late.measured)
+        let id = await writer.record.liveRunID
+        let logged = try await store.feedback(liveRun: id).records
+        XCTAssertEqual(logged, [FeedbackRecord(predictionSequence: 5, shown: false, side: nil, length: nil, words: "Signal delayed",
+                                               presentedAtMonotonicNanos: 900 * ms, reason: "delayed")])
     }
 
     func testFrameState_neverStepsBackToAnOlderPrediction() {
         var s = FeedbackFrameState()
-        s.submit(.init(sequence: 9, display: notConfident))
-        s.submit(.init(sequence: 8, display: bar))
-        XCTAssertEqual(s.take(cueOnScreen: true), .init(sequence: 9, display: notConfident))
+        s.submit(u(9, notConfident, at: 0))
+        s.submit(u(8, bar, at: 0))
+        XCTAssertEqual(s.take(cueOnScreen: true, targetNanos: 1)?.sequence, 9)
     }
 
     func testFeed_reportsLeaveInOrder_withUnknownTimesKept() async {
         let feed = FeedbackFeed(directions: [:])
-        feed.submit(.init(sequence: 1, display: bar))
-        let first = feed.take(cueOnScreen: true)!
-        feed.presented(first, at: 100)
-        feed.submit(.init(sequence: 2, display: notConfident))
-        feed.presented(feed.take(cueOnScreen: true)!, at: nil)
+        feed.submit(u(1, bar, at: 90))
+        feed.presented(feed.take(cueOnScreen: true, targetNanos: 100)!, at: 100)
+        feed.submit(u(2, notConfident, at: 110, reason: "abstain"))
+        feed.presented(feed.take(cueOnScreen: true, targetNanos: 120)!, at: nil)
         feed.finish()
         var got: [FeedbackFeed.Report] = []
         for await r in feed.reports { got.append(r) }
-        XCTAssertEqual(got, [.init(sequence: 1, display: bar, presentedAt: 100), .init(sequence: 2, display: notConfident, presentedAt: nil)])
+        XCTAssertEqual(got, [.init(sequence: 1, display: bar, presentedAt: 100, reason: nil, measured: true),
+                             .init(sequence: 2, display: notConfident, presentedAt: nil, reason: "abstain", measured: true)])
     }
 
-    func testDirections_followTheCueArrows_elseTheModelOrder() {
+    func testStop_hidesTheBarForGood() async {
+        let runner = LiveInferenceRunner(configuration: .init(model: Self.model, arraysPath: "/nonexistent", channelRows: [1], channelIDs: ["ch01"],
+                                                              sampleRateHz: 125, timestampRow: nil, markerRow: nil),
+                                         launch: nil, writer: nil, sourceState: { .streaming })
+        await runner.stop()
+        var last: LiveInferenceRunner.Update?
+        for await x in runner.updates { last = x }
+        XCTAssertEqual(last?.display, .hidden(words: nil))
+        XCTAssertEqual(last?.reason, "stopped")
+    }
+
+    func testDirections_needOneLeftAndOneRightArrow() {
         let graz = ProtocolDraft.grazDefault.classes
         XCTAssertEqual(FeedbackFeed.directions(classes: graz, modelLabels: ["cue_right_hand", "cue_left_hand"]),
                        ["cue_right_hand": 1, "cue_left_hand": -1], "arrows decide, whatever the LDA order")
-        let feet = [ProtocolClass(label: "cue_feet", displayName: "Feet", cue: .downArrow), ProtocolClass(label: "cue_tongue", displayName: "Tongue", cue: .upArrow)]
-        XCTAssertEqual(FeedbackFeed.directions(classes: feet, modelLabels: ["cue_feet", "cue_tongue"]), ["cue_feet": -1, "cue_tongue": 1])
-        XCTAssertEqual(FeedbackFeed.directions(classes: [], modelLabels: ["a", "b"]), ["a": -1, "b": 1], "an unknown protocol: model order")
+        let mixed = [ProtocolClass(label: "a", displayName: "A", cue: .leftArrow), ProtocolClass(label: "b", displayName: "B", cue: .upArrow)]
+        XCTAssertNil(FeedbackFeed.directions(classes: mixed, modelLabels: ["a", "b"]), "left + up: no opposite sides, refused")
+        let same = [ProtocolClass(label: "a", displayName: "A", cue: .leftArrow), ProtocolClass(label: "b", displayName: "B", cue: .leftArrow)]
+        XCTAssertNil(FeedbackFeed.directions(classes: same, modelLabels: ["a", "b"]), "both left: refused")
+        XCTAssertNil(FeedbackFeed.directions(classes: graz, modelLabels: ["cue_left_hand", "other"]), "a class the protocol doesn't cue")
     }
 
     // MARK: Operator view copy
@@ -103,7 +152,7 @@ final class LiveFeedbackViewTests: XCTestCase {
         XCTAssertEqual(m.abstainLine, "of 40 valid windows were below the threshold of 0.60")
         XCTAssertEqual(m.latencyValue, "6.2 ms / 32 ms")
         XCTAssertEqual(m.latencyLine, "p50 / p95 receipt → prediction, max 48 ms (n = 40)")
-        XCTAssertEqual(m.trials.map(\.outcome), ["Left hand · correct", "Left hand · wrong", "Abstained · not confident",
+        XCTAssertEqual(m.trials.map(\.outcome), ["Left hand · correct", "Left hand · wrong", "Abstained · model unsure",
                                                  "Invalid · Signal delayed", "Waiting for its window", "Aborted · not counted"])
         XCTAssertEqual(m.trials.map(\.correct), [true, false, nil, nil, nil, nil])
         XCTAssertEqual(m.trialsSummary, "4 of 6 trials decided: 1 correct, 1 wrong, 1 abstained, 1 invalid")
@@ -139,6 +188,12 @@ final class LiveFeedbackViewTests: XCTestCase {
         XCTAssertEqual(inner.outcomesAtRecord, [0, 1], "the cue reached the runner before the host recorded (and marked) it")
         XCTAssertEqual(runner.status.outcomes["run01-t01"], .invalid(.insufficientWindow, "cue_lost_no_stream"))
         XCTAssertEqual(seen.labels, ["fixation", "cue_left_hand"])
+        // A cue the window never reported: no guessed time, the trial is flagged.
+        var unseen = cue
+        unseen.trialID = "run01-t02"
+        unseen.presentedAtMonotonicNanos = nil
+        _ = await host.record([unseen], marker: nil, associateAt: 5)
+        XCTAssertEqual(runner.status.outcomes["run01-t02"], .invalid(.insufficientWindow, "cue_not_presented"))
     }
 
     private final class Seen: @unchecked Sendable {
@@ -189,7 +244,11 @@ final class LiveFeedbackViewTests: XCTestCase {
         var rec = AcquisitionSession.RecordingRequest(channels: channels, reference: "SRB2", montage: "undeclared")
         rec.recordingID = UUID()
         do {
-            _ = try await LiveFeedbackController.start(model: model, protocolRecord: Self.protocolRecord, policy: FeedbackPolicy(), store: store,
+            let classes = [ProtocolClass(label: model.classLabels[0], displayName: "L", cue: .leftArrow),
+                           ProtocolClass(label: model.classLabels[1], displayName: "R", cue: .rightArrow)]
+            var draft = ProtocolDraft.grazDefault
+            draft.classes = classes
+            _ = try await LiveFeedbackController.start(model: model, protocolRecord: ProtocolRecord(draft: draft, parent: nil), policy: FeedbackPolicy(), store: store,
                                                        launch: launch, session: session, board: board, request: rec)
             XCTFail("a model at another rate must be refused")
         } catch let error as WorkerError {

@@ -46,13 +46,26 @@ public struct FeedbackPolicy: Sendable, Equatable {
     /// The words for each state that hides the bar (brief 006 Live feedback criteria).
     public static func words(_ validity: Validity) -> String {
         switch validity {
-        case .valid: return "Not confident"
+        case .valid: return "Model unsure"
         case .insufficientWindow: return "Waiting for enough signal"
         case .stale: return "Signal delayed"
         case .disconnected: return "Board disconnected"
         case .workerUnavailable: return "Analysis stopped"
         case .channelMismatch: return "Channels don't match the model"
         case .invalidInput: return "Invalid signal"
+        }
+    }
+
+    /// Why `p`'s display hides the bar (feedback.jsonl `reason`), nil when the bar shows.
+    public static func hiddenReason(_ p: PredictionRecord) -> String? {
+        switch p.validity {
+        case .valid:
+            if p.feedbackEligible != true { return "outside_span" }
+            return p.action.kind == .class ? nil : "abstain"
+        case .stale: return "stale"
+        case .disconnected: return "disconnected"
+        case .workerUnavailable: return "worker"
+        case .insufficientWindow, .invalidInput, .channelMismatch: return "invalid"
         }
     }
 

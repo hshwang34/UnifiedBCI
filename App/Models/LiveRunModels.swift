@@ -18,8 +18,12 @@ enum LiveRunCopy {
     static let newRunRow = "New live run"
     static let pausedDuringLive = "Paused during a live run"
     static let noRunsChecked = "No run was started, so there is nothing to replay."
+    static let checkCancelled = "The project closed before the live-vs-replay check finished."
+    static let scoredLikeOffline = "Abstained trials count here with the class the model favoured, as the offline result counts every trial."
+    static let tooManyTrials = "Too many trials to score here."
+
     static let cardTitle = "Live run"
-    static let scoringNote = "Scored like the offline result: every valid trial counts with the class its cue-locked window favours. Abstention only hides the bar; abstained trials are counted here and listed."
+    static let scoringNote = "Each trial's outcome is its cue-locked window, the one matching the training window. Abstention only hides the bar during the run."
     static let latencyTarget = "Initial target: p95 under 100 ms after the window is available."
     static let latencyCaveat = "Software only: radio or USB transport and display delay are not measured."
     static let notLive = "Live feedback runs only on a connected source."
@@ -163,7 +167,7 @@ struct LiveRunCardModel {
         if let interval {
             accuracyLine = "Accuracy \(Fmt.fixed(Double(correct) / Double(n))) · 95 % CI \(Fmt.fixed(interval.lowerBound))–\(Fmt.fixed(interval.upperBound)) (trial-level, n = \(n))"
         } else {
-            accuracyLine = "No valid trials, so no accuracy."
+            accuracyLine = n > ClopperPearson.maxTrials ? LiveRunCopy.tooManyTrials : "No valid trials, so no accuracy."
         }
         largerClass = ResultDetailModel.largerClass(holdoutCounts: matrix.map { $0[0] + $0[1] }, interval: interval)
         var cells: [ResultDetailModel.Cell] = []
@@ -177,7 +181,8 @@ struct LiveRunCardModel {
         }
         self.cells = cells
         let runs = run.runIDs.count
-        trialsLine = "n = \(n) valid trial\(n == 1 ? "" : "s") in \(runs) run\(runs == 1 ? "" : "s") · \(abstained) below the \(Fmt.fixed(run.abstainThreshold)) threshold"
+        let cued = inputs.truth.keys.filter { !inputs.aborted.contains($0) }.count
+        trialsLine = "n = \(n) valid of \(cued) cued trial\(cued == 1 ? "" : "s") in \(runs) run\(runs == 1 ? "" : "s") · \(abstained) below the \(Fmt.fixed(run.abstainThreshold)) threshold"
         excluded = invalid.sorted { $0.key < $1.key }.map { "\($0.value) trial\($0.value == 1 ? "" : "s"): \($0.key)" }
             + (inputs.aborted.isEmpty ? [] : ["\(inputs.aborted.count) aborted trial\(inputs.aborted.count == 1 ? "" : "s") not counted"])
         if let o = inputs.offline {
@@ -202,9 +207,16 @@ struct LiveRunCardModel {
             if compared > 0, matched == compared {
                 (replayLine, replayOK) = ("Live matched replay: \(matched) of \(compared) windows within tolerance.", true)
             } else {
-                let list = c.differingSequences.prefix(8).map(String.init).joined(separator: ", ")
-                let more = c.differingSequences.count > 8 ? "…" : ""
-                replayLine = "Live and replay differ in \(compared - matched) of \(compared) windows (predictions \(list)\(more)). That is a bug to report, not a result."
+                let unexplained = c.unexplained
+                let list = unexplained.prefix(8).map(String.init).joined(separator: ", ")
+                let more = unexplained.count > 8 ? "…" : ""
+                let base = "Live and replay differ in \(compared - matched) of \(compared) windows."
+                if unexplained.isEmpty, let why = c.explanation {
+                    replayLine = base + " Expected: \(String(why.prefix(300)))."
+                } else {
+                    replayLine = base + " \(unexplained.count) of them have no logged cause (predictions \(list)\(more)); that is a bug to report, not a result."
+                        + (c.explanation.map { " The rest are expected: \(String($0.prefix(300)))." } ?? "")
+                }
                 replayOK = false
             }
         } else {
@@ -217,8 +229,11 @@ struct LiveRunCardModel {
 /// The exact (Clopper-Pearson) 95 % interval for a binomial proportion, as the worker's
 /// `clopper_pearson` computes it, by bisection on the binomial tails.
 enum ClopperPearson {
+    /// Far above any live session; a stored run claiming more gets no interval (never a long loop).
+    static let maxTrials = 100_000
+
     static func interval(successes k: Int, trials n: Int, alpha: Double = 0.05) -> ClosedRange<Double>? {
-        guard n > 0, (0...n).contains(k) else { return nil }
+        guard n > 0, n <= maxTrials, (0...n).contains(k) else { return nil }
         let lower = k == 0 ? 0 : solve { p in tail(atLeast: k, n, p) - alpha / 2 }     // increasing in p
         let upper = k == n ? 1 : solve { p in alpha / 2 - (1 - tail(atLeast: k + 1, n, p)) }
         return lower...upper

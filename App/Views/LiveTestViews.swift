@@ -79,6 +79,7 @@ struct LiveTestSetupView: View {
                         LabeledContent(LiveRunCopy.thresholdLabel) {
                             TextField(LiveRunCopy.thresholdLabel, text: $session.liveTestForm.thresholdText)
                                 .labelsHidden().font(Theme.Fonts.mono).frame(maxWidth: 90).multilineTextAlignment(.trailing)
+                                .onSubmit { Task { await session.startLiveFromSetup() } }
                         }
                         .help(LiveRunCopy.thresholdHelp)
                         Text(LiveRunCopy.thresholdHelp).font(.caption).foregroundStyle(Theme.textSecondary)
@@ -125,6 +126,7 @@ struct LiveTestSetupView: View {
                     Spacer()
                     Button { Task { await session.startLiveFromSetup() } } label: { Label(LiveRunCopy.start, systemImage: "play.fill") }
                         .appProminentButton()
+                        .keyboardShortcut(.defaultAction)
                         .disabled(session.liveStartDisabledReason != nil)
                 }
             }
@@ -133,7 +135,7 @@ struct LiveTestSetupView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .softScrollEdge(.top)
-        .task(id: session.live?.state) { await session.prepareLiveSetup(operatorScreen: NSApp.keyWindow?.screen) }
+        .task(id: session.live?.state) { await session.prepareLiveSetup(operatorScreen: session.projectWindow?.screen) }
     }
 }
 
@@ -149,15 +151,16 @@ struct LiveRunCard: View {
     var body: some View {
         let model = session.frozen.models.first { $0.modelID == run.modelID }
         Group {
-            if let inputs = session.frozen.liveInputs[run.liveRunID] {
-                content(LiveRunCardModel(run: run, model: model, inputs: inputs, name: { label in
-                    session.recordingProtocols[run.recordingID]?.classes.first { $0.label == label }?.displayName ?? ClassDisplay.name(label)
-                }), model: model)
+            if let card = session.frozen.liveCards[run.liveRunID] {
+                content(card, model: model)
             } else {
                 ProgressView().frame(maxWidth: .infinity, minHeight: 120)
             }
         }
-        .task(id: run) { await session.frozen.loadInputs(run, force: true) }
+        .task(id: run) {
+            let names = Dictionary((session.recordingProtocols[run.recordingID]?.classes ?? []).map { ($0.label, $0.displayName) }, uniquingKeysWith: { a, _ in a })
+            await session.frozen.loadInputs(run, force: true, classNames: names)
+        }
     }
 
     @ViewBuilder private func content(_ m: LiveRunCardModel, model: ModelRecord?) -> some View {
@@ -176,6 +179,8 @@ struct LiveRunCard: View {
                     Text(m.balancedAccuracyValue).font(Theme.Fonts.display(size: displaySize)).foregroundStyle(Theme.textPrimary)
                 }
                 Text(m.accuracyLine).font(Theme.Fonts.accuracyLine).foregroundStyle(Theme.textPrimary)
+                Label(LiveRunCopy.scoredLikeOffline, systemImage: "info.circle").font(.callout).foregroundStyle(Theme.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
                 RangeBar(value: m.accuracy ?? 0, interval: m.interval,
                          reference: m.largerClass.map { .init(value: $0.rate, label: "larger-class rate") }, label: "Live accuracy interval")
                 if let larger = m.largerClass { Label(larger.sentence, systemImage: larger.symbol).font(.callout).foregroundStyle(Theme.textPrimary) }
@@ -341,12 +346,14 @@ struct FeedbackGauge: View {
         GeometryReader { g in
             let half = g.size.width / 2, h: CGFloat = 14
             let length = CGFloat(bar?.length ?? 0) * half
+            // The participant bar's minimum, at the same proportion.
+            let minimum = half * CGFloat(CueWindowModel.feedbackMinimumFraction)
             ZStack(alignment: .leading) {
                 Capsule().fill(Theme.textTertiary.opacity(0.18)).frame(height: h)
                 Capsule()
                     .fill(Theme.accentInk.gradient)
-                    .frame(width: max(bar == nil ? 0 : 4, length), height: h)
-                    .offset(x: (bar?.direction ?? 1) < 0 ? half - max(4, length) : half)
+                    .frame(width: max(bar == nil ? 0 : minimum, length), height: h)
+                    .offset(x: (bar?.direction ?? 1) < 0 ? half - max(minimum, length) : half)
                     .opacity(bar == nil ? 0 : 1)
                 Rectangle().fill(Theme.textPrimary).frame(width: 2, height: 30).offset(x: half - 1)
             }

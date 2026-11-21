@@ -34,14 +34,24 @@ public enum LiveReplayCheck {
     public static func compare(live: [PredictionRecord], replay: [PredictionRecord]) -> LiveRunRecord.ReplayCheck {
         var byKey: [Key: PredictionRecord] = [:]
         for p in replay { if let k = key(p), byKey[k] == nil { byKey[k] = p } }
+        // Frames dropped from the live buffer restart the live segment mid-recording, so every
+        // live window from that segment on sits at other indices than the recording's: expected.
+        let drops = live.filter { $0.validityDetail?.hasPrefix("frames_dropped") == true }
+        let firstDrop = drops.map(\.inputSegment).min()
         var compared = 0, matched = 0
-        var differing: [Int] = []
+        var differing: [Int] = [], explained: [Int] = []
         for p in live {
             guard let k = key(p) else { continue }          // condition records score nothing
             compared += 1
-            if let r = byKey[k], agrees(p, r) { matched += 1 } else if differing.count < maxListed { differing.append(p.sequence ?? -1) }
+            if let r = byKey[k], agrees(p, r) { matched += 1; continue }
+            if differing.count < maxListed { differing.append(p.sequence ?? -1) } else { continue }
+            if let d = firstDrop, p.inputSegment >= d { explained.append(p.sequence ?? -1) }
         }
-        return .init(windowsCompared: compared, windowsMatched: matched, differingSequences: differing)
+        let why = drops.isEmpty || explained.isEmpty ? nil : "frames were dropped from the live buffer ("
+            + drops.prefix(5).map { "\($0.validityDetail!.replacingOccurrences(of: "frames_dropped:", with: "")) samples before live segment \($0.inputSegment)" }
+                .joined(separator: "; ") + ")"
+        return .init(windowsCompared: compared, windowsMatched: matched, differingSequences: differing,
+                     explainedSequences: explained.isEmpty ? nil : explained, explanation: why)
     }
 
     static func agrees(_ live: PredictionRecord, _ replay: PredictionRecord) -> Bool {

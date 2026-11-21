@@ -115,6 +115,7 @@ final class LiveRunTests: XCTestCase {
         XCTAssertEqual(c.upperBound, 1)
         XCTAssertNil(ClopperPearson.interval(successes: 3, trials: 0))
         XCTAssertNil(ClopperPearson.interval(successes: 4, trials: 3), "hostile counts never trap")
+        XCTAssertNil(ClopperPearson.interval(successes: 5, trials: ClopperPearson.maxTrials + 1), "absurd n: no interval, no long loop")
     }
 
     // MARK: Live vs replay
@@ -141,6 +142,66 @@ final class LiveRunTests: XCTestCase {
         XCTAssertEqual(c.windowsMatched, 3)
         XCTAssertEqual(c.differingSequences, [3, 4])
         XCTAssertEqual(LiveReplayCheck.compare(live: [pred(0, stop: 300, score: 0.5, segment: 1)], replay: replay).windowsMatched, 0, "segments must agree")
+        XCTAssertNil(c.explanation, "no logged cause: every difference is unexplained")
+        XCTAssertEqual(c.unexplained, [3, 4])
+    }
+
+    /// Frames dropped from the live buffer split the live segment: the windows after it are
+    /// expected to differ and are named as such, not as a bug.
+    func testReplayCheck_attributesDifferencesToLoggedFrameDrops() {
+        let replay = [pred(0, stop: 300, score: 0.5), pred(1, stop: 316, score: 0.6)]
+        var drop = pred(2, stop: 0, score: nil, validity: .insufficientWindow, detail: "frames_dropped:12", segment: 1)
+        drop.inputSampleRange = nil
+        let live = [pred(0, stop: 300, score: 0.5), drop, pred(3, stop: 100, score: 0.9, segment: 1)]
+        let c = LiveReplayCheck.compare(live: live, replay: replay)
+        XCTAssertEqual(c.differingSequences, [3])
+        XCTAssertEqual(c.explainedSequences, [3])
+        XCTAssertEqual(c.unexplained, [])
+        let card = LiveRunCardModel(run: run(check: c), model: Self.model, inputs: inputs(), name: { $0 })
+        XCTAssertEqual(card.replayLine, "Live and replay differ in 1 of 2 windows. Expected: frames were dropped from the live buffer (12 samples before live segment 1).")
+        XCTAssertFalse(card.replayLine.contains("bug"))
+    }
+
+    // MARK: Closing during the check
+
+    /// Closing the project while the replay check runs: the check is called off and run.json
+    /// is still written, once, with endedAt.
+    func testStopDuringTheCheck_stillWritesRunJSON() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("bci-close-\(UUID().uuidString).bciproj", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try ProjectStore.create(at: dir, name: "close")
+        let writer = try await store.createLiveRun(LiveRunRecord(kind: .live, modelID: Self.model.modelID, recordingID: UUID(), runIDs: [], hopSamples: 16,
+                                                                 abstainThreshold: 0.6, staleLimitMillis: 250, startedAt: Date()))
+        let c = await LiveFeedbackController.forTesting(model: Self.model, protocolRecord: LiveFeedbackViewTests.protocolRecord, store: store,
+                                                        writer: writer, recordingID: UUID())
+        let release = Flag()
+        let first = Task { @MainActor in
+            await c.stop { _, _, _, _ in
+                while !release.isSet { try? await Task.sleep(for: .milliseconds(10)) }
+                return .failure(.init(reason: LiveRunCopy.checkCancelled))
+            }
+        }
+        while c.phase != .checking { try await Task.sleep(for: .milliseconds(10)) }
+        let second = Task { @MainActor in await c.stop() }       // the window closing
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(c.phase, .checking, "the second stop waits for the first")
+        release.set()                                            // ProjectSession cancels the replay
+        await second.value
+        await first.value
+        XCTAssertEqual(c.phase, .ended)
+        XCTAssertEqual(c.checkProblem, LiveRunCopy.checkCancelled)
+        let all = try await store.liveRuns().runs
+        let stored = try XCTUnwrap(all.first)
+        XCTAssertNotNil(stored.endedAt)
+        XCTAssertNil(stored.replayCheck)
+        XCTAssertEqual(stored.runIDs, ["run01"])
+    }
+
+    private final class Flag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        var isSet: Bool { lock.withLock { value } }
+        func set() { lock.withLock { value = true } }
     }
 
     // MARK: The card
@@ -177,7 +238,7 @@ final class LiveRunTests: XCTestCase {
         // t1 ✓, t2 ✓, t3 (abstained, favours right, truth left) ✗, t4 (abstained, favours left, truth right) ✗.
         XCTAssertEqual(m.balancedAccuracyValue, "0.50")
         XCTAssertTrue(m.accuracyLine.hasPrefix("Accuracy 0.50 · 95 % CI 0.07–0.93 (trial-level, n = 4)"), m.accuracyLine)
-        XCTAssertEqual(m.trialsLine, "n = 4 valid trials in 1 run · 2 below the 0.60 threshold")
+        XCTAssertEqual(m.trialsLine, "n = 4 valid of 6 cued trials in 1 run · 2 below the 0.60 threshold")
         XCTAssertEqual(m.excluded, ["1 trial: Signal delayed (prediction late)", "1 trial: no window was logged", "1 aborted trial not counted"])
         XCTAssertEqual(m.cells.map(\.count), [1, 1, 1, 1])
         XCTAssertEqual(m.comparison, "The frozen model's held-out result: balanced accuracy 0.68 (accuracy 0.70, 95 % CI 0.51–0.84, n = 14).")
@@ -196,7 +257,7 @@ final class LiveRunTests: XCTestCase {
         XCTAssertEqual(LiveRunCardModel(run: run(), model: Self.model, inputs: inputs(sessions: [nil]), name: { $0 }).evidence, "unknown-session")
         let differs = LiveRunCardModel(run: run(check: .init(windowsCompared: 10, windowsMatched: 8, differingSequences: [4, 7])), model: Self.model,
                                        inputs: inputs(), name: { $0 })
-        XCTAssertEqual(differs.replayLine, "Live and replay differ in 2 of 10 windows (predictions 4, 7). That is a bug to report, not a result.")
+        XCTAssertEqual(differs.replayLine, "Live and replay differ in 2 of 10 windows. 2 of them have no logged cause (predictions 4, 7); that is a bug to report, not a result.")
         XCTAssertEqual(differs.replayOK, false)
         XCTAssertEqual(LiveRunCardModel(run: run(check: nil, ended: false), model: Self.model, inputs: inputs(), name: { $0 }).replayLine,
                        "The run ended with the app; it was not replayed.")
@@ -225,6 +286,11 @@ final class LiveRunTests: XCTestCase {
         r.latency = .init(receiptToEmission: .init(count: 1, p50: 1e300, p95: 1, max: 1), bufferWait: nil, emissionToPresentation: nil)
         XCTAssertEqual(r.problem(directoryID: r.liveRunID), "latency out of range")
         XCTAssertEqual(LiveRunCardModel(run: r, model: Self.model, inputs: inputs(), name: { $0 }).latency.first?.value.hasPrefix("p50 – ·"), true)
+        r = base
+        r.latency = .init(receiptToEmission: .init(count: 3, p50: 9, p95: 4, max: 20), bufferWait: nil, emissionToPresentation: nil)
+        XCTAssertEqual(r.problem(directoryID: r.liveRunID), "latency out of range", "p50 above p95")
+        r.latency = .init(receiptToEmission: .init(count: 3, p50: -1, p95: 4, max: 20), bufferWait: nil, emissionToPresentation: nil)
+        XCTAssertEqual(r.problem(directoryID: r.liveRunID), "latency out of range", "negative")
         r = base
         r.summary = .init(predictions: -5, byValidity: [:], abstained: 0)
         XCTAssertEqual(r.problem(directoryID: r.liveRunID), "summary counts out of range")

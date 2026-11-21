@@ -15,6 +15,7 @@ enum LiveTestCopy {
     static let latencyNote = "Measured in the app: from the drain of the window's last sample to the prediction. Radio or USB transport and display delay are not measured."
     static let previewPlaceholder = "Debug preview: connect a source, then Start Run… on the acquisition screen runs the protocol with live feedback from the newest frozen model."
     static let noTrials = "No trials yet."
+    static let directionProblem = "Live feedback needs one class cued with a left arrow and the other with a right arrow, so the bar's sides match the cues."
 
     static func modelLine(_ m: ModelRecord, _ p: ProtocolRecord) -> String { "\(m.name) · \(StartRunCopy.protocolTitle(p))" }
 }
@@ -113,7 +114,7 @@ struct LiveFeedbackPanelModel: Equatable {
                     outcome = "\(name(c)) · \(c == label ? "correct" : "wrong")"
                     if c == label { counts.right += 1 } else { counts.wrong += 1 }
                 case .abstained?:
-                    (outcome, correct) = ("Abstained · not confident", nil)
+                    (outcome, correct) = ("Abstained · model unsure", nil)
                     counts.abstained += 1
                 case .invalid(let v, _)?:
                     (outcome, correct) = ("Invalid · \(FeedbackPolicy.words(v))", nil)

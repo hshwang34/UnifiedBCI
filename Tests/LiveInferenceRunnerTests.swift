@@ -41,13 +41,15 @@ final class LiveInferenceRunnerTests: XCTestCase {
     }
 
     private func runner(_ model: ModelRecord, board: BoardDescription, session: AcquisitionSession?, writer: LiveRunWriter?,
+                        tick: Duration = .milliseconds(50),
                         now: @escaping @Sendable () -> Int64 = { HostMonotonicClock.nowNanos() }) async throws -> LiveInferenceRunner {
         var m = model
         m.expectedSampleRateHz = Double(board.samplingRate)
-        let config = LiveInferenceRunner.Configuration(model: m, arraysPath: await store.arraysURL(for: model).path,
+        var config = LiveInferenceRunner.Configuration(model: m, arraysPath: await store.arraysURL(for: model).path,
                                                        channelRows: Array(board.eegChannelRows.prefix(m.expectedChannelIDs.count)),
                                                        channelIDs: m.expectedChannelIDs, sampleRateHz: Double(board.samplingRate),
                                                        timestampRow: board.timestampRow, markerRow: board.markerRow)
+        config.tickInterval = tick
         return LiveInferenceRunner(configuration: config, launch: try launch(), writer: writer, sourceState: { session?.snapshot.state ?? .streaming }, now: now)
     }
 
@@ -235,16 +237,11 @@ final class LiveInferenceRunnerTests: XCTestCase {
 
     // MARK: Hand-made frames: drops and refused pushes
 
-    /// A hole in the fan-out is logged (`frames_dropped:N`) and restarts the worker segment;
-    /// a cue still waiting for its marker gets `cue_lost_frames_dropped`; a non-finite chunk
-    /// is `invalid_input` and the cue riding on it `cue_lost_push_refused`.
-    func testFrameDropAndRefusedPush_areLogged_andTheirCuesGetOutcomes() async throws {
-        let model = try await frozenModel()
+    /// Hand-made frames fed one at a time through the runner's `ingest` seam: each is
+    /// handled to completion before the next, and the stale tick never fires.
+    private struct Feed {
         let d = FakeLink().description
-        let writer = try await liveRun(model)
-        let r = try await runner(model, board: d, session: nil, writer: writer)
-        let (frames, sink) = AsyncStream.makeStream(of: AcquisitionSession.InferenceFrame.self)
-        try await r.start { (frames, { sink.finish() }) }
+
         func frame(_ first: Int, poisoned: Bool = false) -> AcquisitionSession.InferenceFrame {
             var values = [Double](repeating: 0, count: 6 * d.numRows)
             for i in 0..<6 {
@@ -254,29 +251,50 @@ final class LiveInferenceRunnerTests: XCTestCase {
             return .init(segment: 0, firstSample: first, chunk: SampleChunk(numRows: d.numRows, count: 6, values: values,
                          drainedAtMonotonicNanos: HostMonotonicClock.nowNanos(), availableBeforeDrain: 6, overflowSuspected: false), gaps: [], clockPair: nil)
         }
-        let id = await writer.record.liveRunID
-        func preds() async -> [PredictionRecord] { (try? await store.predictions(liveRun: id).records) ?? [] }
-        for k in 0..<20 { sink.yield(frame(6 * k)) }
-        try await waitFor("hops") { await preds().count > 4 }
+    }
+
+    private func fedRunner() async throws -> (LiveInferenceRunner, UUID, Feed) {
+        let model = try await frozenModel()
+        let feed = Feed()
+        let writer = try await liveRun(model)
+        let r = try await runner(model, board: feed.d, session: nil, writer: writer, tick: .seconds(3600))
+        try await r.start { (AsyncStream { _ in }, {}) }
+        return (r, await writer.record.liveRunID, feed)
+    }
+
+    private func predictions(_ id: UUID) async throws -> [PredictionRecord] { try await store.predictions(liveRun: id).records }
+
+    /// A hole in the fan-out is logged (`frames_dropped:N`) and restarts the worker segment;
+    /// a cue still waiting for its marker gets `cue_lost_frames_dropped`.
+    func testFrameDrop_isLogged_restartsTheSegment_andItsWaitingCueGetsAnOutcome() async throws {
+        let (r, id, feed) = try await fedRunner()
+        for k in 0..<20 { await r.ingest(feed.frame(6 * k)) }
         await r.addCue(trialID: "waits", marker: 42, presentedAt: HostMonotonicClock.nowNanos(), lengthSeconds: 4)
-        sink.yield(frame(6 * 25))                                   // 30 samples never arrived
-        try await waitFor("the drop") { await preds().contains { $0.validityDetail == "frames_dropped:30" } }
-        await r.addCue(trialID: "rides", marker: nil, presentedAt: HostMonotonicClock.nowNanos(), lengthSeconds: 4)
-        sink.yield(frame(6 * 26, poisoned: true))
-        for k in 27..<40 { sink.yield(frame(6 * k)) }
-        try await waitFor("the refusal and a new segment") {
-            let p = await preds()
-            return p.contains { $0.validity == .invalidInput } && Set(p.compactMap { $0.inputSampleRange == nil ? nil : $0.inputSegment }).count == 3
-        }
+        await r.ingest(feed.frame(6 * 25))                          // 30 samples never arrived
+        for k in 26..<40 { await r.ingest(feed.frame(6 * k)) }
         await r.stop()
 
-        let p = await preds()
-        let outcomes = FeedbackPolicy.trialOutcomes(p)
-        XCTAssertEqual(outcomes["waits"], .invalid(.insufficientWindow, "cue_lost_frames_dropped"))
-        XCTAssertEqual(outcomes["rides"], .invalid(.insufficientWindow, "cue_lost_push_refused"))
-        XCTAssertEqual(p.first { $0.validity == .invalidInput }?.validityDetail, "non_finite_samples")
-        let segments = p.compactMap { $0.inputSampleRange == nil ? nil : $0.inputSegment }
-        XCTAssertEqual(Set(segments).count, 3, "segment 0, after the drop, after the refusal")
+        let p = try await predictions(id)
+        XCTAssertEqual(p.filter { $0.validityDetail?.hasPrefix("frames_dropped") == true }.map(\.validityDetail), ["frames_dropped:30"])
+        XCTAssertEqual(FeedbackPolicy.trialOutcomes(p)["waits"], .invalid(.insufficientWindow, "cue_lost_frames_dropped"))
+        XCTAssertEqual(Set(p.compactMap { $0.inputSampleRange == nil ? nil : $0.inputSegment }), [0, 1])
+    }
+
+    /// A non-finite chunk is `invalid_input`, nothing reaches the worker, the segment
+    /// restarts, and the cue that would have ridden on it gets `cue_lost_push_refused`.
+    func testRefusedPush_isInvalidInput_andTheCueOnItGetsAnOutcome() async throws {
+        let (r, id, feed) = try await fedRunner()
+        for k in 0..<20 { await r.ingest(feed.frame(6 * k)) }
+        await r.addCue(trialID: "rides", marker: nil, presentedAt: HostMonotonicClock.nowNanos(), lengthSeconds: 4)
+        await r.ingest(feed.frame(6 * 20, poisoned: true))
+        for k in 21..<40 { await r.ingest(feed.frame(6 * k)) }
+        await r.stop()
+
+        let p = try await predictions(id)
+        XCTAssertFalse(p.contains { $0.validityDetail?.hasPrefix("frames_dropped") == true })
+        XCTAssertEqual(p.filter { $0.validity == .invalidInput }.map(\.validityDetail), ["non_finite_samples"])
+        XCTAssertEqual(FeedbackPolicy.trialOutcomes(p)["rides"], .invalid(.insufficientWindow, "cue_lost_push_refused"))
+        XCTAssertEqual(Set(p.compactMap { $0.inputSampleRange == nil ? nil : $0.inputSegment }), [0, 1])
     }
 
     /// Live and replay put a cue on the same sample: a protocol run on the synthetic board,
@@ -355,7 +373,7 @@ final class LiveInferenceRunnerTests: XCTestCase {
                              confidence: c, windowKind: kind, trialID: trial, feedbackEligible: eligible)
         }
         XCTAssertEqual(policy.display(for: p(.valid)), .bar(side: "right", length: 0.6000000000000001))
-        XCTAssertEqual(policy.display(for: p(.valid, c: 0.59)), .hidden(words: "Not confident"))
+        XCTAssertEqual(policy.display(for: p(.valid, c: 0.59)), .hidden(words: "Model unsure"))
         XCTAssertEqual(policy.display(for: p(.valid, c: 0.6)).isShown, true, "at the threshold shows")
         XCTAssertEqual(policy.display(for: p(.valid, eligible: false)), .hidden(words: nil), "outside the feedback span: nothing")
         XCTAssertEqual(policy.display(for: p(.insufficientWindow)), .hidden(words: "Waiting for enough signal"))

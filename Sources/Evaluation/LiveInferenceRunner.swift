@@ -67,11 +67,15 @@ public actor LiveInferenceRunner {
         public var abstainRate: Double? { validHops > 0 ? Double(abstainedHops) / Double(validHops) : nil }
     }
 
-    /// One change of the display, for the participant window: it calls `presented` when the
-    /// frame showing it is on screen.
+    /// The display for one prediction, for the participant window: it calls `presented` when
+    /// the frame first showing a change is on screen. `emittedAt` lets the window refuse to
+    /// draw a bar that has grown older than the stale limit by the time it would be shown.
     public struct Update: Sendable, Equatable {
         public var sequence: Int
         public var display: FeedbackPolicy.Display
+        public var emittedAt: Int64? = nil
+        /// Why the bar is hidden (`FeedbackPolicy.hiddenReason`), nil when shown.
+        public var reason: String? = nil
     }
 
     /// Where a cue landed: on the stream (segment and sample since its start, as the fan-out
@@ -198,6 +202,9 @@ public actor LiveInferenceRunner {
         }
         if let c = client { await c.shutdown() }
         client = nil
+        // The bar never outlives the run: the window's last word is hidden.
+        let last = published.withLock { $0.lastSequence ?? -1 }
+        updateSink.yield(Update(sequence: last, display: .hidden(words: nil), emittedAt: now(), reason: "stopped"))
         updateSink.finish()
         published.withLock { $0.stopped = true }
         let summary = LiveRunRecord.Summary(predictions: records.count,
@@ -214,8 +221,11 @@ public actor LiveInferenceRunner {
     /// `lengthSeconds`. With `marker` (the BrainFlow marker the protocol inserted, brief 005)
     /// it waits for the marked sample; without one, or after `EventAssociator.markerTimeoutNanos`,
     /// it is placed by the estimate.
-    public func addCue(trialID: String, marker: Double?, presentedAt: Int64, lengthSeconds: Double) async {
+    /// A nil `presentedAt` (the window never reported the cue) is never replaced by a guess:
+    /// the trial gets its outcome record, flagged `cue_not_presented`.
+    public func addCue(trialID: String, marker: Double?, presentedAt: Int64?, lengthSeconds: Double) async {
         guard condition != .workerUnavailable else { return await lose(trialID, "cue_lost_worker_unavailable") }
+        guard let presentedAt else { return await lose(trialID, "cue_not_presented") }
         let cue = WaitingCue(trialID: trialID, marker: marker, presentedAt: presentedAt, queuedAt: now(), lengthSeconds: lengthSeconds)
         if marker == nil || configuration.markerRow == nil { return await placeByEstimate(cue) }
         waiting.append(cue)
@@ -223,17 +233,23 @@ public actor LiveInferenceRunner {
 
     /// The participant window showed `sequence`'s display on the frame presented at `at`,
     /// on `HostMonotonicClock` (the cue window converts its display-link time, brief 005).
-    public func presented(sequence: Int, display: FeedbackPolicy.Display, at: Int64?) async {
-        if let at, let e = emitted[sequence] { presentationMs.append(Double(at - e) / 1e6) }
+    /// `measured`: a new prediction caused the change (counted in emission → presentation);
+    /// a change caused by the cue appearing or ending is logged but not counted.
+    public func presented(sequence: Int, display: FeedbackPolicy.Display, at: Int64?, reason: String? = nil, measured: Bool = true) async {
+        if measured, let at, let e = emitted[sequence] { presentationMs.append(Double(at - e) / 1e6) }
         let record: FeedbackRecord
         switch display {
         case .bar(let side, let length):
             record = FeedbackRecord(predictionSequence: sequence, shown: true, side: side, length: length, words: nil, presentedAtMonotonicNanos: at)
         case .hidden(let words):
-            record = FeedbackRecord(predictionSequence: sequence, shown: false, side: nil, length: nil, words: words, presentedAtMonotonicNanos: at)
+            record = FeedbackRecord(predictionSequence: sequence, shown: false, side: nil, length: nil, words: words, presentedAtMonotonicNanos: at,
+                                    reason: reason)
         }
         try? await writer?.append(record)
     }
+
+    /// Test seam: one frame, handled to completion (no stream, no timing).
+    func ingest(_ frame: AcquisitionSession.InferenceFrame) async { await handle(frame) }
 
     /// Test seam: SIGKILL the inference worker, as Activity Monitor would.
     func killWorkerForTesting() async { await client?.forceTerminate() }
@@ -262,19 +278,19 @@ public actor LiveInferenceRunner {
         // A new stream segment, or frames lost from the newest-wins buffer: the worker starts
         // a new segment (filter reset, warm-up again), never joins across the hole. So does a
         // new recording segment in a live run.
+        // State changes first, logging after: a log line suspends the actor, and a cue added
+        // meanwhile must land in the new segment, not be counted as lost with the old one.
+        var lost: (cues: [String], reason: String, dropped: Int?)?
         if newRecorded || frame.segment != streamSegment || frame.firstSample != nextStreamSample {
-            if newRecorded, frame.segment == streamSegment, frame.firstSample == nextStreamSample {
-                for cue in waiting { await lose(cue.trialID, "cue_lost_run_ended") }
-                for cue in pendingCues { await lose(cue.trialID, "cue_lost_run_ended") }
+            let continuous = frame.segment == streamSegment && frame.firstSample == nextStreamSample
+            if newRecorded, continuous {
+                lost = (waiting.map(\.trialID) + pendingCues.map(\.trialID), "cue_lost_run_ended", nil)
                 waiting = []
                 pendingCues = []
             } else if streamSegment != nil {
-                let reason = frame.segment == streamSegment ? "cue_lost_frames_dropped" : "cue_lost_stream_restarted"
-                if frame.segment == streamSegment {
-                    await enterOnce(.insufficientWindow, detail: "frames_dropped:\(frame.firstSample - nextStreamSample)")
-                }
-                for cue in waiting { await lose(cue.trialID, reason) }
-                for cue in pendingCues { await lose(cue.trialID, reason) }
+                let dropped = frame.segment == streamSegment
+                lost = (waiting.map(\.trialID) + pendingCues.map(\.trialID), dropped ? "cue_lost_frames_dropped" : "cue_lost_stream_restarted",
+                        dropped ? frame.firstSample - nextStreamSample : nil)
                 waiting = []
                 pendingCues = []
             }
@@ -288,6 +304,10 @@ public actor LiveInferenceRunner {
         let first = workerNext
         workerNext += chunk.count
         lastFrameEnd = (first + chunk.count - 1, chunk.drainedAtMonotonicNanos)
+        if let lost {
+            if let n = lost.dropped { await enterOnce(.insufficientWindow, detail: "frames_dropped:\(n)") }
+            for trial in lost.cues { await lose(trial, lost.reason) }
+        }
         if condition == .stale || condition == .disconnected { condition = nil }
         await placeMarkedCues(chunk, first: first)
         guard condition != .workerUnavailable, let c = client, let s = session else {
@@ -452,9 +472,11 @@ public actor LiveInferenceRunner {
             }
             if let outcome, s.outcomes[outcome.key] == nil { s.outcomes[outcome.key] = outcome.value }
         }
-        guard drivesDisplay, display != shown else { return }
+        // Every display-driving prediction goes out (newest wins), so the window always knows
+        // how old what it would draw is; it draws and logs only changes.
+        guard drivesDisplay else { return }
         shown = display
-        updateSink.yield(Update(sequence: seq, display: display))
+        updateSink.yield(Update(sequence: seq, display: display, emittedAt: r.emittedAtMonotonicNanos, reason: FeedbackPolicy.hiddenReason(r)))
     }
 
     // MARK: Helpers

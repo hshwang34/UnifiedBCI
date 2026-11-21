@@ -224,7 +224,8 @@ private final class CueView: NSView {
         // runner stores that phase with no presented time.
         let next = scheduler.take(forRefreshAt: target ?? mono)
         if let next { apply(next.frame) }
-        let shown = feedback?.take(cueOnScreen: { if case .cue = frameShown { true } else { false } }())
+        // The stale rule at presentation: a bar too old for this refresh, or after a stall, hides.
+        let shown = feedback?.take(cueOnScreen: { if case .cue = frameShown { true } else { false } }(), targetNanos: target, stall: stall)
         if let shown { applyFeedback(shown.display) }
         if let next, let target { next.sink.presented(next.token, atMonotonicNanos: target, afterStall: stall) }
         // Feedback is logged either way; an unknown refresh time is logged as unknown.
