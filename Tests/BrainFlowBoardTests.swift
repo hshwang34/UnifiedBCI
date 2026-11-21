@@ -146,6 +146,25 @@ final class SequenceAccountingTests: XCTestCase {
         XCTAssertEqual(acc.samplesSeen, 5)
     }
 
+    func testUnreadableCounterFillsItsSlotAndResyncs() {
+        var acc = SequenceAccounting(expectedStep: 2)
+        // 10, ?, 14: the unreadable sample explains the step to 14, nothing lost.
+        XCTAssertEqual(acc.ingest(counters: [10, 7.5, 14][...], timestamps: [0, 1, 2][...]),
+                       [.init(afterSampleIndex: 0, kind: .invalidCounter(value: 7.5))])
+        XCTAssertEqual(acc.unreadableSinceLastCounter, 0)
+        // 14, ?, 20: the slot explains 16, so 18 (one sample) is an ambiguous gap.
+        XCTAssertEqual(acc.ingest(counters: [6.5, 20][...], timestamps: [3, 4][...]), [
+            .init(afterSampleIndex: -1, kind: .invalidCounter(value: 6.5)),
+            .init(afterSampleIndex: 0, kind: .gap(estimatedMissing: 1, ambiguous: true, parityViolation: false)),
+        ])
+        // 20, ?, 20: shorter than the slot explains; the unknown counter could be anything,
+        // so resync silently. Normal accounting resumes after (20 -> 24 loses 22).
+        XCTAssertEqual(acc.ingest(counters: [6.5, 20, 24][...], timestamps: [5, 6, 7][...]), [
+            .init(afterSampleIndex: -1, kind: .invalidCounter(value: 6.5)),
+            .init(afterSampleIndex: 1, kind: .gap(estimatedMissing: 1, ambiguous: true, parityViolation: false)),
+        ])
+    }
+
     func testOverflowSuspectedNearBufferCapacity() {
         XCTAssertTrue(SequenceAccounting.overflowSuspected(available: 44_900, bufferSize: 45_000))
         XCTAssertTrue(SequenceAccounting.overflowSuspected(available: 45_000, bufferSize: 45_000))
@@ -211,10 +230,9 @@ final class PlaybackBoardTests: XCTestCase {
         XCTAssertEqual(findings, [
             .init(afterSampleIndex: 59, kind: .gap(estimatedMissing: 2, ambiguous: true, parityViolation: false)),
             .init(afterSampleIndex: 99, kind: .staleHalf),
+            // Sample 140 arrived with an unreadable counter; it fills its slot, so 141's
+            // delta of 4 is not reported as a lost sample.
             .init(afterSampleIndex: 139, kind: .invalidCounter(value: 7.5)),
-            // The unreadable counter is skipped, so the next delta also spans sample 140:
-            // counter evidence cannot tell a lost sample from an unreadable one.
-            .init(afterSampleIndex: 140, kind: .gap(estimatedMissing: 1, ambiguous: true, parityViolation: false)),
             // 252 -> 2 across the wrap: 254 and 0 lost. The clean wrap at sample 27 is not listed.
             .init(afterSampleIndex: 153, kind: .gap(estimatedMissing: 2, ambiguous: true, parityViolation: false)),
         ])
@@ -226,6 +244,8 @@ final class PlaybackBoardTests: XCTestCase {
         try await board.startStream()
         let chunks = try await drain(board, until: receivedSamples + 10)
         try await board.release()
+        let file = try fixtureSamples()
+        let restartDelta = (Int(file[0][d.packageNumRow]) - Int(file[receivedSamples - 1][d.packageNumRow]) + 256) % 256
 
         var accounting = SequenceAccounting(board: d)
         var total = 0
@@ -238,25 +258,52 @@ final class PlaybackBoardTests: XCTestCase {
             total += chunk.count
         }
         XCTAssertGreaterThan(total, receivedSamples)
-        // Counter 92 -> 200 and the timestamps go back to the file's start.
+        // The counter jumps from the file's last to its first, and the timestamps go back.
         XCTAssertEqual(atRestart.count, 2, "\(atRestart)")
-        XCTAssertEqual(atRestart.first, .gap(estimatedMissing: 53, ambiguous: true, parityViolation: false))
+        XCTAssertEqual(atRestart.first, .gap(estimatedMissing: (restartDelta - 2) / 2, ambiguous: true, parityViolation: false))
         guard case .clockAnomaly? = atRestart.last else { return XCTFail("expected a clock anomaly, got \(atRestart)") }
     }
 
     func testConfigureAndInsertMarker() async throws {
-        let board = try BrainFlowBoard.playback(file: fixtureURL())
+        // BrainFlow's playback board overlays inserted markers on the marker row of a later
+        // sample (checked against 5.23.0). Looping keeps samples coming until it lands.
+        let board = try BrainFlowBoard.playback(file: fixtureURL(), loop: true)
         let d = board.description
         // The playback board accepts its own commands and replies with nothing.
         let reply = try await board.configure("old_timestamps")
         XCTAssertEqual(reply, "")
         try await board.startStream()
-        try await Task.sleep(for: .milliseconds(200))
         try await board.insertMarker(3)
-        let chunks = try await drain(board, until: 60)
+        var markers: [Double] = []
+        let deadline = ContinuousClock.now + .seconds(10)
+        while markers.isEmpty, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+            markers += try await board.readAll().row(d.markerRow).filter { $0 != 0 }
+        }
         try await board.release()
-        let markers = chunks.flatMap { Array($0.row(d.markerRow)) }.filter { $0 != 0 }
         XCTAssertEqual(markers, [3])
+    }
+
+    func testFailedPlaybackSetupReleasesTheSession() async throws {
+        let board = try BrainFlowBoard.playback(file: fixtureURL())
+        let d = board.description
+        await board.injectSetupFault(BrainFlowError(code: BrainFlowExitCode.generalError.rawValue, operation: "config_board"))
+        do {
+            try await board.startStream()
+            XCTFail("setup fault must surface")
+        } catch let error as BrainFlowError {
+            XCTAssertEqual(error.operation, "config_board")
+        }
+        let preparedAfterFailure = try await board.isSessionPrepared()
+        XCTAssertFalse(preparedAfterFailure, "no session may survive without old_timestamps")
+
+        // A retry prepares from scratch and keeps the file's timestamps.
+        await board.injectSetupFault(nil)
+        try await board.startStream()
+        let chunks = try await drain(board, until: 1)
+        try await board.release()
+        let first = try XCTUnwrap(chunks.first { $0.count > 0 })
+        XCTAssertEqual(first.row(d.timestampRow).first, try fixtureSamples()[0][d.timestampRow])
     }
 
     func testMissingPlaybackFileFailsToPrepare() async throws {

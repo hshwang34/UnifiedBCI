@@ -37,12 +37,12 @@ public enum SerialPortScanner {
             defer { IOObjectRelease(service) }
             guard let path = string(service, kIOCalloutDeviceKey, searchParents: false),
                   path.hasPrefix("/dev/cu.") else { continue }
-            ports.append(SerialPort(
-                path: path,
-                vendorName: string(service, "USB Vendor Name", searchParents: true),
-                productName: string(service, "USB Product Name", searchParents: true),
-                isUSB: IORegistryEntrySearchCFProperty(service, kIOServicePlane, "idVendor" as CFString,
-                                                       kCFAllocatorDefault, parentSearch) != nil))
+            let vendor = string(service, "USB Vendor Name", searchParents: true)
+            let hasVendorID = IORegistryEntrySearchCFProperty(service, kIOServicePlane, "idVendor" as CFString,
+                                                              kCFAllocatorDefault, parentSearch) != nil
+            ports.append(SerialPort(path: path, vendorName: vendor,
+                                    productName: string(service, "USB Product Name", searchParents: true),
+                                    isUSB: hasVendorID || vendor != nil))
         }
         return ordered(ports)
     }

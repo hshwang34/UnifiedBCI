@@ -232,12 +232,35 @@ public actor BrainFlowBoard {
         guard !prepared else { return }
         try Self.check(prepare_session(boardID, paramsJSON), "prepare_session")
         prepared = true
-        if boardID == KnownBoard.playbackFile {
+        guard boardID == KnownBoard.playbackFile else { return }
+        do {
+            #if DEBUG
+            if let setupFault { throw setupFault }
+            #endif
             // BrainFlow's default rewrites every timestamp to "now"; a replay must not.
             _ = try configure("old_timestamps")
             _ = try configure(loopPlayback ? "loopback_true" : "loopback_false")
+        } catch {
+            // Never leave a session prepared without its setup: a retry would replay "now".
+            prepared = false
+            _ = release_session(boardID, paramsJSON)
+            throw error
         }
     }
+
+    /// BrainFlow's own view (`is_prepared`), not this actor's flag.
+    public func isSessionPrepared() throws -> Bool {
+        var result: Int32 = 0
+        try Self.check(is_prepared(&result, boardID, paramsJSON), "is_prepared")
+        return result != 0
+    }
+
+    #if DEBUG
+    /// Test hook: the next playback setup fails after `prepare_session` succeeded
+    /// (BrainFlow's playback board accepts any command, so this can't be provoked).
+    private var setupFault: BrainFlowError?
+    func injectSetupFault(_ fault: BrainFlowError?) { setupFault = fault }
+    #endif
 
     /// Sends a configuration command (`config_board`) and returns the board's reply, or ""
     /// when it sends none. Prepares the session first; Cyton commands are its ASCII protocol.
@@ -364,6 +387,9 @@ public struct SequenceAccounting: Sendable, Equatable {
     public private(set) var lastCounter: Int?
     public private(set) var lastTimestamp: Double?
     public private(set) var samplesSeen = 0
+    /// Samples received since `lastCounter` whose counter could not be read. Each one
+    /// arrived, so it occupies one counter slot of the next valid delta.
+    public private(set) var unreadableSinceLastCounter = 0
 
     public init(expectedStep: Int) {
         precondition(expectedStep == 1 || expectedStep == 2, "only step 1 and step 2 boards are supported")
@@ -388,9 +414,21 @@ public struct SequenceAccounting: Sendable, Equatable {
             guard c.isFinite, let counter = Int(exactly: c) else {
                 findings.append(Finding(afterSampleIndex: offset - 1, kind: .invalidCounter(value: c)))
                 samplesSeen += 1
+                if lastCounter != nil { unreadableSinceLastCounter += 1 }
                 continue
             }
-            if let prev = lastCounter {
+            if let prev = lastCounter, unreadableSinceLastCounter > 0 {
+                // Resync after unreadable counters: they arrived, so they explain one step
+                // each. Only a delta beyond those slots is evidence of loss; a shorter one
+                // (their true counters are unknown) is not reported.
+                let delta = ((counter - prev) % Self.modulus + Self.modulus) % Self.modulus
+                let missingCounts = delta - expectedStep * (unreadableSinceLastCounter + 1)
+                if missingCounts > 0 {
+                    findings.append(Finding(afterSampleIndex: offset - 1,
+                                            kind: .gap(estimatedMissing: missingCounts / expectedStep, ambiguous: true,
+                                                       parityViolation: missingCounts % expectedStep != 0)))
+                }
+            } else if let prev = lastCounter {
                 let delta = ((counter - prev) % Self.modulus + Self.modulus) % Self.modulus
                 if delta == expectedStep {
                     // normal
@@ -408,6 +446,7 @@ public struct SequenceAccounting: Sendable, Equatable {
                 findings.append(Finding(afterSampleIndex: offset - 1, kind: .clockAnomaly(backwardSeconds: prevT - t)))
             }
             lastCounter = counter
+            unreadableSinceLastCounter = 0
             lastTimestamp = t
             samplesSeen += 1
         }
@@ -418,5 +457,6 @@ public struct SequenceAccounting: Sendable, Equatable {
         lastCounter = nil
         lastTimestamp = nil
         samplesSeen = 0
+        unreadableSinceLastCounter = 0
     }
 }
