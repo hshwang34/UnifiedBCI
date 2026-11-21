@@ -427,8 +427,9 @@ struct EvaluateInspectorModel {
          protocol p: ProtocolRecord? = nil, windowEndMs: Int? = nil) {
         recordingTitle = RecordingDetailModel.title(for: m)
         let runCount = RunCountModel.runs(m)
-        runs = RunCountModel.message(runs: runCount)
-        hasEnoughRuns = runCount >= RunCountModel.minimumRuns
+        let usable = RunCountModel.evaluableRuns(events)
+        runs = RunCountModel.message(runs: usable)
+        hasEnoughRuns = usable >= RunCountModel.minimumRuns
         classes = p.map(RunCountModel.labels)
         let recipes = recipes.map(\.name)
         let what = recipes.isEmpty ? "the reference recipe and its baseline" : recipes.joined(separator: " and ")

@@ -58,12 +58,17 @@ final class RunFlowTests: XCTestCase {
     }
 
     func testRunKeys() {
-        XCTAssertEqual(RunKey(keyCode: 49, characters: " ", command: false), .space)
-        XCTAssertEqual(RunKey(keyCode: 53, characters: "\u{1b}", command: false), .escape)
-        XCTAssertEqual(RunKey(keyCode: 47, characters: ".", command: true), .abortRun)
-        XCTAssertNil(RunKey(keyCode: 47, characters: ".", command: false))
-        XCTAssertNil(RunKey(keyCode: 49, characters: " ", command: true))
-        XCTAssertNil(RunKey(keyCode: 0, characters: "a", command: false))
+        XCTAssertEqual(RunKey(keyCode: 49, characters: " ", modifiers: []), .space)
+        XCTAssertEqual(RunKey(keyCode: 53, characters: "\u{1b}", modifiers: [.capsLock]), .escape, "Caps Lock doesn't count")
+        XCTAssertEqual(RunKey(keyCode: 47, characters: ".", modifiers: [.command]), .abortRun)
+        XCTAssertNil(RunKey(keyCode: 47, characters: ".", modifiers: []))
+        XCTAssertNil(RunKey(keyCode: 49, characters: " ", modifiers: [.command]))
+        XCTAssertNil(RunKey(keyCode: 0, characters: "a", modifiers: []))
+        for extra: NSEvent.ModifierFlags in [.control, .option, .shift] {
+            XCTAssertNil(RunKey(keyCode: 47, characters: ".", modifiers: [.command, extra]), "⌘ plus another modifier is not ⌘.")
+            XCTAssertNil(RunKey(keyCode: 53, characters: "\u{1b}", modifiers: extra))
+            XCTAssertNil(RunKey(keyCode: 49, characters: " ", modifiers: extra))
+        }
     }
 
     // MARK: Operator panel
@@ -75,6 +80,7 @@ final class RunFlowTests: XCTestCase {
         XCTAssertEqual(m.progress, "Run 2 of 4 · 40 trials")
         XCTAssertEqual(m.phase, "Instructions on screen. Press Space when the participant is ready.")
         XCTAssertTrue(m.canBegin && m.canAbortRun)
+        XCTAssertTrue(m.shortcuts.hasPrefix("Space begins · "))
         XCTAssertFalse(m.canAbortTrial || m.canPause || m.canResume)
 
         s.state = .running; s.trial = 16; s.phase = .cue; s.label = "cue_left_hand"
@@ -84,6 +90,7 @@ final class RunFlowTests: XCTestCase {
         XCTAssertEqual(m.phase, "Cue · Left hand")
         XCTAssertEqual(m.time, "Elapsed 1 min 23 s · about 2 min 37 s left")
         XCTAssertTrue(m.canAbortTrial && m.canPause && m.canAbortRun)
+        XCTAssertTrue(m.shortcuts.hasPrefix("Space pauses · "), "never \"Space begins\" during a trial")
         s.phase = .rest
         XCTAssertFalse(OperatorPanelModel(s, protocol: p, runsPerSession: 4, streaming: true, nowNanos: 0).canAbortTrial, "rest has nothing to abort")
 
@@ -96,6 +103,10 @@ final class RunFlowTests: XCTestCase {
         m = OperatorPanelModel(s, protocol: p, runsPerSession: 4, streaming: true, nowNanos: 0)
         XCTAssertTrue(m.canResume)
         XCTAssertTrue(m.phase.contains("new segment"))
+        XCTAssertTrue(m.shortcuts.hasPrefix("Space resumes · "))
+        s.state = .paused(.display)
+        XCTAssertEqual(OperatorPanelModel(s, protocol: p, runsPerSession: 4, streaming: true, nowNanos: 0).phase,
+                       "Participant display changed. Resume fits the window to it again; the trial in progress was aborted.")
 
         s.state = .ended(aborted: true); s.endReason = "recording_stopped"; s.unrecordedEvents = ["rest", "run_end"]
         m = OperatorPanelModel(s, protocol: p, runsPerSession: 4, streaming: true, nowNanos: 0)
@@ -116,13 +127,30 @@ final class RunFlowTests: XCTestCase {
         XCTAssertEqual(m.rows.map(\.1), ["10.0 ms", "19.0 ms", "20.0 ms", "4 of 20 screen changes (1 frame = 16.7 ms)",
                                          "1 phase; presented time left empty", "158 events by BrainFlow marker · 2 by nearest timestamp"])
         XCTAssertEqual(m.caveat, "Measured from the app's own callbacks. The delay to the screen and to the EEG sample is not measured.")
+        // A stall's lateness is named, and the maximum without it given.
+        let stalled = TimingSummaryModel(latenessNanos: [2 * ms, 3 * ms, 80 * ms], afterStall: [false, false, true], missing: 0,
+                                         framePeriodNanos: 16_666_667, placements: (12, 0))
+        XCTAssertEqual(stalled.rows.first { $0.0 == "After a display stall" }?.1, "1 screen change; maximum without them 3.0 ms")
+        XCTAssertNil(m.rows.first { $0.0 == "After a display stall" })
         let empty = TimingSummaryModel(latenessNanos: [], missing: 0, framePeriodNanos: 0, placements: nil)
         XCTAssertEqual(empty.rows.map(\.1), ["no presentation callbacks", "counting…"])
     }
 
     func testRunCountMessage() {
-        XCTAssertEqual(RunCountModel.message(runs: 2), "Needs at least 3 runs (1 held out, 2 for cross-validation); this recording has 2.")
-        XCTAssertEqual(RunCountModel.message(runs: 4), "4 runs: enough to hold one out and cross-validate on the rest.")
+        XCTAssertEqual(RunCountModel.message(runs: 2), "Needs at least 3 runs with cues (1 held out, 2 for cross-validation); this recording has 2.")
+        XCTAssertEqual(RunCountModel.message(runs: 4), "4 runs with cues: enough to hold one out and cross-validate on the rest.")
+        func e(_ label: String, run: String, trial: String?) -> EventRecord {
+            EventRecord(eventID: UUID(), sessionID: "S", runID: run, trialID: trial, label: label, origin: "protocol",
+                        intendedAtMonotonicNanos: nil, presentedAtMonotonicNanos: nil, sourceTimeNanos: nil, wallTime: Date(),
+                        sampleAssociation: nil, timingUncertaintyNanos: nil, reason: nil, aborted: nil, plannedLabel: nil)
+        }
+        let events = [
+            e("run_start", run: "run01", trial: nil), e("fixation", run: "run01", trial: "run01-t01"), e("cue_left_hand", run: "run01", trial: "run01-t01"),
+            e("fixation", run: "run02", trial: "run02-t01"), e("cue_right_hand", run: "run02", trial: "run02-t01"), e("trial_abort", run: "run02", trial: "run02-t01"),
+            e("fixation", run: "run03", trial: "run03-t01"), e("trial_abort", run: "run03", trial: "run03-t01"),
+            e("run_start", run: "run04", trial: nil), e("cue_right_hand", run: "run04", trial: "run04-t02"),
+        ]
+        XCTAssertEqual(RunCountModel.evaluableRuns(events), 2, "a run whose only cue was aborted, or that never showed one, can't be split on")
         XCTAssertEqual(RunCountModel.labels(graz), "Classes from Left vs right hand (Graz-style) v1: Left hand (“cue_left_hand”) vs Right hand (“cue_right_hand”).")
     }
 
@@ -131,10 +159,57 @@ final class RunFlowTests: XCTestCase {
     private final class FakeSurface: CueSurface {
         let timed = TimedDisplay()
         var display: any CueDisplay { timed }
-        var shown = 0, hidden = 0, closed = 0
+        var onDisplayChange: (() -> Void)?
+        var framePeriodNanos: Int64 = 16_666_667
+        var displayPresent = true
+        var shown = 0, hidden = 0, closed = 0, reframed = 0
         func show() { shown += 1 }
         func hide() { hidden += 1 }
         func close() { closed += 1 }
+        func reframe() -> Bool { reframed += 1; return displayPresent }
+    }
+
+    /// Key repeats and second presses never abort another trial; a display change pauses the
+    /// run, and Resume re-frames (and refuses while the display is gone).
+    func testRepeatsAreSwallowed_abortIsOncePerTrial_displayChangePausesAndReframes() async throws {
+        let store = try ProjectStore.create(at: scratch.appendingPathComponent("keys.bciproj"), name: "keys")
+        var draft = ProtocolDraft.grazDefault
+        draft.timing = .init(fixationMs: 200, cueMs: 1500, restMinMs: 100, restMaxMs: 100)
+        draft.trialsPerClass = 2
+        let p = try await store.createProtocolVersion(draft, basedOn: nil)
+        let surface = FakeSurface()
+        let runs = RunController(setup: .init(protocolRecord: p, sessionSeed: 1, runsPerSession: 1, display: external, framePeriodNanos: 16_666_667),
+                                 host: FakeHost(store: store), store: store, surface: surface, onRecording: { _ in }, stopRecording: {})
+        runs.startNextRun()
+        XCTAssertTrue(runs.press(.space, isRepeat: true), "a repeat is consumed")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(runs.status?.state, .instructions, "…without acting")
+        runs.press(.space, isRepeat: false)
+        try await waitFor { runs.status?.phase == .cue && runs.status?.trial == 0 }
+        runs.press(.escape, isRepeat: false)
+        for _ in 0..<5 { runs.press(.escape, isRepeat: true) }
+        runs.press(.escape, isRepeat: false)                   // a second press for the same trial
+        try await waitFor { runs.status?.trial == 1 && runs.status?.phase == .cue }
+        XCTAssertEqual(runs.status?.abortedTrials.count, 1, "one abort for trial 1; trial 2 untouched")
+
+        surface.onDisplayChange?()
+        try await waitFor { runs.status?.state == .paused(.display) }
+        XCTAssertEqual(runs.status?.abortedTrials.count, 2, "the trial on screen is aborted, as on a disconnect")
+        surface.displayPresent = false
+        runs.resume()
+        XCTAssertEqual(runs.resumeProblem, OperatorPanelModel.displayGone)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(runs.status?.state, .paused(.display), "no resume onto a missing display")
+        surface.displayPresent = true
+        surface.framePeriodNanos = 8_333_333
+        runs.resume()
+        XCTAssertNil(runs.resumeProblem)
+        XCTAssertEqual(runs.setup.framePeriodNanos, 8_333_333, "the frame period is read again")
+        try await waitFor { runs.status?.state == .running }
+        runs.press(.abortRun, isRepeat: false)
+        await runs.awaitRun()
+        XCTAssertEqual(runs.status?.state, .ended(aborted: true))
+        XCTAssertEqual(surface.reframed, 2)
     }
 
     func testTwoRunsOnTheSyntheticBoard_summaries_protocolLabels_andTheRunCountMessage() async throws {
@@ -197,13 +272,26 @@ final class RunFlowTests: XCTestCase {
         let handle = try XCTUnwrap(session.selectedRecording)
         let model = EvaluateInspectorModel(manifest: handle.manifest, events: session.eventsByRecording[id] ?? [], latest: nil, defaults: nil,
                                            modelName: { $0 }, protocol: session.recordingProtocols[id], windowEndMs: 4000)
-        XCTAssertEqual(model.runs, "Needs at least 3 runs (1 held out, 2 for cross-validation); this recording has 2.")
+        XCTAssertEqual(model.runs, "Needs at least 3 runs with cues (1 held out, 2 for cross-validation); this recording has 2.")
         XCTAssertFalse(model.hasEnoughRuns)
         XCTAssertNotNil(model.classes)
         XCTAssertTrue(model.misleading.contains { $0.text.hasPrefix("The cue (0.6 s) ends before") }, "the protocol's cue is checked against the window")
         session.dismissRuns()
         XCTAssertNil(session.runs)
-        await workspace.close(url)
+
+        // ⌘Q mid-run: closeAll → shutdown tears the run down, closes the participant window
+        // and ends the recording `stopped`.
+        let quitSurface = FakeSurface()
+        session.startRuns(.init(protocolRecord: p, sessionSeed: 8, runsPerSession: 2, display: external, framePeriodNanos: 16_666_667),
+                          host: try XCTUnwrap(live.runHost()), surface: quitSurface, options: options)
+        let quitting = try XCTUnwrap(session.runs)
+        quitting.begin()
+        try await waitFor { quitting.status?.phase == .cue }
+        await workspace.closeAll()
+        XCTAssertEqual(quitSurface.closed, 1)
+        XCTAssertTrue(session.isShutDown)
+        XCTAssertEqual(live.session?.snapshot.state, .disconnected)
+        XCTAssertNil(live.session?.snapshot.recordingID, "the recording ended")
     }
 
     private func waitFor(timeout: Duration = .seconds(20), _ condition: () -> Bool) async throws {

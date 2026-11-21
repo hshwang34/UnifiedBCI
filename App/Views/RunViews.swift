@@ -17,10 +17,13 @@ struct StartRunSheet: View {
                 if let p = form.selected {
                     Text(StartRunCopy.protocolSummary(p)).font(.callout).foregroundStyle(Theme.textSecondary)
                 }
-                HStack {
-                    TextField(StartRunCopy.seedLabel, text: $form.seedText).font(Theme.Fonts.mono).help(StartRunCopy.seedHelp)
-                    Button(StartRunCopy.newSeed) { form.seedText = String(StartRunForm.newSeed()) }
+                LabeledContent(StartRunCopy.seedLabel) {
+                    HStack {
+                        TextField(StartRunCopy.seedLabel, text: $form.seedText).labelsHidden().font(Theme.Fonts.mono)
+                        Button(StartRunCopy.newSeed) { form.seedText = String(StartRunForm.newSeed()) }
+                    }
                 }
+                .help(StartRunCopy.seedHelp)
                 Stepper(value: $form.runsPerSession, in: 1...ProtocolRecord.maxRunsPerSession) {
                     Text("\(StartRunCopy.runsLabel): \(form.runsPerSession)").monospacedDigit()
                 }
@@ -35,6 +38,7 @@ struct StartRunSheet: View {
             }
             .formStyle(.grouped)
             if let reason { StatusChip(kind: .info, text: reason) }
+            if let error = session.startRunSheetError { StatusChip(kind: .danger, text: error) }
             HStack {
                 Spacer()
                 Button(StartRunCopy.cancel, role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
@@ -76,7 +80,8 @@ struct OperatorPanel: View {
                     .accessibilityElement(children: .contain)
                 }
             }
-            Text(OperatorPanelModel.shortcuts).font(.caption).foregroundStyle(Theme.textSecondary)
+            Text(OperatorPanelModel.shortcuts(runs.status?.state ?? .instructions)).font(.caption).foregroundStyle(Theme.textSecondary)
+            if let problem = runs.resumeProblem { StatusChip(kind: .danger, text: problem) }
             ForEach(runs.summaries.reversed()) { TimingSummaryView(runIndex: $0.runIndex, model: $0.timing) }
         }
         .card()

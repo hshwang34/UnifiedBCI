@@ -70,6 +70,7 @@ enum StartRunCopy {
     static let noDisplay = "No display is available for the participant window."
     static let alreadyRecording = "Stop the current recording first."
     static let nextRunNote = "The next run starts on the same recording, as a new segment."
+    static let displayGone = "The chosen display is no longer connected. Pick another display."
 
     static func protocolTitle(_ p: ProtocolRecord) -> String { "\(p.name) · v\(p.version)" }
 
@@ -94,6 +95,8 @@ struct OperatorPanelModel: Equatable {
     let phase: String
     let time: String?
     let notice: (danger: Bool, text: String)?
+    /// The keys as they act in this state.
+    let shortcuts: String
     let canBegin, canAbortTrial, canPause, canResume, canAbortRun: Bool
 
     static let header = "Protocol run"
@@ -101,11 +104,22 @@ struct OperatorPanelModel: Equatable {
     static let beginHelp = "Start the first trial (Space)."
     static let abortTrialHelp = "Abort the trial in progress (Esc). It is excluded, not repeated."
     static let abortRunHelp = "End this run now (⌘.). Completed trials stay evaluable."
-    static let shortcuts = "Space begins · Esc aborts the trial · ⌘. aborts the run. The keys work while the participant window is in front."
+    static let displayGone = "The participant display is gone. Reconnect it, or abort the run."
+
+    static func shortcuts(_ state: ProtocolRunner.RunState) -> String {
+        let space: String
+        switch state {
+        case .instructions: space = "Space begins"
+        case .running: space = "Space pauses"
+        case .paused: space = "Space resumes"
+        case .ended, .failed: return "Start the next run or finish the session."
+        }
+        return "\(space) · Esc aborts the trial · ⌘. aborts the run. The keys work while the participant window is in front."
+    }
 
     static func == (a: Self, b: Self) -> Bool {
         a.title == b.title && a.progress == b.progress && a.phase == b.phase && a.time == b.time
-            && a.notice?.danger == b.notice?.danger && a.notice?.text == b.notice?.text
+            && a.notice?.danger == b.notice?.danger && a.notice?.text == b.notice?.text && a.shortcuts == b.shortcuts
             && [a.canBegin, a.canAbortTrial, a.canPause, a.canResume, a.canAbortRun] == [b.canBegin, b.canAbortTrial, b.canPause, b.canResume, b.canAbortRun]
     }
 
@@ -127,6 +141,7 @@ struct OperatorPanelModel: Equatable {
         case .paused(.operator): phase = "Paused"
         case .paused(.disconnect): phase = streaming ? "Paused after a disconnect. The board is back: Resume continues in a new segment."
                                                      : "Paused: the board disconnected. Resume once it reconnects."
+        case .paused(.display): phase = "Participant display changed. Resume fits the window to it again; the trial in progress was aborted."
         case .ended(let aborted): phase = aborted ? "Run ended early" : "Run complete"
         case .failed: phase = "The run couldn't start"
         }
@@ -146,6 +161,7 @@ struct OperatorPanelModel: Equatable {
             notice = s.abortedTrials.isEmpty ? nil
                 : (false, "\(s.abortedTrials.count) trial\(s.abortedTrials.count == 1 ? "" : "s") aborted and excluded: \(s.abortedTrials.joined(separator: ", "))")
         }
+        shortcuts = Self.shortcuts(s.state)
         let live: Bool = { switch s.state { case .instructions, .running, .paused: true; default: false } }()
         canBegin = s.state == .instructions
         canAbortTrial = s.state == .running && s.trial != nil && s.phase != .rest
@@ -174,8 +190,11 @@ struct TimingSummaryModel: Equatable {
 
     /// `latenessNanos`: presented − intended per phase with a callback. `placements`: the run's
     /// phase events by association method, once written (nil while still being written).
-    init(latenessNanos: [Int64], missing: Int, framePeriodNanos: Int64, placements: (marker: Int, fallback: Int)?) {
+    /// `afterStall` (parallel to `latenessNanos`): the callback followed a display stall.
+    init(latenessNanos: [Int64], afterStall: [Bool] = [], missing: Int, framePeriodNanos: Int64, placements: (marker: Int, fallback: Int)?) {
         let sorted = latenessNanos.sorted()
+        let stalled = latenessNanos.indices.filter { $0 < afterStall.count && afterStall[$0] }
+        let steady = latenessNanos.indices.filter { !stalled.contains($0) }.map { latenessNanos[$0] }
         func ms(_ n: Int64) -> String { "\(Fmt.fixed(Double(n) / 1e6, 1)) ms" }
         func pct(_ p: Double) -> Int64 { sorted[max(0, Int((p * Double(sorted.count)).rounded(.up)) - 1)] }
         var r: [(String, String)] = []
@@ -188,6 +207,11 @@ struct TimingSummaryModel: Equatable {
             let period = max(1, framePeriodNanos)
             let late = sorted.filter { $0 >= period }.count
             r.append(("A frame or more late", "\(late) of \(sorted.count) screen changes (1 frame = \(ms(period)))"))
+            if !stalled.isEmpty {
+                // The maximum above can come from the app or the system stalling, not the schedule.
+                r.append(("After a display stall", "\(stalled.count) screen change\(stalled.count == 1 ? "" : "s")"
+                          + (steady.max().map { "; maximum without them \(ms($0))" } ?? "")))
+            }
         }
         if missing > 0 { r.append(("No callback", "\(missing) phase\(missing == 1 ? "" : "s"); presented time left empty")) }
         if let p = placements {
@@ -208,9 +232,19 @@ enum RunCountModel {
         Set(m.segments.map(\.runID)).count
     }
 
+    /// Runs the worker can split on: those with at least one cue event (a trial event that
+    /// isn't one of the protocol's own) whose trial wasn't aborted.
+    static func evaluableRuns(_ events: [EventRecord]) -> Int {
+        let aborted = Set(events.filter { $0.label == "trial_abort" }.compactMap(\.trialID))
+        return Set(events.filter { e in
+            guard let t = e.trialID else { return false }
+            return !ProtocolRecord.reservedLabels.contains(e.label) && !aborted.contains(t)
+        }.map(\.runID)).count
+    }
+
     static func message(runs n: Int) -> String {
-        n < minimumRuns ? "Needs at least 3 runs (1 held out, 2 for cross-validation); this recording has \(n)."
-            : "\(n) runs: enough to hold one out and cross-validate on the rest."
+        n < minimumRuns ? "Needs at least 3 runs with cues (1 held out, 2 for cross-validation); this recording has \(n)."
+            : "\(n) runs with cues: enough to hold one out and cross-validate on the rest."
     }
 
     static func labels(_ p: ProtocolRecord) -> String {
