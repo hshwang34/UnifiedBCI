@@ -60,6 +60,25 @@ public enum AcquisitionSource: Sendable, Equatable {
         }
     }
 
+    /// The channel map the played file declares (its sidecar's labels, montage and
+    /// reference), only for a derived playback file whose sidecar names its SHA-256 and whose
+    /// rows are exactly this board's EEG rows. Nil for every other source: a device's map is
+    /// the operator's to declare (decision #31). Hashes the file: call it off the main actor.
+    public func declaredChannelMap(for board: BoardDescription) -> ChannelMapRecord? {
+        guard case .playback(let file, _) = self, let sha = Self.sha256(file),
+              let derived = DerivedPlayback.load(for: file, sha256: sha), let declared = derived.channels else { return nil }
+        var map = ChannelMapRecord.defaults(for: board)
+        guard declared.count == map.channels.count,
+              Set(declared.map(\.row)) == Set(map.channels.map(\.sourceRow)) else { return nil }
+        for i in map.channels.indices {
+            guard let label = declared.first(where: { $0.row == map.channels[i].sourceRow })?.label else { return nil }
+            map.channels[i].label = label
+        }
+        if let montage = derived.montage { map.montage = montage }
+        if let reference = derived.reference { map.reference = reference }
+        return map.problem(directoryID: map.mapID) == nil ? map : nil
+    }
+
     /// The bundled Demo file (decision #42), generated at build time into `Resources/Demo/`.
     public static let demoFileName = "S001R04-demo-cyton-daisy-125hz.csv"
 
@@ -82,8 +101,13 @@ struct DerivedPlayback {
     let license: String?
     let attribution: [RecordingManifest.Citation]?
     let derivations: [String]
+    /// The file's EEG rows and their electrode labels, montage and reference, as declared.
+    let channels: [(row: Int, label: String)]?
+    let montage: String?
+    let reference: String?
 
     private struct Sidecar: Decodable {
+        struct Channel: Decodable { let fileRow: Int; let label: String; let kind: String; let unit: String }
         struct File: Decodable { let name: String; let sha256: String }
         struct Origin: Decodable {
             let project: String?; let recordingID: String?; let dataset: String?; let license: String?
@@ -92,6 +116,7 @@ struct DerivedPlayback {
         let kind: String; let warning: String; let generator: String; let method: String
         let originalRateHz: Double; let resampledRateHz: Double
         let file: File; let source: Origin
+        let channels: [Channel]?; let montage: String?; let reference: String?
     }
 
     static func load(for file: URL, sha256: String) -> DerivedPlayback? {
@@ -100,11 +125,13 @@ struct DerivedPlayback {
               let s = try? JSONDecoder().decode(Sidecar.self, from: data),
               s.kind == "derived_playback", s.file.name == file.lastPathComponent, s.file.sha256 == sha256 else { return nil }
         let origin = [s.source.project, s.source.recordingID.map { "recording \($0)" }].compactMap { $0 }.joined(separator: " ")
+        let eeg = s.channels?.filter { $0.kind == "eeg" && $0.unit == "uV" }.map { (row: $0.fileRow, label: $0.label) }
         return .init(sidecar: url, warning: s.warning, dataset: s.source.dataset, license: s.source.license,
                      attribution: s.source.attribution,
                      derivations: ["derived_playback (\(s.generator))",
                                    "resampled \(Fmt.hertz(s.originalRateHz)) to \(Fmt.hertz(s.resampledRateHz)): \(s.method)",
-                                   "derived from \(origin.isEmpty ? "an unnamed source" : origin)"])
+                                   "derived from \(origin.isEmpty ? "an unnamed source" : origin)"],
+                     channels: eeg, montage: s.montage, reference: s.reference)
     }
 }
 

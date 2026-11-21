@@ -126,7 +126,7 @@ final class ProjectSession: Identifiable {
     var hasLiveRow: Bool { live.map { $0.hasStreamed && !$0.isClosed && $0.state != .disconnected } ?? false }
     /// The list reload after a live recording ended (tests and snapshots wait on it).
     @ObservationIgnored private(set) var liveReload: Task<Void, Never>?
-    var isRecording: Bool { live?.isRecording ?? false }
+    var isRecording: Bool { live?.isRecordingNow ?? false }
 
     /// New Recording… and the welcome screen's Connect hardware: the Connect sheet, or the
     /// acquisition screen when a board is already streaming.

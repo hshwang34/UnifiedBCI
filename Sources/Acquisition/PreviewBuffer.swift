@@ -11,9 +11,9 @@ public final class PreviewBuffer: Sendable {
         public var capacity: Int
         /// `[channel][sample]` in µV, oldest first; at most `capacity` per channel.
         public var channels: [[Float]]
-        /// Index in each channel where the current stream segment starts (0 when it started
-        /// before the window): the screen breaks the line there, nothing is joined.
-        public var segmentStart: Int
+        /// Indices in each channel where a stream segment starts inside the window, oldest
+        /// first: the screen breaks the line at every one, nothing is joined.
+        public var segmentStarts: [Int]
         public var framesIngested: Int
         public var count: Int { channels.first?.count ?? 0 }
     }
@@ -24,7 +24,8 @@ public final class PreviewBuffer: Sendable {
         var count = 0
         var total = 0                // samples ever written
         var segment: Int?
-        var segmentStartTotal = 0
+        /// Absolute sample numbers where segments after the first began.
+        var segmentStartTotals: [Int] = []
         var frames = 0
     }
 
@@ -50,7 +51,7 @@ public final class PreviewBuffer: Sendable {
         ring.withLock { r in
             r.frames += 1
             if r.segment != frame.segment {
-                if r.segment != nil { r.segmentStartTotal = r.total + skip }
+                if r.segment != nil { r.segmentStartTotals.append(r.total + skip) }
                 r.segment = frame.segment
             }
             for j in skip..<chunk.count {
@@ -62,6 +63,8 @@ public final class PreviewBuffer: Sendable {
             let added = chunk.count - skip
             r.count = min(capacity, r.count + added)
             r.total += chunk.count
+            let oldest = r.total - r.count
+            r.segmentStartTotals.removeAll { $0 <= oldest }
         }
     }
 
@@ -76,9 +79,15 @@ public final class PreviewBuffer: Sendable {
             }
             let oldest = r.total - r.count
             return Window(rate: rate, capacity: capacity, channels: channels,
-                          segmentStart: max(0, r.segmentStartTotal - oldest), framesIngested: r.frames)
+                          segmentStarts: r.segmentStartTotals.map { $0 - oldest }.filter { $0 > 0 && $0 < r.count },
+                          framesIngested: r.frames)
         }
     }
+
+    /// Frames taken so far: the screen redraws only when this changes.
+    public var framesIngested: Int { ring.withLock { $0.frames } }
+    /// Samples per channel in the window, without copying it.
+    public var filledCount: Int { ring.withLock { $0.count } }
 
     /// Feeds the buffer until the stream ends or the task is cancelled. Run it off the main
     /// actor: it only copies, so the newest-wins stream rarely has to drop.

@@ -106,7 +106,11 @@ final class LiveScreenTests: XCTestCase {
         m.source.kind = "synthetic"
         XCTAssertEqual(RecordingDetailModel.liveTitle(for: m, timeZone: TimeZone(identifier: "UTC")!), "Synthetic recording · 2025-11-20 18:30")
         m.source.kind = "playback"
+        m.source.sourceFiles = [.init(name: "other.csv", sha256: "x")]
         XCTAssertEqual(RecordingDetailModel.liveTitle(for: m, timeZone: TimeZone(identifier: "UTC")!), "Playback recording · 2025-11-20 18:30")
+        m.source.sourceFiles = [.init(name: AcquisitionSource.demoFileName, sha256: "x")]
+        XCTAssertEqual(RecordingDetailModel.liveTitle(for: m, timeZone: TimeZone(identifier: "UTC")!), "Demo recording · 2025-11-20 18:30",
+                       "decision #42: the Demo is Demo on screen")
         m.source.kind = "brainflow"
         XCTAssertEqual(RecordingDetailModel.liveTitle(for: m, timeZone: TimeZone(identifier: "UTC")!), "Recording · 2025-11-20 18:30")
         m.source.kind = "public_dataset"
@@ -127,17 +131,30 @@ final class LiveScreenTests: XCTestCase {
         buffer.ingest(.init(segment: 1, chunk: chunk(rows: 3, count: 10) { r, j in r == 1 ? 1_000 + Double(j) : -5 }))
         let w = buffer.window()
         XCTAssertEqual(w.count, 50)
-        XCTAssertEqual(w.segmentStart, 40)
+        XCTAssertEqual(w.segmentStarts, [40])
         let m = LivePreviewModel(window: w, labels: ["C3"], columns: 10, height: 4)
-        XCTAssertEqual(m.lanes.map(\.label), ["C3", "ch2"])
+        XCTAssertEqual(m.lanes.map(\.label), ["C3", "Channel 2"])
         XCTAssertEqual(m.lanes[0].columns.prefix(5), [nil, nil, nil, nil, nil], "an unfilled window is empty on the left")
         XCTAssertNotNil(m.lanes[0].columns[9])
-        XCTAssertEqual(m.breakColumn, 9)
+        XCTAssertEqual(m.breakColumns, [9])
         XCTAssertEqual(m.filledSeconds, 5)
         // Mean of 40 × 1000 and 1000…1009 = 1000.9: display-only offset, values otherwise as received.
         XCTAssertEqual(Double(m.lanes[0].columns[5]!.lo), -0.9, accuracy: 1e-3)
         XCTAssertTrue(m.lanes[0].clipped, "1009 − 1000.9 = 8.1 µV is past ± 2 µV")
         XCTAssertFalse(m.lanes[1].clipped, "a flat channel is flat")
+    }
+
+    func testPreviewBuffer_keepsEverySegmentBreakInTheWindow_andForgetsOnesThatScrolledOut() {
+        let buffer = PreviewBuffer(rows: [0], rate: 10, seconds: 2)         // capacity 20
+        for segment in 0..<4 { buffer.ingest(.init(segment: segment, chunk: chunk(rows: 1, count: 6) { _, _ in 1 })) }
+        // 24 samples: segments start at 6, 12, 18; the window holds 4…23.
+        XCTAssertEqual(buffer.window().segmentStarts, [2, 8, 14])
+        XCTAssertEqual(buffer.framesIngested, 4)
+        XCTAssertEqual(buffer.filledCount, 20)
+        buffer.ingest(.init(segment: 3, chunk: chunk(rows: 1, count: 10) { _, _ in 1 }))
+        XCTAssertEqual(buffer.window().segmentStarts, [4], "older breaks scrolled out")
+        let m = LivePreviewModel(window: buffer.window(), labels: [], columns: 20, height: 1)
+        XCTAssertEqual(m.breakColumns, [4])
     }
 
     func testAutoHeight_isA125Step_fromTheMedianChannel() {
@@ -150,6 +167,62 @@ final class LiveScreenTests: XCTestCase {
         XCTAssertEqual(LivePreviewModel.autoHeight(PreviewBuffer(rows: [0], rate: 1).window()), 100, "no samples: a default")
     }
 
+    func testRecordGate_diskBelowTheStopThreshold_andStartFailuresInPlainWords() {
+        XCTAssertEqual(RecordGate.disabledReason(state: .streaming, source: .synthetic, board: daisy, configuration: nil,
+                                                 map: .withoutPositions, freeBytes: 50_000_000),
+                       "Not enough disk space to record: 50 MB free, and recording stops under 100 MB. Free some space first.")
+        XCTAssertNil(RecordGate.disabledReason(state: .streaming, source: .synthetic, board: daisy, configuration: nil,
+                                               map: .withoutPositions, freeBytes: 500_000_000))
+        XCTAssertEqual(RecordGate.startFailed(ProjectStoreError.io("chunks", ENOSPC)), "The recording could not start: the disk is full. Nothing was recorded.")
+        XCTAssertEqual(RecordGate.startFailed(ProjectStoreError.io("x", EACCES)),
+                       "The recording could not start: this app may not write to the project folder. Nothing was recorded.")
+        XCTAssertEqual(LivePreviewModel.fallbackLabel(1), "Channel 2")
+        XCTAssertEqual(LiveScreenModel.disconnectQuestion, "Stop recording and disconnect?")
+    }
+
+    func testDemo_declaresItsElectrodes_10_10_andSyntheticDeclaresNothing() throws {
+        let csv = try XCTUnwrap(AcquisitionSource.bundledDemo())
+        let map = try XCTUnwrap(AcquisitionSource.playback(file: csv, loop: true).declaredChannelMap(for: daisy))
+        XCTAssertEqual(Array(map.channels.prefix(4).map(\.label)), ["FC3", "FC1", "FC2", "FC4"])
+        XCTAssertEqual(map.channels.map(\.sourceRow), daisy.eegChannelRows)
+        XCTAssertEqual(map.montage, "international 10-10 (BCI2000 64-ch subset), cropped to 16")
+        XCTAssertTrue(map.fits(daisy))
+        let layout = MontageLayout(montage: map.montage, reference: map.reference,
+                                   channels: map.channels.map { .init(id: $0.id, label: $0.label, unit: $0.unit, kind: $0.kind) })
+        XCTAssertEqual(layout.placed.count, 16, "the montage head places every Demo electrode")
+        XCTAssertNil(AcquisitionSource.synthetic.declaredChannelMap(for: daisy))
+        // A file whose sidecar doesn't name its hash declares nothing.
+        let copy = scratch.appendingPathComponent(AcquisitionSource.demoFileName)
+        try Data("0\n".utf8).write(to: copy)
+        try FileManager.default.copyItem(at: csv.deletingPathExtension().appendingPathExtension("json"),
+                                         to: copy.deletingPathExtension().appendingPathExtension("json"))
+        XCTAssertNil(AcquisitionSource.playback(file: copy, loop: false).declaredChannelMap(for: daisy))
+    }
+
+    func testStopThenImmediateDisconnect_waitsForTheFinish_everySampleCommitted() async throws {
+        let store = try ProjectStore.create(at: scratch.appendingPathComponent("race.bciproj"), name: "race")
+        let session = AcquisitionSession(source: .synthetic, projectDirectory: store.directory)
+        await session.connect()
+        await session.startStreaming()
+        let d = try XCTUnwrap(session.snapshot.board)
+        let id = try await session.startRecording(.init(map: .defaults(for: d)), in: store)
+        try await Task.sleep(for: .seconds(2))
+        // Stop and Disconnect (⌘Q right after Stop) race; a second Disconnect races too.
+        async let stopped = session.stopRecording()
+        async let second: Void = session.disconnect()
+        await session.disconnect()
+        // Read the disk the moment Disconnect returns: the finish must already be done.
+        let handle = try await ProjectStore.open(at: store.directory).recording(id: id)
+        XCTAssertEqual(handle.verify(), [])
+        XCTAssertEqual(handle.manifest.segments.map(\.endReason), [.stopped])
+        await second
+        let stoppedStatus = await stopped
+        let status = try XCTUnwrap(stoppedStatus)
+        XCTAssertEqual(status.uncommittedSamples, 0)
+        XCTAssertEqual(handle.manifest.chunks.reduce(0) { $0 + $1.sampleCount }, status.committedSamples, "every submitted sample committed")
+        XCTAssertEqual(session.snapshot.state, .disconnected)
+    }
+
     // MARK: Preview buffer
 
     func testPreviewBuffer_isABoundedRing_inOrder_acrossWrap() {
@@ -160,7 +233,7 @@ final class LiveScreenTests: XCTestCase {
         }
         let w = buffer.window()
         XCTAssertEqual(w.channels[0], (28..<38).map(Float.init), "the newest 10, oldest first")
-        XCTAssertEqual(w.segmentStart, 0)
+        XCTAssertEqual(w.segmentStarts, [])
         XCTAssertEqual(w.framesIngested, 4)
         buffer.ingest(.init(segment: 0, chunk: chunk(rows: 1, count: 0) { _, _ in 0 }))
         XCTAssertEqual(buffer.window().framesIngested, 4, "an empty drain is not a frame")

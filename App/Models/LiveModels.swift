@@ -20,6 +20,8 @@ struct LivePreviewModel {
     static let caption = "Raw µV, each channel's mean removed for display only. Frames may be skipped under load; the recording never is."
     static let waiting = "Waiting for samples…"
     static let segmentTag = "new segment"
+    /// A lane with no label in the map (never shown for a board's own channels).
+    static func fallbackLabel(_ index: Int) -> String { "Channel \(index + 1)" }
 
     struct Envelope: Equatable {
         let lo: Float
@@ -37,8 +39,8 @@ struct LivePreviewModel {
     let lanes: [Lane]
     /// Lane height in µV (the fixed choice, or the auto one).
     let height: Double
-    /// Column where the current segment starts, when it starts inside the window.
-    let breakColumn: Int?
+    /// Columns where a stream segment starts inside the window (every reconnect).
+    let breakColumns: Set<Int>
     let filledSeconds: Double
 
     init(window w: PreviewBuffer.Window, labels: [String], columns: Int, height: Double) {
@@ -48,10 +50,10 @@ struct LivePreviewModel {
         let offset = w.capacity - w.count
         func column(_ i: Int) -> Int { min(n - 1, (offset + i) * n / max(1, w.capacity)) }
         filledSeconds = Double(w.count) / Double(max(1, w.rate))
-        breakColumn = w.segmentStart > 0 && w.segmentStart < w.count ? column(w.segmentStart) : nil
+        breakColumns = Set(w.segmentStarts.map(column))
         let half = Float(height / 2)
         lanes = w.channels.enumerated().map { c, samples in
-            let label = c < labels.count ? labels[c] : "ch\(c + 1)"
+            let label = c < labels.count ? labels[c] : Self.fallbackLabel(c)
             guard !samples.isEmpty else { return Lane(label: label, columns: Array(repeating: nil, count: n), clipped: false) }
             let mean = Float(samples.reduce(0.0) { $0 + Double($1) } / Double(samples.count))
             var cols = [Envelope?](repeating: nil, count: n)
@@ -113,6 +115,10 @@ enum LiveScreenModel {
     static let showRecording = "Show Recording"
     static let recordingBadge = "Recording"
     static let emptyRecordings = "No recordings yet. Choose New Recording… (⌥⌘N) to record from a board, the synthetic board or the Demo."
+    static let disconnectQuestion = "Stop recording and disconnect?"
+    static let disconnectInfo = "Everything recorded so far is saved; the recording ends here as stopped and the board is released."
+    static let disconnectConfirm = "Stop Recording and Disconnect"
+    static let disconnectKeep = "Keep Recording"
     /// The Live row's selection tag in the Recordings list (never a recording's id).
     static let rowID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
 
@@ -210,7 +216,8 @@ extension RecordingDetailModel {
         switch m.source.kind {
         case "brainflow": kind = "Recording"
         case "synthetic": kind = "Synthetic recording"
-        case "playback": kind = "Playback recording"
+        // Decision #42: the bundled Demo file is "Demo" on screen; other playback files aren't.
+        case "playback": kind = m.source.sourceFiles?.first?.name == AcquisitionSource.demoFileName ? "Demo recording" : "Playback recording"
         default: return nil
         }
         let f = DateFormatter()
