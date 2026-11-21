@@ -26,6 +26,8 @@ public struct BoardDescription: Sendable, Equatable {
     public let eegNames: [String]
     public let timestampRow: Int
     public let packageNumRow: Int
+    /// Row `insertMarker` writes to (0 on samples without a marker).
+    public let markerRow: Int
     /// Expected package-counter increment per committed sample. Cyton+Daisy commits one
     /// sample per board/Daisy packet pair and writes the even packet's counter, so valid
     /// counters step by 2 (mod 256). Everything else we support steps by 1.
@@ -77,6 +79,22 @@ public struct BrainFlowInputParams: Codable, Sendable, Equatable {
 
     public init() {}
 
+    /// A board on a serial port (Cyton, Cyton+Daisy: the dongle's `/dev/cu.*` callout device).
+    public static func serial(_ port: String) -> Self {
+        var p = Self()
+        p.serialPort = port
+        return p
+    }
+
+    /// BrainFlow's playback-file board (-3) replaying `file` (BrainFlow's own CSV layout,
+    /// `DataFilter.write_file`) with `masterBoard`'s row layout and sampling rate.
+    public static func playback(file: String, masterBoard: Int32) -> Self {
+        var p = Self()
+        p.file = file
+        p.masterBoard = Int(masterBoard)
+        return p
+    }
+
     enum CodingKeys: String, CodingKey {
         case serialPort = "serial_port", macAddress = "mac_address"
         case ipAddress = "ip_address", ipAddressAux = "ip_address_aux", ipAddressAnc = "ip_address_anc"
@@ -99,9 +117,13 @@ public struct BrainFlowInputParams: Codable, Sendable, Equatable {
 /// and must not occupy a cooperative-pool thread. UI code must never hold it on the main
 /// actor across a `read`.
 public actor BrainFlowBoard {
+    /// The id every C call uses (`KnownBoard.playbackFile` for a playback session).
     public nonisolated let boardID: Int32
+    /// Row layout, rate and sequence step of the data this session returns. For a playback
+    /// session that is the master board's (`description.boardID == masterBoard`).
     public nonisolated let description: BoardDescription
     private let paramsJSON: String
+    private let loopPlayback: Bool
     private var prepared = false
     private var streaming = false
     private var bufferSize: Int32 = 0
@@ -122,10 +144,33 @@ public actor BrainFlowBoard {
     }()
 
     public init(boardID: Int32, params: BrainFlowInputParams = .init()) throws {
+        try self.init(boardID: boardID, params: params, loopPlayback: false)
+    }
+
+    /// Replays a BrainFlow CSV through the playback-file board as `masterBoard` would
+    /// stream it, paced at the master board's rate. The file's own timestamps are kept
+    /// (`old_timestamps`, PRD section 7), so the replay never claims to be happening now.
+    /// With `loop` BrainFlow starts over at the end; the restart shows up as a counter gap
+    /// and a backward timestamp, exactly as `SequenceAccounting` reports any other jump.
+    public static func playback(file: URL, masterBoard: Int32 = KnownBoard.cytonDaisy, loop: Bool = false) throws -> BrainFlowBoard {
+        try BrainFlowBoard(boardID: KnownBoard.playbackFile,
+                           params: .playback(file: file.path, masterBoard: masterBoard), loopPlayback: loop)
+    }
+
+    private init(boardID: Int32, params: BrainFlowInputParams, loopPlayback: Bool) throws {
         _ = Self.configureLogging
         self.boardID = boardID
         self.paramsJSON = params.json()
-        self.description = try Self.describe(boardID: boardID)
+        self.loopPlayback = loopPlayback
+        if boardID == KnownBoard.playbackFile {
+            // Describing -3 itself fails; the data has the master board's layout.
+            guard params.masterBoard >= 0, !params.file.isEmpty else {
+                throw BrainFlowError(code: BrainFlowExitCode.invalidArguments.rawValue, operation: "playback params")
+            }
+            self.description = try Self.describe(boardID: Int32(params.masterBoard))
+        } else {
+            self.description = try Self.describe(boardID: boardID)
+        }
         queue.setSpecific(key: Self.queueKey, value: true)
     }
 
@@ -149,11 +194,12 @@ public actor BrainFlowBoard {
     public static func describe(boardID: Int32) throws -> BoardDescription {
         _ = configureLogging
         let preset = BrainFlowPreset.default.rawValue
-        var rate: Int32 = 0, rows: Int32 = 0, ts: Int32 = 0, pkg: Int32 = 0
+        var rate: Int32 = 0, rows: Int32 = 0, ts: Int32 = 0, pkg: Int32 = 0, marker: Int32 = 0
         try check(get_sampling_rate(boardID, preset, &rate), "get_sampling_rate")
         try check(get_num_rows(boardID, preset, &rows), "get_num_rows")
         try check(get_timestamp_channel(boardID, preset, &ts), "get_timestamp_channel")
         try check(get_package_num_channel(boardID, preset, &pkg), "get_package_num_channel")
+        try check(get_marker_channel(boardID, preset, &marker), "get_marker_channel")
 
         var eeg = [Int32](repeating: 0, count: 512)
         var eegLen: Int32 = 0
@@ -175,6 +221,7 @@ public actor BrainFlowBoard {
             eegNames: cString(namesBuf, namesLen).split(separator: ",").map(String.init),
             timestampRow: Int(ts),
             packageNumRow: Int(pkg),
+            markerRow: Int(marker),
             sequenceStep: BoardDescription.sequenceStep(forBoard: boardID)
         )
     }
@@ -185,6 +232,53 @@ public actor BrainFlowBoard {
         guard !prepared else { return }
         try Self.check(prepare_session(boardID, paramsJSON), "prepare_session")
         prepared = true
+        guard boardID == KnownBoard.playbackFile else { return }
+        do {
+            #if DEBUG
+            if let setupFault { throw setupFault }
+            #endif
+            // BrainFlow's default rewrites every timestamp to "now"; a replay must not.
+            _ = try configure("old_timestamps")
+            _ = try configure(loopPlayback ? "loopback_true" : "loopback_false")
+        } catch {
+            // Never leave a session prepared without its setup: a retry would replay "now".
+            prepared = false
+            _ = release_session(boardID, paramsJSON)
+            throw error
+        }
+    }
+
+    /// BrainFlow's own view (`is_prepared`), not this actor's flag.
+    public func isSessionPrepared() throws -> Bool {
+        var result: Int32 = 0
+        try Self.check(is_prepared(&result, boardID, paramsJSON), "is_prepared")
+        return result != 0
+    }
+
+    #if DEBUG
+    /// Test hook: the next playback setup fails after `prepare_session` succeeded
+    /// (BrainFlow's playback board accepts any command, so this can't be provoked).
+    private var setupFault: BrainFlowError?
+    func injectSetupFault(_ fault: BrainFlowError?) { setupFault = fault }
+    #endif
+
+    /// Sends a configuration command (`config_board`) and returns the board's reply, or ""
+    /// when it sends none. Prepares the session first; Cyton commands are its ASCII protocol.
+    public func configure(_ command: String) throws -> String {
+        try prepare()
+        var buf = [CChar](repeating: 0, count: Self.configResponseCapacity)
+        var len: Int32 = 0
+        try Self.check(config_board(command, &buf, &len, Int32(buf.count), boardID, paramsJSON), "config_board")
+        return Self.cString(buf, len)
+    }
+
+    /// Room for the Cyton+Daisy `?` register dump (two ADS1299 maps, well under 4 KB).
+    static let configResponseCapacity = 16_384
+
+    /// Writes `value` into the marker row of the next sample BrainFlow commits. BrainFlow
+    /// refuses 0 (it means "no marker"), so callers number events from 1.
+    public func insertMarker(_ value: Double) throws {
+        try Self.check(insert_marker(value, BrainFlowPreset.default.rawValue, boardID, paramsJSON), "insert_marker")
     }
 
     /// `bufferSize` is BrainFlow's ring buffer in samples; the caller must drain faster
@@ -293,6 +387,9 @@ public struct SequenceAccounting: Sendable, Equatable {
     public private(set) var lastCounter: Int?
     public private(set) var lastTimestamp: Double?
     public private(set) var samplesSeen = 0
+    /// Samples received since `lastCounter` whose counter could not be read. Each one
+    /// arrived, so it occupies one counter slot of the next valid delta.
+    public private(set) var unreadableSinceLastCounter = 0
 
     public init(expectedStep: Int) {
         precondition(expectedStep == 1 || expectedStep == 2, "only step 1 and step 2 boards are supported")
@@ -317,9 +414,21 @@ public struct SequenceAccounting: Sendable, Equatable {
             guard c.isFinite, let counter = Int(exactly: c) else {
                 findings.append(Finding(afterSampleIndex: offset - 1, kind: .invalidCounter(value: c)))
                 samplesSeen += 1
+                if lastCounter != nil { unreadableSinceLastCounter += 1 }
                 continue
             }
-            if let prev = lastCounter {
+            if let prev = lastCounter, unreadableSinceLastCounter > 0 {
+                // Resync after unreadable counters: they arrived, so they explain one step
+                // each. Only a delta beyond those slots is evidence of loss; a shorter one
+                // (their true counters are unknown) is not reported.
+                let delta = ((counter - prev) % Self.modulus + Self.modulus) % Self.modulus
+                let missingCounts = delta - expectedStep * (unreadableSinceLastCounter + 1)
+                if missingCounts > 0 {
+                    findings.append(Finding(afterSampleIndex: offset - 1,
+                                            kind: .gap(estimatedMissing: missingCounts / expectedStep, ambiguous: true,
+                                                       parityViolation: missingCounts % expectedStep != 0)))
+                }
+            } else if let prev = lastCounter {
                 let delta = ((counter - prev) % Self.modulus + Self.modulus) % Self.modulus
                 if delta == expectedStep {
                     // normal
@@ -337,6 +446,7 @@ public struct SequenceAccounting: Sendable, Equatable {
                 findings.append(Finding(afterSampleIndex: offset - 1, kind: .clockAnomaly(backwardSeconds: prevT - t)))
             }
             lastCounter = counter
+            unreadableSinceLastCounter = 0
             lastTimestamp = t
             samplesSeen += 1
         }
@@ -347,5 +457,6 @@ public struct SequenceAccounting: Sendable, Equatable {
         lastCounter = nil
         lastTimestamp = nil
         samplesSeen = 0
+        unreadableSinceLastCounter = 0
     }
 }
