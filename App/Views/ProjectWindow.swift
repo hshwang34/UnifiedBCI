@@ -123,6 +123,10 @@ struct ProjectWindow: View {
                 ConnectSheet(model: live) { session.showsConnectSheet = false }
             }
         }
+        // Brief 005: "New version…" of a protocol.
+        .sheet(item: $session.protocolEditor) { editor in
+            ProtocolEditorSheet(editor: editor, save: { await session.saveProtocolEditor() }, cancel: { session.protocolEditor = nil })
+        }
         .frame(minWidth: 1100, minHeight: 640)
     }
 
@@ -245,7 +249,9 @@ private struct ContentColumn: View {
                     }
                 }
             }
-        case .protocols, .liveTest:
+        case .protocols:
+            ProtocolsList(session: session)
+        case .liveTest:
             // The placeholder lives in the detail column; this column stays empty.
             Color.clear
         case .pipelines:
@@ -423,7 +429,16 @@ private struct DetailColumn: View {
         case .pipelines:
             Placeholder(title: "Read-only in phase 1", symbol: SidebarSection.pipelines.symbol,
                         text: "These recipes run as shipped. Parameters… changes the window, CSP components and seed of one evaluation; the values are stored with its result.")
-        case .protocols, .liveTest:
+        case .protocols:
+            if let r = session.selectedProtocol, let list = session.protocolList {
+                ProtocolDetailView(model: ProtocolDetailModel(r, list: list, usage: session.protocolUsage, windowEndMs: session.evaluationWindowEndMs)) {
+                    session.newProtocolVersion(of: r)
+                }
+                .id(r.protocolID)
+            } else {
+                Placeholder(title: ProtocolCopy.noSelection, symbol: SidebarSection.protocols.symbol, text: nil)
+            }
+        case .liveTest:
             Placeholder(title: session.section.title, symbol: session.section.symbol, text: session.section.placeholder)
         }
     }
