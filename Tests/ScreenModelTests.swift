@@ -47,8 +47,7 @@ final class ScreenModelTests: XCTestCase {
         XCTAssertEqual(SidebarSection.allCases.map(\.title), ["Recordings", "Protocols", "Pipelines", "Results", "Live Test"])
         XCTAssertEqual(SidebarSection.allCases.map(\.symbol),
                        ["waveform", "list.bullet.clipboard", "slider.horizontal.3", "chart.bar.doc.horizontal", "bolt.horizontal.circle"])
-        XCTAssertEqual(SidebarSection.allCases.filter { $0.placeholder != nil }, [.protocols, .liveTest])
-        XCTAssertTrue(SidebarSection.protocols.placeholder!.contains("phase 2"))
+        XCTAssertEqual(SidebarSection.allCases.filter { $0.placeholder != nil }, [.liveTest], "Protocols is a real section (brief 005)")
         XCTAssertTrue(SidebarSection.liveTest.placeholder!.contains("phase 3"))
         XCTAssertEqual(SidebarSection.allCases.filter(\.showsCount), [.recordings, .results])
         XCTAssertEqual(SidebarSection.statusLine, "No hardware connected · Replay mode")

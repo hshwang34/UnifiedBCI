@@ -179,6 +179,9 @@ one-line caveat above.
   trialsPerClass, runsPerSession, order `"seeded_shuffle_v1"`, instructions, createdAt,
   contentHash) and `RunPlan`. `TimingSemantics` gains optional `markerRow`. All additive, read
   by older readers as unknown keys or absent files; no format bump.
+- **Default protocol**: the default protocol is written the first time the Protocols
+  section is opened; opening a project never writes. A project with an unreadable protocol
+  file gets no default.
 - **Order**: SplitMix64 seeded with the run seed, Fisher–Yates over the class-balanced list,
   then one uniform draw per trial for rest (`min + u·(max−min)`, rounded to the frame). Run seed
   = session seed + run index, session seed drawn once and stored. Implemented in Swift
