@@ -38,8 +38,35 @@ Also shipped since 0.1.0 (on main, in the next release): a first-run intro and a
 montage view of the declared electrode positions (brief 003), and a **Quality** tab on each
 recording with per-channel spectra (raw and band-passed) and flatline, clipping, large
 deflection, mains and outlier checks that each name their rule and measured value (brief 002).
-Next: a raw / band-passed signal trace view. Live Cyton + Daisy acquisition, cued protocols
-and live feedback are phase 2.
+Cued protocols (brief 005) and live feedback (brief 006) come next.
+
+## Live acquisition (brief 004, on main)
+
+- **Connect hardware** on the welcome window, or **File ▸ New Recording…** (⌥⌘N) in a
+  project, opens the Connect sheet. Pick the dongle's serial port, the synthetic board or the
+  **Demo**. The sheet shows the board's identity and the settings it was sent next to the
+  settings it reported back.
+- Declare the channel map, or choose "Record without positions". Then the acquisition screen
+  under Recordings shows a 16-channel preview of the last 10 s and the stream health
+  (effective rate, gaps by counter evidence, drain and timestamp intervals, writer backlog,
+  free disk). It also has Record / Stop.
+- Recordings are committed about once a second and survive a force-quit, a pulled dongle or
+  a full disk, each with a named end reason. A reconnect continues the recording in a new
+  segment; nothing is joined across the break.
+- **Try it without hardware:** choose **Demo**. It streams the bundled example EEG through
+  the same live path, with its electrodes declared, so you can preview, record and open the
+  recording like any other.
+
+### Supported sources
+
+| Source | Status |
+|---|---|
+| OpenBCI Cyton + Daisy (USB dongle, 125 Hz radio path) | built, not yet hand-tested |
+| BrainFlow synthetic board | built and tested in CI (labelled "generated signal, not a device") |
+| Demo (bundled example EEG via BrainFlow's playback-file board) | built and tested in CI |
+
+The Cyton + Daisy row changes once the hand-run checklist in brief 004's appendix passes on
+the real board (decision #26).
 
 ## Layout
 
@@ -53,6 +80,8 @@ Sources/Contracts/          on-disk record types: Project, Recording, Event, Pip
 Sources/ProjectStore/       .bciproj store: atomic chunk writer + CommitHook, verified reader,
                             bundled-example import, results, export
 Sources/Evaluation/         EvaluationRunner: worker lifecycle, typed progress, reproduction links
+Sources/Acquisition/        AcquisitionSession (live state machine, drain loop, reconnect), stream
+                            health, board configuration and readback, preview buffer
 Tools/BCIStoreCrashHelper/  command-line helper the crash tests kill at a named commit point
 Tests/                      XCTest: bridge, worker, contracts, store (crash matrix), runner, export
   Fixtures/tiny.bciproj     8-channel, 42 s/run cut of the example for fast tests
