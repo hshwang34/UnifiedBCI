@@ -452,7 +452,7 @@ final class EvaluationRunnerTests: XCTestCase {
         let doc = try String(contentsOf: Self.repoRoot.appendingPathComponent("docs/export-format.md"), encoding: .utf8)
         let regex = try NSRegularExpression(pattern: #"^python -I -c "(.*)" /path/to/export$"#, options: [.anchorsMatchLines])
         let snippets = regex.matches(in: doc, range: NSRange(doc.startIndex..., in: doc)).map { String(doc[Range($0.range(at: 1), in: doc)!]) }
-        XCTAssertEqual(snippets.count, 2, "both documented one-liners must be present")
+        XCTAssertEqual(snippets.count, 3, "every documented one-liner must be present")
         let launch = try realLaunch()
         var outputs: [String] = []
         for code in snippets {
@@ -473,6 +473,7 @@ final class EvaluationRunnerTests: XCTestCase {
                        "{'S001R04': (8, 6720), 'S001R08': (8, 6720), 'S001R12': (8, 6720)}")
         XCTAssertTrue(outputs[1].contains("'csp_filters': (4, 8)"), outputs[1])
         XCTAssertTrue(outputs[1].contains("'baseline__lda_coef'"), outputs[1])
+        XCTAssertEqual(outputs[2].trimmingCharacters(in: .whitespacesAndNewlines), "0 models, 0 live runs", "no models or live runs: no live.json")
     }
 
     static var repoRoot: URL {

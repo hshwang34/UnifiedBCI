@@ -21,8 +21,9 @@ final class ProjectSession: Identifiable {
         case reproduced(original: Date?)
         case diverged(original: Date?)
         case cancelled
-        /// `leftOut`: what the export had to leave out (ExportNoticeText), shown as a warning.
-        case exported(URL, leftOut: String?)
+        /// `leftOut`: what the export had to leave out (ExportNoticeText), shown as a warning;
+        /// `added`: what it carries beyond the chosen result's recording (informational).
+        case exported(URL, leftOut: String?, added: String? = nil)
         case exportFailed(String)
         /// Brief 006: a result's fit was frozen under this name.
         case frozen(name: String)
@@ -34,7 +35,7 @@ final class ProjectSession: Identifiable {
         var isPersistent: Bool {
             switch self {
             case .diverged, .exportFailed, .liveRunNotSaved: return true
-            case .exported(_, let leftOut): return leftOut != nil
+            case .exported(_, let leftOut, _): return leftOut != nil
             default: return false
             }
         }
@@ -735,7 +736,7 @@ final class ProjectSession: Identifiable {
         case .reproduced(let d): return "Reproduced — identical to \(d.map(Self.time) ?? "the") original"
         case .diverged(let d): return "Differs from original (\(d.map(Self.time) ?? "earlier run")). Same recording, configuration and seed gave different bytes; this is a bug."
         case .cancelled: return "Cancelled — nothing saved."
-        case .exported(let url, let leftOut): return ExportNoticeText.exported(url, leftOut: leftOut)
+        case .exported(let url, let leftOut, let added): return ExportNoticeText.exported(url, leftOut: leftOut, added: added)
         case .exportFailed(let why): return "Export failed: \(why)"
         case .frozen(let name): return ReplayCopy.frozen(name)
         case .liveRunNotSaved(let why): return LiveRunCopy.runNotSaved(why)
@@ -879,7 +880,7 @@ final class ProjectSession: Identifiable {
     func export(resultID: UUID, to destination: URL) async {
         do {
             let summary = try await store.export(result: resultID, to: destination)
-            notice = .exported(destination, leftOut: ExportNoticeText.leftOut(summary))
+            notice = .exported(destination, leftOut: ExportNoticeText.leftOut(summary), added: ExportNoticeText.added(summary))
         } catch ProjectStoreError.alreadyExists {
             notice = .exportFailed("\(destination.lastPathComponent) already exists. Export never overwrites; choose a new name.")
         } catch {
