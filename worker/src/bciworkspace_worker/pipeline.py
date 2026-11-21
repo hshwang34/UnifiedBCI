@@ -27,6 +27,7 @@ from typing import Any, Callable, Sequence
 import numpy as np
 from scipy.linalg import eigh
 from scipy.signal import butter, sosfilt
+from scipy.special import expit
 from scipy.stats import beta
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.covariance import ledoit_wolf
@@ -110,6 +111,25 @@ def filter_segment(sos: np.ndarray, data: np.ndarray) -> np.ndarray:
     return sosfilt(sos, data, axis=-1)
 
 
+def window_exclusion(start: int, stop: int, n_samples: int, warmup_samples: int,
+                     gaps: Sequence[tuple[int, str]]) -> tuple[str | None, tuple[int, str] | None]:
+    """Why the window `[start, stop)` of a segment filtered from zero state can't be used,
+    or `(None, None)`. One rule for offline epochs and the streaming predictor: before the
+    segment, inside the filter warm-up, past the segment's end, or with a detected data gap
+    inside the window or inside the warm-up before it (the band-pass ran across the
+    discontinuity, so the window would carry its transient). Returns the gap that hit."""
+    if start < 0:
+        return "window_starts_before_segment", None
+    if start < warmup_samples:
+        return "window_starts_before_filter_warmup", None
+    if stop > n_samples:
+        return "window_exceeds_segment", None
+    # A gap after sample a affects sample a + 1 onwards (the discontinuity, or the
+    # mixed/unknown sample itself); its filter transient lasts `warmup_samples`.
+    gap = next((g for g in gaps if start - warmup_samples < g[0] + 1 < stop), None)
+    return ("window_spans_detected_gap", gap) if gap is not None else (None, None)
+
+
 @dataclass
 class Epochs:
     X: np.ndarray                 # (n_trials, n_channels, n_window)
@@ -156,21 +176,10 @@ def epoch_segments(
         for sample_index, label, trial_id in seg.events:
             start = int(sample_index) + offset
             stop = start + length
-            reason, gap = None, None
             if str(trial_id) in seg.aborted_trials:
-                reason = "trial_aborted"
-            elif start < 0:
-                reason = "window_starts_before_segment"
-            elif start < warmup_samples:
-                reason = "window_starts_before_filter_warmup"
-            elif stop > n_samples:
-                reason = "window_exceeds_segment"
+                reason, gap = "trial_aborted", None
             else:
-                # A gap after sample a affects sample a + 1 onwards (the discontinuity, or the
-                # mixed/unknown sample itself); its filter transient lasts `warmup_samples`.
-                gap = next((g for g in seg.gaps if start - warmup_samples < g[0] + 1 < stop), None)
-                if gap is not None:
-                    reason = "window_spans_detected_gap"
+                reason, gap = window_exclusion(start, stop, n_samples, warmup_samples, seg.gaps)
             if reason is not None:
                 exclusion = {
                     "trial_id": str(trial_id), "run_id": seg.run_id, "label": int(label),
@@ -301,20 +310,44 @@ def fitted_arrays(model: Pipeline, sos: np.ndarray) -> dict[str, np.ndarray]:
     return out
 
 
-def predict_from_arrays(arrays: dict[str, np.ndarray], X_filtered: np.ndarray) -> np.ndarray:
-    """Reference re-implementation over the saved arrays; the test suite checks it
-    agrees with the sklearn objects it was exported from."""
+def features_from_arrays(arrays: dict[str, np.ndarray], X_filtered: np.ndarray) -> np.ndarray:
+    """(n_windows, n_features) from band-passed windows (n_windows, n_channels, n_samples),
+    with the same arithmetic as `CSP.transform` / `LogVariance.transform`."""
     kind = str(arrays["feature_kind"])
     if kind == "csp_log_power":
         sources = np.einsum("kc,nct->nkt", arrays["csp_filters"], X_filtered)
-        features = np.log(np.mean(sources ** 2, axis=-1))
-    elif kind == "log_variance":
-        features = np.log(np.var(X_filtered, axis=-1) + 1e-12)
-    else:
-        raise ValueError(f"unknown feature kind {kind!r}")
-    scores = features @ arrays["lda_coef"].T + arrays["lda_intercept"]
-    classes = arrays["lda_classes"]
-    return classes[(scores[:, 0] > 0).astype(int)]
+        return np.log(np.mean(sources ** 2, axis=-1))
+    if kind == "log_variance":
+        return np.log(np.var(X_filtered, axis=-1) + 1e-12)
+    raise ValueError(f"unknown feature kind {kind!r}")
+
+
+def score_from_features(arrays: dict[str, np.ndarray], features: np.ndarray) -> np.ndarray:
+    """The two-class LDA decision value per window (sklearn's `decision_function`): positive
+    favours `lda_classes[1]`, negative `lda_classes[0]`."""
+    return (features @ arrays["lda_coef"].T + arrays["lda_intercept"])[:, 0]
+
+
+def score_from_arrays(arrays: dict[str, np.ndarray], X_filtered: np.ndarray) -> np.ndarray:
+    """Decision value per band-passed window, from the explicit arrays only (no estimator)."""
+    return score_from_features(arrays, features_from_arrays(arrays, X_filtered))
+
+
+def confidence_from_score(score: np.ndarray | float) -> np.ndarray | float:
+    """The LDA posterior of the predicted class, max(sigma(s), 1 - sigma(s)) = sigma(|s|).
+    It is the classifier's confidence between its two classes, never a probability of
+    intent: a two-class model has no "no intent" output (decision #27)."""
+    return expit(np.abs(score))
+
+
+def class_from_score(arrays: dict[str, np.ndarray], score: np.ndarray) -> np.ndarray:
+    return arrays["lda_classes"][(np.asarray(score) > 0).astype(int)]
+
+
+def predict_from_arrays(arrays: dict[str, np.ndarray], X_filtered: np.ndarray) -> np.ndarray:
+    """Reference re-implementation over the saved arrays; the test suite checks it
+    agrees with the sklearn objects it was exported from."""
+    return class_from_score(arrays, score_from_arrays(arrays, X_filtered))
 
 
 # --------------------------------------------------------------------------------------
