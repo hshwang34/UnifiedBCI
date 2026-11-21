@@ -39,13 +39,15 @@ import Foundation
 ///                                              (brief 004 PR 5); snapshots "connect-picker"
 ///     -BCIConnectSource demo|synthetic         then connect that source; snapshots
 ///                                              "connect-connecting", "connect-ready", "connect-map"
-///                                              Without -BCIConnectSheet: connect it, choose Record
-///                                              without positions, start the preview on the
+///                                              Without -BCIConnectSheet: connect it, confirm the
+///                                              map the Demo file declares (synthetic: Record
+///                                              without positions), start the preview on the
 ///                                              acquisition screen (brief 004 PR 6); snapshots
 ///                                              "live-preview" after 12 s of streaming
 ///     -BCILiveRecordSeconds N                  then record N s and stop; snapshots "live-recording",
 ///                                              "live-stopped", then the recording in Recordings:
-///                                              "live-recorded", "live-recorded-segments",
+///                                              "live-recorded", "live-recorded-full" (tall),
+///                                              "live-recorded-segments",
 ///                                              "live-recorded-quality"
 @MainActor
 enum LaunchArguments {
@@ -334,7 +336,9 @@ enum LaunchArguments {
         guard model.selected != nil else { return }
         await model.perform(.connect)
         guard model.state == .ready else { return await snap("live-failed", .seconds(1)) }
-        model.recordWithoutPositions()
+        // The Demo declares its electrodes (10-10): confirm that map. Synthetic declares
+        // nothing, so it records without positions (decision #31).
+        if model.declaredMap != nil { model.confirmMap() } else { model.recordWithoutPositions() }
         await model.perform(.startPreview)               // the sheet hands over to the screen
         await snap("live-preview", .seconds(12))         // the 10 s window is full
         guard recordSeconds > 0 else { return }
@@ -351,6 +355,13 @@ enum LaunchArguments {
         session.showInspector = false                    // room for every Segments column
         session.showRecording(id)
         await snap("live-recorded", .seconds(1.5))
+        // A tall capture: source, montage head and channel table together.
+        if let window = NSApp.windows.first(where: { $0.title == session.name }) {
+            let frame = window.frame
+            window.setFrame(NSRect(x: frame.minX, y: frame.maxY - 1500, width: frame.width, height: 1500), display: true)
+            await snap("live-recorded-full", .seconds(2))
+            window.setFrame(frame, display: true)
+        }
         session.recordingTab = .segments
         await snap("live-recorded-segments", .seconds(1))
         session.recordingTab = .quality

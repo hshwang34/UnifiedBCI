@@ -29,6 +29,8 @@ final class ConnectController: Identifiable {
     private(set) var unreadableMaps = 0
     private(set) var choice: ChannelMapChoice = .none
     private(set) var mapMessage: String?
+    /// The map the played file declares (Demo), pre-filled for the operator to confirm.
+    private(set) var declaredMap: ChannelMapRecord?
 
     // Acquisition screen (PR 6).
     /// The last 10 s, fed off the main actor from the session's newest-wins preview stream.
@@ -80,13 +82,16 @@ final class ConnectController: Identifiable {
         AcquisitionStateModel.actions(state, recording: isRecording, afterStreaming: hasStreamed)
     }
     var isRecording: Bool { snapshot.recordingID != nil }
+    /// Read from the session's lock now, not the 200 ms poll: ⌘W right after Record must ask.
+    var isRecordingNow: Bool { (session?.snapshot.recordingID != nil) || isRecording || isStartingRecording }
     /// Stopped but not yet finished (the writer is committing its last chunk).
     var isFinishingRecording: Bool { watchedRecordingID != nil && !isRecording }
     /// Why Record is disabled; nil when it can be pressed.
     var recordDisabledReason: String? {
         guard let source else { return RecordGate.notStreaming }
         return RecordGate.disabledReason(state: state, source: source, board: snapshot.board,
-                                         configuration: snapshot.configuration, map: choice)
+                                         configuration: snapshot.configuration, map: choice,
+                                         freeBytes: snapshot.health.freeBytes)
     }
     /// The board's channel labels as the preview shows them: the edited map's.
     var laneLabels: [String] { labels }
@@ -143,6 +148,7 @@ final class ConnectController: Identifiable {
         source = picked
         hasStreamed = false
         choice = .none
+        declaredMap = nil
         recordMessage = nil
         stopPreview()
         startPolling()
@@ -153,6 +159,16 @@ final class ConnectController: Identifiable {
             poll?.cancel()
             await s.disconnect()
             return
+        }
+        // The Demo file declares its electrodes (FC3, FC1, … on a 10-10 montage): pre-fill
+        // them, still to be confirmed. Hashing the file happens off the main actor.
+        if let board = s.snapshot.board {
+            let declared = await Task.detached(priority: .userInitiated) { acquisition.declaredChannelMap(for: board) }.value
+            declaredMap = declared
+            if let declared, choice == .none, !isClosed {
+                resetMap(to: declared)
+                mapMessage = ChannelMapModel.declaredByFile
+            }
         }
         sync()
     }
@@ -197,7 +213,7 @@ final class ConnectController: Identifiable {
         } catch let e as AcquisitionSession.SessionError {
             recordMessage = (true, RecordGate.message(e))
         } catch {
-            recordMessage = (true, "The recording could not start: \(error)")
+            recordMessage = (true, RecordGate.startFailed(error))
         }
         sync()
     }
@@ -228,7 +244,7 @@ final class ConnectController: Identifiable {
         snapshot = next
         if next.state == .streaming { hasStreamed = true }
         if boardArrived, let board = next.board {
-            resetMap(to: .defaults(for: board))
+            resetMap(to: declaredMap ?? .defaults(for: board))
             startPreview(session, board: board)
         }
         // Detached first, finished (last chunk committed, segment closed) later.

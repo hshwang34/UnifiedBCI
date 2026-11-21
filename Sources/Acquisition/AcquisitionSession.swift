@@ -123,6 +123,11 @@ public actor AcquisitionSession {
     private var latestRecordingID: UUID?
     /// The configuration the current recording's manifest stores; every segment must match it.
     private var recordingConfiguration: RecordingManifest.BoardConfiguration?
+    /// Recordings detached from the session whose writer is still committing its last
+    /// chunk and closing the segment. Disconnect (window close, quit) waits for all of them.
+    private var finishing: [UUID: Task<RecordingWriter.Status, Never>] = [:]
+    /// The Disconnect in progress; a second one waits for it instead of returning early.
+    private var disconnecting: Task<Void, Never>?
     private var lastSampleNanos: Int64 = 0
     private var lastPublishNanos: Int64 = 0
 
@@ -225,7 +230,7 @@ public actor AcquisitionSession {
                                                 startedAtMonotonicNanos: now, options: writerOptions)
         latestRecordingID = w.recordingID
         guard state == .streaming, writer == nil, recordingStarts == starts else {
-            noteEnded(await w.finish(state == .streaming ? .stopped : .disconnect), of: w)
+            _ = await finish(w, state == .streaming ? .stopped : .disconnect).value
             throw SessionError.streamEnded
         }
         writer = w
@@ -243,15 +248,23 @@ public actor AcquisitionSession {
     @discardableResult
     public func stopRecording() async -> RecordingWriter.Status? {
         guard let w = detachRecording() else { return nil }
-        let status = await w.finish(.stopped)
-        noteEnded(status, of: w)
-        return status
+        return await finish(w, .stopped).value
     }
 
     /// Any state → stopping → disconnected. Drains what BrainFlow still holds, closes the
     /// recording `stopped`, releases the board.
+    /// Returns only once every recording has finished (last chunk committed, segment
+    /// closed), including one a Stop detached just before; a second call waits for the first.
     public func disconnect() async {
-        guard state != .disconnected, state != .stopping else { return }
+        if let running = disconnecting { return await running.value }
+        let t = Task { await self.performDisconnect() }
+        disconnecting = t
+        await t.value
+        disconnecting = nil
+    }
+
+    private func performDisconnect() async {
+        guard state != .disconnected, state != .stopping else { return await awaitFinishing() }
         generation += 1
         recordingStarts += 1
         let wasStreaming = state == .streaming
@@ -262,7 +275,8 @@ public actor AcquisitionSession {
         await task?.value
         // The drain loop has ended, so this is the only reader now: take what BrainFlow holds.
         if wasStreaming, let board, let chunk = try? await board.readAll() { process(chunk, board) }
-        if let w = detachRecording() { noteEnded(await w.finish(.stopped), of: w) }
+        if let w = detachRecording() { _ = await finish(w, .stopped).value }
+        await awaitFinishing()
         await releaseBoard()
         hasStreamed = false
         reconnecting = false
@@ -343,10 +357,8 @@ public actor AcquisitionSession {
                 // The writer stopped itself (disk full, backlog, write error); preview goes on.
                 // Detached synchronously: a new recording may start before this finishes.
                 _ = detachRecording()
-                Task.detached { [weak self] in
-                    let status = await w.finish()
-                    await self?.noteEnded(status, of: w)
-                }
+                // The writer already ended itself; its own end reason stands.
+                _ = finish(w, .stopped)
             }
         }
         publishHealth(force: false)
@@ -393,11 +405,8 @@ public actor AcquisitionSession {
                     if let change {
                         _ = detachRecording()
                         published.withLock { $0.recordingEndedByReconnect = change }
-                        // Its last segment already ended `disconnect`; finish off the actor.
-                        Task.detached { [weak self] in
-                            let status = await w.finish(.disconnect)
-                            await self?.noteEnded(status, of: w)
-                        }
+                        // Its last segment already ended `disconnect`.
+                        _ = finish(w, .disconnect)
                     } else {
                         w.beginSegment(startedAtWall: Date(), startedAtMonotonicNanos: HostMonotonicClock.nowNanos())
                     }
@@ -415,7 +424,7 @@ public actor AcquisitionSession {
         set(.failed(reason: "Reconnect failed for \(Self.seconds(options.retryWindow)) s: \(lastError)"))
         // Nothing is being recorded any more: end the recording with its last segment's real
         // reason, which also lets the Mac sleep again. Retry streams; Record starts anew.
-        if let w = detachRecording() { noteEnded(await w.finish(.disconnect), of: w) }
+        if let w = detachRecording() { _ = await finish(w, .disconnect).value }
         return false
     }
 
@@ -452,6 +461,24 @@ public actor AcquisitionSession {
         power = nil
         published.withLock { $0.recordingID = nil; $0.holdsPowerAssertion = false }
         return w
+    }
+
+    /// Finishes a detached writer as a tracked task, publishes its end, and forgets it once
+    /// done. A writer that already stopped itself keeps its own end reason.
+    private func finish(_ w: RecordingWriter, _ reason: EndReason) -> Task<RecordingWriter.Status, Never> {
+        let id = w.recordingID
+        let t = Task {
+            let status = await w.finish(reason)
+            self.noteEnded(status, of: w)
+            self.finishing[id] = nil
+            return status
+        }
+        finishing[id] = t
+        return t
+    }
+
+    private func awaitFinishing() async {
+        while let t = finishing.values.first { _ = await t.value }
     }
 
     /// Publishes `w`'s end unless a newer recording has started since (a late detached finish).

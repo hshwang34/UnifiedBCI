@@ -6,6 +6,7 @@ import SwiftUI
 struct AcquisitionView: View {
     let session: ProjectSession
     @Bindable var live: ConnectController
+    @State private var confirmDisconnect = false
 
     var body: some View {
         ScrollView {
@@ -58,9 +59,17 @@ struct AcquisitionView: View {
             Button(LiveScreenModel.channelMap) { session.showConnectSheet() }
                 .help(LiveScreenModel.channelMapHelp)
                 .disabled(live.isRecording)
-            Button(AcquisitionAction.disconnect.rawValue) { Task { await session.endLive() } }
-                .help(LiveScreenModel.disconnectHelp)
-                .disabled(live.state == .stopping)
+            Button(AcquisitionAction.disconnect.rawValue) {
+                if live.isRecordingNow { confirmDisconnect = true } else { Task { await session.endLive() } }
+            }
+            .help(LiveScreenModel.disconnectHelp)
+            .disabled(live.state == .stopping)
+            .confirmationDialog(LiveScreenModel.disconnectQuestion, isPresented: $confirmDisconnect) {
+                Button(LiveScreenModel.disconnectConfirm, role: .destructive) { Task { await session.endLive() } }
+                Button(LiveScreenModel.disconnectKeep, role: .cancel) {}
+            } message: {
+                Text(LiveScreenModel.disconnectInfo)
+            }
             if live.isRecording {
                 Button { Task { await live.perform(.stopRecording) } } label: {
                     Label(AcquisitionAction.stopRecording.rawValue, systemImage: "stop.fill")
@@ -144,8 +153,10 @@ private struct PreviewCard: View {
                 .fixedSize()
             }
             let lanes = max(1, live.preview?.rows.count ?? live.laneLabels.count)
-            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: live.state != .streaming)) { context in
-                canvas(lanes: lanes, at: context.date)
+            // At most 15 redraws a second, and none while no new frame has arrived: the
+            // Canvas re-renders only when its captured frame count changes.
+            TimelineView(.animation(minimumInterval: 1.0 / 15, paused: live.state != .streaming)) { _ in
+                canvas(lanes: lanes, frame: live.preview?.framesIngested ?? -1, scale: live.scale)
             }
             .frame(height: Self.laneHeight * CGFloat(lanes) + Self.axisHeight)
             .accessibilityElement()
@@ -157,27 +168,27 @@ private struct PreviewCard: View {
         .card()
     }
 
+    /// Built from counts and the last drawn height: no second copy of the window.
     private var accessibilityText: String {
-        let w = live.preview?.window()
-        return LivePreviewModel.accessibilityLabel(channels: w?.channels.count ?? 0, height: currentHeight(w),
-                                                   filled: Double(w?.count ?? 0) / Double(max(1, w?.rate ?? 1)))
-    }
-
-    private func currentHeight(_ w: PreviewBuffer.Window?) -> Double {
+        let b = live.preview
+        let height: Double
         switch live.scale {
-        case .fixed(let h): return h
-        case .auto: return w.map { auto.height(for: $0) } ?? 100
+        case .fixed(let h): height = h
+        case .auto: height = auto.lastHeight
         }
+        return LivePreviewModel.accessibilityLabel(channels: b?.rows.count ?? 0, height: height,
+                                                   filled: Double(b?.filledCount ?? 0) / Double(max(1, b?.rate ?? 1)))
     }
 
-    /// `date` is read inside the renderer so every timeline tick redraws (a Canvas whose
-    /// captures don't change is not re-rendered).
-    private func canvas(lanes laneCount: Int, at date: Date) -> some View {
+    /// `frame` is read inside the renderer: a Canvas whose captures don't change is not
+    /// re-rendered, so an unchanged frame count costs nothing.
+    private func canvas(lanes laneCount: Int, frame: Int, scale: LivePreviewModel.Scale) -> some View {
         let buffer = live.preview
         let labels = live.laneLabels
-        let isAuto = live.scale == .auto
+        let isAuto = scale == .auto
+        let auto = auto
         return Canvas { ctx, size in
-            _ = date
+            _ = frame
             let plotX = Self.labelWidth, plotW = max(1, size.width - plotX - Theme.Space.s)
             let plotH = Self.laneHeight * CGFloat(laneCount)
             for i in 0..<laneCount where i % 2 == 1 {
@@ -200,10 +211,14 @@ private struct PreviewCard: View {
                 return
             }
             let w = buffer.window()
-            let height = currentHeight(w)
+            let height: Double
+            switch scale {
+            case .fixed(let h): height = h
+            case .auto: height = auto.height(for: w)
+            }
             let model = LivePreviewModel(window: w, labels: labels, columns: Int(plotW), height: height)
             let colW = plotW / CGFloat(max(1, Int(plotW)))
-            if let b = model.breakColumn {
+            for b in model.breakColumns.sorted() {
                 let x = plotX + CGFloat(b) * colW
                 var edge = Path()
                 edge.move(to: CGPoint(x: x, y: 0)); edge.addLine(to: CGPoint(x: x, y: plotH))
@@ -224,7 +239,7 @@ private struct PreviewCard: View {
                     guard let e else { open = false; continue }
                     let x = plotX + (CGFloat(c) + 0.5) * colW
                     // Nothing is drawn across the start of a new segment.
-                    if !open || c == model.breakColumn { path.move(to: CGPoint(x: x, y: y(e.lo))) } else { path.addLine(to: CGPoint(x: x, y: y(e.lo))) }
+                    if !open || model.breakColumns.contains(c) { path.move(to: CGPoint(x: x, y: y(e.lo))) } else { path.addLine(to: CGPoint(x: x, y: y(e.lo))) }
                     path.addLine(to: CGPoint(x: x, y: y(e.hi)))
                     open = true
                 }
@@ -242,6 +257,7 @@ private struct PreviewCard: View {
 private final class AutoHeight {
     private var value: Double?
     private var measured = Date.distantPast
+    var lastHeight: Double { value ?? 100 }
 
     func height(for w: PreviewBuffer.Window) -> Double {
         if value == nil || Date().timeIntervalSince(measured) >= 2, w.count > 0 {
