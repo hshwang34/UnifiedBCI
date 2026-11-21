@@ -280,7 +280,7 @@ public actor ProjectStore {
     /// One result, with `evaluation.json` checked against the SHA-256 its meta records.
     public func result(id: UUID) throws -> StoredResult {
         let meta = try resultMeta(id)
-        guard let evaluation = fm.contents(atPath: resultDirectory(id).appendingPathComponent(Self.evaluationFileName).path) else {
+        guard let evaluation = BoundedRead.data(at: resultDirectory(id).appendingPathComponent(Self.evaluationFileName), maxBytes: BoundedRead.evaluationBytes) else {
             throw ProjectStoreError.missingResult(id)
         }
         let digest = AtomicFile.sha256Hex(evaluation)
@@ -297,7 +297,7 @@ public actor ProjectStore {
 
     public func pipeline(id: UUID) throws -> PipelineRecord {
         let url = directory.appendingPathComponent("pipelines").appendingPathComponent(id.uuidString).appendingPathComponent(Self.pipelineFileName)
-        guard let data = fm.contents(atPath: url.path) else { throw ProjectStoreError.missingPipeline(id) }
+        guard let data = BoundedRead.data(at: url, maxBytes: BoundedRead.pipelineBytes) else { throw ProjectStoreError.missingPipeline(id) }
         return try ContractJSON.decoder().decode(PipelineRecord.self, from: data)
     }
 
@@ -334,7 +334,7 @@ public actor ProjectStore {
         let ids = try childIDs(in: "montages", requiring: Self.channelMapFileName)
         let maps = ids.compactMap { id -> ChannelMapRecord? in
             let url = parent.appendingPathComponent(id.uuidString).appendingPathComponent(Self.channelMapFileName)
-            guard let data = fm.contents(atPath: url.path),
+            guard let data = BoundedRead.data(at: url, maxBytes: ChannelMapRecord.maxFileBytes),
                   let map = try? ContractJSON.decoder().decode(ChannelMapRecord.self, from: data),
                   map.problem(directoryID: id) == nil else { return nil }
             return map
@@ -362,7 +362,7 @@ public actor ProjectStore {
 
     private static func readManifest(at url: URL) throws -> ProjectManifest {
         let projectFile = url.appendingPathComponent(projectFileName)
-        guard let data = FileManager.default.contents(atPath: projectFile.path) else { throw ProjectStoreError.notAProject(url) }
+        guard let data = BoundedRead.data(at: projectFile, maxBytes: BoundedRead.projectManifestBytes) else { throw ProjectStoreError.notAProject(url) }
         let manifest: ProjectManifest
         do {
             manifest = try ContractJSON.decoder().decode(ProjectManifest.self, from: data)
@@ -382,7 +382,7 @@ public actor ProjectStore {
     }
 
     private func resultMeta(_ id: UUID) throws -> ResultMeta {
-        guard let data = fm.contents(atPath: resultDirectory(id).appendingPathComponent(Self.resultMetaFileName).path) else {
+        guard let data = BoundedRead.data(at: resultDirectory(id).appendingPathComponent(Self.resultMetaFileName), maxBytes: BoundedRead.resultMetaBytes) else {
             throw ProjectStoreError.missingResult(id)
         }
         return try ContractJSON.decoder().decode(ResultMeta.self, from: data)

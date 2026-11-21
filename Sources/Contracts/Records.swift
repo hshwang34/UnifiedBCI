@@ -347,23 +347,38 @@ public struct ChannelMapRecord: Codable, Sendable, Equatable, Identifiable {
         self.reference = reference; self.channels = channels
     }
 
+    /// Most channels a map may declare; Cyton+Daisy has 16, so 64 is generous.
+    public static let maxChannels = 64
+    /// Largest `montage.json` read at all: a map of `maxChannels` sane entries is far smaller.
+    public static let maxFileBytes = 256 * 1024
+
     /// Why a stored map can't be trusted, or nil. A `.bciproj` may come from anyone: the map
     /// must be this format, live in its own id's directory, and have unique ids and sane text.
     public func problem(directoryID: UUID) -> String? {
         guard formatVersion >= 1, formatVersion <= ContractVersion.format else { return "format \(formatVersion)" }
         guard mapID == directoryID else { return "id does not match its directory" }
+        guard channels.count <= Self.maxChannels else { return "more than \(Self.maxChannels) channels" }
         guard !channels.isEmpty, Set(channels.map(\.id)).count == channels.count,
               Set(channels.map(\.sourceRow)).count == channels.count, channels.allSatisfy({ $0.sourceRow >= 0 }) else {
             return "channels are empty or repeat an id or row"
         }
         let texts = channels.map(\.label) + [montage, reference]
-        guard texts.allSatisfy(Self.isSane) else { return "a label, reference or montage is empty, too long or has control characters" }
+        guard texts.allSatisfy({ Self.isSane($0) }) else { return "a label, reference or montage is empty, too long or has control characters" }
+        guard channels.allSatisfy({ Self.isSane($0.id, maxLength: 32) && Self.isSane($0.kind, maxLength: 16) && Self.isSane($0.unit, maxLength: 16) }) else {
+            return "a channel id, kind or unit is empty, too long or has control characters"
+        }
         return nil
     }
 
-    static func isSane(_ text: String) -> Bool {
+    /// Non-blank after trimming, at most `maxLength` characters, and free of control and
+    /// Unicode format characters (category Cf: bidi overrides and isolates, zero-width
+    /// characters), which could make a label display as something other than what it is.
+    static func isSane(_ text: String, maxLength: Int = 64) -> Bool {
+        // Scalars are checked before trimming: Foundation's whitespace set includes U+200B.
         let t = text.trimmingCharacters(in: .whitespaces)
-        return !t.isEmpty && t.count <= 64 && !t.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+        return !t.isEmpty && t.count <= maxLength && !text.unicodeScalars.contains {
+            CharacterSet.controlCharacters.contains($0) || $0.properties.generalCategory == .format
+        }
     }
 }
 
