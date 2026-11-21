@@ -551,3 +551,65 @@ final class ChannelMapValidationTests: XCTestCase {
         XCTAssertEqual(AcquisitionSession.problem(odd, isDevice: true), .notAcknowledged(channel: 2), "only \"yes\" counts")
     }
 }
+
+/// PR #27 review: every JSON read of a `.bciproj` goes through `BoundedRead`, so a file
+/// that is a link, a FIFO or a device is refused instead of followed or blocked on.
+final class StoreBoundedReadTests: XCTestCase {
+    private var scratch: URL!
+
+    override func setUpWithError() throws {
+        scratch = FileManager.default.temporaryDirectory.appendingPathComponent("bci-bounded-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: scratch) }
+
+    func testPipelineJSONSymlinkedToDevZero_isRefused() async throws {
+        let store = try ProjectStore.create(at: scratch.appendingPathComponent("p.bciproj"), name: "p")
+        let id = UUID()
+        let dir = store.directory.appendingPathComponent("pipelines").appendingPathComponent(id.uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: dir.appendingPathComponent(ProjectStore.pipelineFileName),
+                                                   withDestinationURL: URL(fileURLWithPath: "/dev/zero"))
+        do {
+            _ = try await store.pipeline(id: id)
+            XCTFail("a link to /dev/zero is not a pipeline")
+        } catch ProjectStoreError.missingPipeline(let missing) {
+            XCTAssertEqual(missing, id)
+        }
+    }
+
+    func testFIFOProjectJSON_isRefusedWithoutHanging() throws {
+        let project = scratch.appendingPathComponent("fifo.bciproj")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        XCTAssertEqual(mkfifo(project.appendingPathComponent(ProjectStore.projectFileName).path, 0o600), 0)
+        XCTAssertThrowsError(try ProjectStore.open(at: project)) { error in
+            guard case ProjectStoreError.notAProject = error else { return XCTFail("\(error)") }
+        }
+    }
+
+    func testFIFOEventsFile_isRefused_aMissingOneIsEmpty() throws {
+        let src = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tiny", withExtension: "bciproj"))
+        let copy = scratch.appendingPathComponent("tiny.bciproj")
+        try FileManager.default.copyItem(at: src, to: copy)
+        let store = try ProjectStore.open(at: copy)
+        let recordings = copy.appendingPathComponent("recordings")
+        let dir = recordings.appendingPathComponent(try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: recordings.path).first { UUID(uuidString: $0) != nil }))
+        let handle = try RecordingHandle(directory: dir)
+        let events = dir.appendingPathComponent(ProjectStore.eventsFileName)
+        try? FileManager.default.removeItem(at: events)
+        XCTAssertEqual(try handle.events(), [])
+        XCTAssertEqual(mkfifo(events.path, 0o600), 0)
+        XCTAssertThrowsError(try handle.events())
+        _ = store
+    }
+
+    func testBoundedRead_readsExactlyARegularFile() throws {
+        let file = scratch.appendingPathComponent("a.json")
+        try Data("{\"a\":1}".utf8).write(to: file)
+        XCTAssertEqual(BoundedRead.data(at: file, maxBytes: 7), Data("{\"a\":1}".utf8))
+        XCTAssertNil(BoundedRead.data(at: file, maxBytes: 6))
+        XCTAssertNil(BoundedRead.data(at: scratch.appendingPathComponent("missing.json"), maxBytes: 100))
+        XCTAssertFalse(BoundedRead.exists(scratch.appendingPathComponent("missing.json")))
+    }
+}

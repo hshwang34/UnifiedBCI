@@ -168,7 +168,8 @@ enum BoundedRead {
         defer { close(fd) }
         var st = stat()
         guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG, st.st_size <= maxBytes else { return nil }
-        var buffer = Data(count: maxBytes + 1)
+        // One byte past the size fstat saw: a file that grew since is then refused below.
+        var buffer = Data(count: min(Int(st.st_size), maxBytes) + 1)
         let total = buffer.withUnsafeMutableBytes { raw -> Int in
             var total = 0
             while total < raw.count {
@@ -180,7 +181,22 @@ enum BoundedRead {
             }
             return total
         }
-        guard total >= 0, total <= maxBytes else { return nil }
+        guard total >= 0, total <= maxBytes, total <= Int(st.st_size) else { return nil }
         return buffer.prefix(total)
     }
+
+    /// Whether anything (file, link, FIFO, ...) is at `url`, without following a link.
+    static func exists(_ url: URL) -> Bool {
+        var st = stat()
+        return lstat(url.path, &st) == 0
+    }
+
+    // Per-file caps for the store's JSON. Generous for anything this app writes; a file
+    // over its cap is treated like a missing or unreadable one.
+    static let projectManifestBytes = 64 * 1024
+    static let recordingManifestBytes = 64 * 1024 * 1024   // a chunk entry per second, hours long
+    static let eventsBytes = 64 * 1024 * 1024
+    static let pipelineBytes = 16 * 1024 * 1024
+    static let evaluationBytes = 64 * 1024 * 1024
+    static let resultMetaBytes = 1024 * 1024
 }
