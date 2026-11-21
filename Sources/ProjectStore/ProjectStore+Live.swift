@@ -211,6 +211,12 @@ public actor LiveRunWriter {
     /// later append throws), and `finish` stores the reason, so the logs stay readable.
     public private(set) var loggingStopped: String?
     private var nextSequence = 0
+    /// Appends that threw, per log; stored in `run.json` by `finish` so a gap is never silent.
+    public private(set) var feedbackWriteFailures = 0
+    public private(set) var predictionWriteFailures = 0
+    /// Test seam: the next appends write only part of the line, then fail (AppendOnlyFile.Fault).
+    private var fault: AppendOnlyFile.Fault?
+    func injectFaultForTesting(_ f: AppendOnlyFile.Fault?) { fault = f }
     private var bytes: [String: Int] = [:]
     /// The reader's cap (`ProjectStore.liveLogBytes`); smaller only in tests.
     private let logLimit: Int
@@ -236,6 +242,15 @@ public actor LiveRunWriter {
     }
 
     private func append(_ json: Data, to name: String) throws {
+        do {
+            try appendOnce(json, to: name)
+        } catch {
+            if name == ProjectStore.feedbackFileName { feedbackWriteFailures += 1 } else { predictionWriteFailures += 1 }
+            throw error
+        }
+    }
+
+    private func appendOnce(_ json: Data, to name: String) throws {
         if let loggingStopped { throw ProjectStoreError.logFull(loggingStopped) }
         let size = bytes[name, default: 0] + json.count + 1
         guard size <= logLimit else {
@@ -243,7 +258,7 @@ public actor LiveRunWriter {
             loggingStopped = reason
             throw ProjectStoreError.logFull(reason)
         }
-        try AppendOnlyFile.appendLine(json, to: directory.appendingPathComponent(name))
+        try AppendOnlyFile.appendLine(json, to: directory.appendingPathComponent(name), fault: fault)
         bytes[name] = size
     }
 
@@ -256,6 +271,8 @@ public actor LiveRunWriter {
         r.endedAt = endedAt; r.summary = summary; r.latency = latency; r.replayCheck = replayCheck
         if let runIDs { r.runIDs = Array(runIDs.prefix(1_000)) }
         r.loggingStopped = loggingStopped
+        r.feedbackWriteFailures = feedbackWriteFailures > 0 ? feedbackWriteFailures : nil
+        r.predictionWriteFailures = predictionWriteFailures > 0 ? predictionWriteFailures : nil
         try AtomicFile.write(try ContractJSON.encoder().encode(r), to: directory.appendingPathComponent(ProjectStore.liveRunFileName))
         record = r
     }

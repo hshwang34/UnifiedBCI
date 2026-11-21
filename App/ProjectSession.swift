@@ -27,12 +27,14 @@ final class ProjectSession: Identifiable {
         case exportFailed(String)
         /// Brief 006: a result's fit was frozen under this name.
         case frozen(name: String)
+        /// Brief 006: a live run's `run.json` could not be finished (why).
+        case liveRunNotSaved(String)
 
         /// Persistent notices are solid warning chips that stay until dismissed; the rest
         /// are toasts that dismiss themselves and clear on a section change (§2.5).
         var isPersistent: Bool {
             switch self {
-            case .diverged, .exportFailed: return true
+            case .diverged, .exportFailed, .liveRunNotSaved: return true
             case .exported(_, let leftOut, _): return leftOut != nil
             default: return false
             }
@@ -378,6 +380,10 @@ final class ProjectSession: Identifiable {
             await frozen.reload()
             if let run = frozen.liveRuns.first(where: { $0.liveRunID == c.liveRunID }) { await frozen.loadInputs(run, force: true) }
             selectedLiveRunID = c.liveRunID
+            if let why = c.finishProblem {
+                notice = .liveRunNotSaved(why)
+                announce(noticeText(notice!))
+            }
         }
     }
 
@@ -733,6 +739,7 @@ final class ProjectSession: Identifiable {
         case .exported(let url, let leftOut, let added): return ExportNoticeText.exported(url, leftOut: leftOut, added: added)
         case .exportFailed(let why): return "Export failed: \(why)"
         case .frozen(let name): return ReplayCopy.frozen(name)
+        case .liveRunNotSaved(let why): return LiveRunCopy.runNotSaved(why)
         }
     }
 

@@ -66,6 +66,94 @@ final class LiveFeedbackViewTests: XCTestCase {
                                                presentedAtMonotonicNanos: 900 * ms, reason: "delayed")])
     }
 
+    /// A prediction that arrives while the screen already shows the same thing (fixation) is
+    /// not a fresh change when the cue later draws it: logged, not counted as latency.
+    func testFrameState_aPredictionThatArrivedDuringNoCueIsNotFresh() {
+        var s = FeedbackFrameState(staleLimitNanos: 250 * ms)
+        s.submit(u(3, bar, at: 0))
+        XCTAssertEqual(s.take(cueOnScreen: false, targetNanos: 10 * ms)?.measured, true)
+        s.submit(u(4, bar, at: 20 * ms))
+        XCTAssertNil(s.take(cueOnScreen: false, targetNanos: 30 * ms))
+        XCTAssertEqual(s.drawn?.sequence, 4, "the screen is unchanged, but 4 is now behind it")
+        XCTAssertEqual(s.take(cueOnScreen: true, targetNanos: 40 * ms), .init(sequence: 4, display: bar, reason: nil, measured: false))
+        s.submit(u(5, notConfident, at: 50 * ms, reason: "abstain"))
+        XCTAssertEqual(s.take(cueOnScreen: true, targetNanos: 60 * ms)?.measured, true, "a new prediction changing the screen still counts")
+    }
+
+    func testFeed_finishEndsWithOneStoppedRecord() async {
+        let feed = FeedbackFeed(directions: [:])
+        feed.submit(u(1, bar, at: 90))
+        feed.presented(feed.take(cueOnScreen: true, targetNanos: 100)!, at: 100)
+        feed.submit(u(1, .hidden(words: nil), at: 110, reason: "stopped"))          // the runner's last update
+        feed.finish()
+        feed.presented(.init(sequence: 1, display: bar, reason: nil, measured: true), at: 120)   // after finish: dropped
+        var got: [FeedbackFeed.Report] = []
+        for await r in feed.reports { got.append(r) }
+        XCTAssertEqual(got, [.init(sequence: 1, display: bar, presentedAt: 100, reason: nil, measured: true),
+                             .init(sequence: 1, display: .hidden(words: nil), presentedAt: nil, reason: "stopped", measured: false)],
+                       "no frame showed the stop: logged without a guessed time")
+
+        // A window that drew the stop itself: no second record.
+        let drawn = FeedbackFeed(directions: [:])
+        drawn.submit(u(2, bar, at: 0))
+        drawn.presented(drawn.take(cueOnScreen: true, targetNanos: 10)!, at: 10)
+        drawn.submit(u(2, .hidden(words: nil), at: 20, reason: "stopped"))
+        drawn.presented(drawn.take(cueOnScreen: true, targetNanos: 30)!, at: 30)
+        drawn.finish()
+        var reasons: [String?] = []
+        for await r in drawn.reports { reasons.append(r.reason) }
+        XCTAssertEqual(reasons, [nil, "stopped"])
+    }
+
+    /// The operator's bar follows the participant's stale rule: too old at `now`, or hidden
+    /// by a stall in the participant window, it reads "Signal delayed".
+    func testMirror_followsTheStaleAndStallRule() {
+        var s = FeedbackFrameState(staleLimitNanos: 250 * ms)
+        XCTAssertNil(s.mirror(now: 0))
+        s.submit(u(1, bar, at: 0))
+        XCTAssertEqual(s.mirror(now: 200 * ms), bar)
+        XCTAssertEqual(s.mirror(now: 260 * ms), .hidden(words: "Signal delayed"), "older than 250 ms")
+        XCTAssertEqual(s.take(cueOnScreen: true, targetNanos: 10 * ms, stall: true)?.reason, "delayed")
+        XCTAssertEqual(s.mirror(now: 10 * ms), .hidden(words: "Signal delayed"), "the participant sees a stall: so does the operator")
+        XCTAssertEqual(s.take(cueOnScreen: true, targetNanos: 20 * ms)?.display, bar)
+        XCTAssertEqual(s.mirror(now: 20 * ms), bar)
+        s.submit(u(2, notConfident, at: 30 * ms, reason: "abstain"))
+        XCTAssertEqual(s.mirror(now: 900 * ms), notConfident, "only a bar goes stale; words stay")
+
+        // A stall hid bar 3; bar 4 arrives fresh and isn't drawn yet: no flicker to "delayed".
+        var t = FeedbackFrameState(staleLimitNanos: 250 * ms)
+        t.submit(u(3, bar, at: 0))
+        XCTAssertEqual(t.take(cueOnScreen: true, targetNanos: 10 * ms, stall: true)?.reason, "delayed")
+        let newer = FeedbackPolicy.Display.bar(side: "cue_left_hand", length: 0.7)
+        t.submit(u(4, newer, at: 20 * ms))
+        XCTAssertEqual(t.mirror(now: 25 * ms), newer, "judged by its own age, not the older bar's stall")
+    }
+
+    func testPanel_neverShowsABarTheParticipantSeesDelayed_andShowsStopped() {
+        var s = LiveInferenceRunner.Status()
+        s.validity = .valid; s.display = bar; s.score = 0.9; s.confidence = 0.71
+        let delayed = state(s, mirror: .hidden(words: "Signal delayed"))
+        XCTAssertNil(delayed.bar)
+        XCTAssertEqual(delayed.state, "Signal delayed")
+        XCTAssertEqual(delayed.tone, .warning)
+        XCTAssertEqual(delayed.detail, LiveTestCopy.delayedDetail)
+        XCTAssertTrue(LiveTestCopy.delayedDetail.hasSuffix("."), "a full sentence")
+        XCTAssertNil(state(s, mirror: .some(nil)).bar, "no update in the feed yet: a status bar is not trusted")
+        s.stopped = true
+        let stopped = state(s, mirror: bar)
+        XCTAssertEqual(stopped.state, "Stopped")
+        XCTAssertNil(stopped.bar)
+        XCTAssertEqual(stopped.tone, .info)
+    }
+
+    func testPanel_namesLinesMissingFromTheLogs() {
+        var s = LiveInferenceRunner.Status()
+        XCTAssertNil(panel(s).logWarning)
+        s.feedbackWriteFailures = 2; s.predictionWriteFailures = 1
+        XCTAssertEqual(panel(s).logWarning, "1 prediction and 2 feedback changes couldn't be written to the logs and are missing from them.")
+        XCTAssertEqual(LiveRunCopy.logGaps(predictions: 0, feedback: 1), "1 feedback change couldn't be written to the logs and is missing from them.")
+    }
+
     func testFrameState_neverStepsBackToAnOlderPrediction() {
         var s = FeedbackFrameState()
         s.submit(u(9, notConfident, at: 0))
@@ -111,29 +199,34 @@ final class LiveFeedbackViewTests: XCTestCase {
     // MARK: Operator view copy
 
     private func panel(_ s: LiveInferenceRunner.Status, truth: [String: String] = [:], aborted: Set<String> = []) -> LiveFeedbackPanelModel {
-        LiveFeedbackPanelModel(s, model: Self.model, protocolRecord: Self.protocolRecord, threshold: 0.6,
-                               directions: ["cue_left_hand": -1, "cue_right_hand": 1], truth: truth, aborted: aborted)
+        LiveFeedbackPanelModel(s, model: Self.model, protocolRecord: Self.protocolRecord, threshold: 0.6, truth: truth, aborted: aborted)
+    }
+
+    /// The 20 Hz state; `mirror` defaults to a fresh copy of the status's display.
+    private func state(_ s: LiveInferenceRunner.Status, mirror: FeedbackPolicy.Display?? = nil) -> LiveFeedbackStateModel {
+        LiveFeedbackStateModel(s, mirror: mirror ?? s.display, model: Self.model, protocolRecord: Self.protocolRecord,
+                               directions: ["cue_left_hand": -1, "cue_right_hand": 1])
     }
 
     func testPanel_namesEveryStateInWords() {
-        XCTAssertEqual(panel(.init()).state, "Starting analysis…")
+        XCTAssertEqual(state(.init()).state, "Starting analysis…")
         var s = LiveInferenceRunner.Status()
         s.validity = .valid; s.display = bar; s.score = 0.9; s.confidence = 0.71
-        let shown = panel(s)
+        let shown = state(s)
         XCTAssertEqual(shown.state, "Showing feedback")
         XCTAssertEqual(shown.bar, .init(direction: 1, length: 0.4))
         XCTAssertEqual(shown.prediction, "Right hand · model confidence 0.71 · score +0.90")
         XCTAssertEqual(shown.leftEnd, "◀ Left hand")
         XCTAssertEqual(shown.rightEnd, "Right hand ▶")
         s.display = .hidden(words: nil)
-        XCTAssertEqual(panel(s).state, "Valid · outside the feedback span")
-        XCTAssertNil(panel(s).bar)
-        for (v, words, tone) in [(Validity.stale, "Signal delayed", LiveFeedbackPanelModel.Tone.warning), (.disconnected, "Board disconnected", .danger),
+        XCTAssertEqual(state(s).state, "Valid · outside the feedback span")
+        XCTAssertNil(state(s).bar)
+        for (v, words, tone) in [(Validity.stale, "Signal delayed", LiveFeedbackStateModel.Tone.warning), (.disconnected, "Board disconnected", .danger),
                                  (.workerUnavailable, "Analysis stopped", .danger), (.insufficientWindow, "Waiting for enough signal", .info)] {
             s.validity = v; s.detail = "why"; s.display = .hidden(words: FeedbackPolicy.words(v))
-            XCTAssertEqual(panel(s).state, words)
-            XCTAssertEqual(panel(s).tone, tone)
-            XCTAssertEqual(panel(s).detail, "why", "the raw detail stays visible to the operator")
+            XCTAssertEqual(state(s).state, words)
+            XCTAssertEqual(state(s).tone, tone)
+            XCTAssertEqual(state(s).detail, "why", "the raw detail stays visible to the operator")
         }
     }
 

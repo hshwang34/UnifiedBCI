@@ -719,7 +719,7 @@ private struct NoticeView: View {
         switch notice {
         case .saved, .exported, .frozen: return "checkmark.circle.fill"
         case .reproduced: return "arrow.triangle.2.circlepath"
-        case .diverged, .exportFailed: return "exclamationmark.triangle.fill"
+        case .diverged, .exportFailed, .liveRunNotSaved: return "exclamationmark.triangle.fill"
         case .cancelled: return "xmark.circle"
         }
     }
@@ -727,7 +727,7 @@ private struct NoticeView: View {
     private var tint: Color {
         switch notice {
         case .cancelled: return Theme.textSecondary
-        case .diverged, .exportFailed: return Theme.warning
+        case .diverged, .exportFailed, .liveRunNotSaved: return Theme.warning
         default: return Theme.positive
         }
     }

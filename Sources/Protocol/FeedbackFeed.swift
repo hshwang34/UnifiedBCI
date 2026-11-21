@@ -13,7 +13,9 @@ public struct FeedbackFrameState: Sendable, Equatable {
         public var display: FeedbackPolicy.Display
         /// Why the bar is hidden (feedback.jsonl `reason`); nil when it shows.
         public var reason: String?
-        /// A new prediction caused this change (it counts in emission → presentation).
+        /// A new prediction caused this change (it counts in emission → presentation). False
+        /// when the cue appearing or ending caused it, including for a prediction that arrived
+        /// while the screen already showed the same thing (it is then not "new" when drawn).
         public var measured: Bool
     }
 
@@ -39,10 +41,39 @@ public struct FeedbackFrameState: Sendable, Equatable {
         } else if case .bar = display, stall || isOld(latest, at: targetNanos) {
             (display, reason) = (.hidden(words: FeedbackPolicy.words(.stale)), "delayed")
         }
-        guard display != drawn?.display else { return nil }
+        guard display != drawn?.display else {
+            // Unchanged on screen, but this prediction is now the one behind it: when a later
+            // change (the cue appearing) draws it, that is not a fresh prediction.
+            drawn?.sequence = latest.sequence
+            return nil
+        }
         let next = Shown(sequence: latest.sequence, display: display, reason: reason, measured: latest.sequence != drawn?.sequence)
         drawn = next
         return next
+    }
+
+    /// When the run has stopped: the final hidden "stopped" record if the screen never logged
+    /// one (the window was outside a cue, or no refresh took it), else nil. Its presentation
+    /// time is unknown, so the report carries none rather than a guess.
+    public mutating func stopRecord() -> Shown? {
+        guard let latest, latest.reason == "stopped", drawn?.reason != "stopped" else { return nil }
+        let last = Shown(sequence: latest.sequence, display: .hidden(words: nil), reason: "stopped", measured: false)
+        drawn = last
+        return last
+    }
+
+    /// What the operator mirror draws at `now` (`HostMonotonicClock`): the participant's newest
+    /// display under the same stale rule, and hidden as "Signal delayed" while the participant
+    /// window shows that for this same prediction (a stall). A newer bar that simply hasn't been
+    /// drawn yet is judged by its own age, so the mirror doesn't flicker to "delayed" for a
+    /// frame. Never a bar older than the stale limit.
+    public func mirror(now: Int64) -> FeedbackPolicy.Display? {
+        guard let latest else { return nil }
+        let participantDelayed = drawn?.reason == "delayed" && drawn?.sequence == latest.sequence
+        if case .bar = latest.display, participantDelayed || isOld(latest, at: now) {
+            return .hidden(words: FeedbackPolicy.words(.stale))
+        }
+        return latest.display
     }
 
     private func isOld(_ u: LiveInferenceRunner.Update, at target: Int64?) -> Bool {
@@ -84,7 +115,17 @@ public final class FeedbackFeed: Sendable {
     public func presented(_ s: FeedbackFrameState.Shown, at: Int64?) {
         sink.yield(Report(sequence: s.sequence, display: s.display, presentedAt: at, reason: s.reason, measured: s.measured))
     }
-    public func finish() { sink.finish() }
+    public func mirror(now: Int64) -> FeedbackPolicy.Display? { state.withLock { $0.mirror(now: now) } }
+
+    /// Ends the reports: the final hidden "stopped" record goes out first when the window
+    /// didn't log one (submit the runner's last update before calling this), so every live
+    /// run's feedback.jsonl ends hidden. Reports already queued stay queued, in order.
+    public func finish() {
+        if let last = state.withLock({ $0.stopRecord() }) {
+            sink.yield(Report(sequence: last.sequence, display: last.display, presentedAt: nil, reason: last.reason, measured: false))
+        }
+        sink.finish()
+    }
 
     /// −1 / +1 per class when the protocol cues one class with a left arrow and the other with
     /// a right arrow, so the bar's sides match the cues; nil otherwise (a live run is refused).
