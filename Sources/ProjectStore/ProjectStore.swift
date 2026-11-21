@@ -457,7 +457,8 @@ public actor ProjectStore {
                 let index = manifest.segments[i].index
                 let last = manifest.chunks.filter { $0.segment == index }.max { $0.firstSampleIndex < $1.firstSampleIndex }
                 manifest.segments[i].endedAtMonotonicNanos = last?.drainedAtMonotonicNanos ?? manifest.segments[i].startedAtMonotonicNanos
-                if i == lastOpen, let note {
+                if i == lastOpen, let note, RecordingLock.note(note, fits: manifest.segments[i], nominalRateHz: manifest.timing.nominalSampleRateHz) {
+                    manifest.segments[i].endedAtMonotonicNanos = note.endedAtMonotonicNanos
                     manifest.segments[i].endReason = note.reason
                     if note.uncommitted > 0 { manifest.segments[i].uncommittedSampleCount = note.uncommitted }
                 } else {
@@ -515,7 +516,8 @@ public actor ProjectStore {
 /// `ProjectStore.open` closing a dead writer's segment). The lock dies with the process,
 /// which is how `open` tells a killed writer from a live one. The file is created with
 /// `noteSize` bytes of padding, so a writer that cannot close its segment on a full disk
-/// can still overwrite them with its end reason ("disk_full 1234") without allocating.
+/// can still overwrite them with its segment, end reason, uncommitted count and end time
+/// ("3 disk_full 1234 987654321") without allocating.
 struct RecordingLock: Sendable {
     static let fileName = ".writer.lock"
     static let noteSize = 64
@@ -545,18 +547,45 @@ struct RecordingLock: Sendable {
         return RecordingLock(fd: fd, path: path)
     }
 
-    func note(_ reason: EndReason, uncommitted: Int) {
-        let text = "\(reason.rawValue) \(uncommitted)"
+    /// What a writer that could not close a segment on disk leaves for the next `open`.
+    /// It names its segment, so it can never be applied to a later one.
+    struct Note: Equatable {
+        var segment: Int
+        var reason: EndReason
+        var uncommitted: Int
+        var endedAtMonotonicNanos: Int64
+    }
+
+    /// Only the reasons a failed writer close produces; never `stopped`, so a damaged or
+    /// stale note can't make a crashed segment look like a clean stop.
+    static let noteReasons: Set<EndReason> = [.disconnect, .diskFull, .error]
+
+    func note(_ note: Note) {
+        let text = "\(note.segment) \(note.reason.rawValue) \(note.uncommitted) \(note.endedAtMonotonicNanos)"
         write(text + String(repeating: " ", count: max(0, Self.noteSize - text.utf8.count)))
     }
 
-    func readNote() -> (reason: EndReason, uncommitted: Int)? {
+    /// Blanks the note once the segment it described is closed on disk.
+    func clearNote() { write(String(repeating: " ", count: Self.noteSize)) }
+
+    func readNote() -> Note? {
         var buf = [UInt8](repeating: 0, count: Self.noteSize)
         let n = pread(fd, &buf, Self.noteSize, 0)
         guard n > 0 else { return nil }
         let parts = String(decoding: buf.prefix(n), as: UTF8.self).split(separator: " ")
-        guard parts.count == 2, let reason = EndReason(rawValue: String(parts[0])), let count = Int(parts[1]), count >= 0 else { return nil }
-        return (reason, count)
+        guard parts.count == 4, let segment = Int(parts[0]), segment >= 0,
+              let reason = EndReason(rawValue: String(parts[1])), Self.noteReasons.contains(reason),
+              let count = Int(parts[2]), count >= 0, let endedAt = Int64(parts[3]) else { return nil }
+        return Note(segment: segment, reason: reason, uncommitted: count, endedAtMonotonicNanos: endedAt)
+    }
+
+    /// Whether `note` can describe `segment`: same index, ended after it started, and no more
+    /// uncommitted samples than could have arrived by then (2× nominal rate, plus one second).
+    static func note(_ note: Note, fits segment: RecordingManifest.StreamSegment, nominalRateHz: Double) -> Bool {
+        guard note.segment == segment.index, note.endedAtMonotonicNanos >= segment.startedAtMonotonicNanos,
+              nominalRateHz.isFinite, nominalRateHz > 0 else { return false }
+        let seconds = Double(note.endedAtMonotonicNanos - segment.startedAtMonotonicNanos) / 1e9
+        return Double(note.uncommitted) <= (seconds + 1) * nominalRateHz * 2
     }
 
     private func write(_ text: String) {

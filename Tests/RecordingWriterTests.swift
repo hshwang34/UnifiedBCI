@@ -244,6 +244,77 @@ final class RecordingWriterTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: handle.directory.appendingPathComponent(".writer.lock").path))
     }
 
+    /// A failed non-final close leaves a note; the next successful save (the following
+    /// segment's first chunk) clears it, so a later kill can't apply it to that segment.
+    func testFailedSegmentEnd_noteIsClearedByTheNextSave() async throws {
+        let failures = Counter()
+        var options = RecordingWriter.Options(timestampRow: Self.timestampRow)
+        options.fault = WriteFault { _, index in index == -1 && failures.next() < 2 ? EIO : nil }
+        let (store, writer) = try await start(options: options)
+        let lockFile = store.recordingDirectory(writer.recordingID).appendingPathComponent(".writer.lock")
+        func note() -> String { (try? String(contentsOf: lockFile, encoding: .utf8))?.trimmingCharacters(in: .whitespaces) ?? "<missing>" }
+
+        writer.submit(Self.block(from: 0, count: 125))
+        writer.endSegment(.disconnect, endedAtMonotonicNanos: 2_000_000_000)
+        try await waitFor("the failed close") { writer.status.failure?.contains("segment 0 not closed") == true }
+        XCTAssertEqual(note(), "0 disconnect 0 2000000000", "the note names its segment")
+
+        writer.beginSegment(startedAtWall: Date(), startedAtMonotonicNanos: 3_000_000_000)
+        writer.submit(Self.block(from: 0, count: 125, segment: 1))
+        try await waitFor("segment 1's first chunk") { writer.status.committedChunks == 2 }
+        XCTAssertEqual(note(), "", "segment 0 is closed on disk now; its note is obsolete")
+        XCTAssertNil(writer.status.endReason, "a failed non-final close lets the recording continue")
+
+        let status = await writer.finish()
+        XCTAssertEqual(status.endReason, .stopped)
+        let handle = try await ProjectStore.open(at: store.directory).recording(id: writer.recordingID)
+        XCTAssertEqual(handle.manifest.segments.map(\.endReason), [.disconnect, .stopped])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lockFile.path))
+    }
+
+    /// A clean stop whose close can't be written is closed `error` by the next open, never `stopped`.
+    func testFailedCloseOfAStop_isClosedAsErrorByTheNextOpen() async throws {
+        var options = RecordingWriter.Options(timestampRow: Self.timestampRow)
+        options.fault = WriteFault { _, index in index == -1 ? EIO : nil }
+        let (store, writer) = try await start(options: options)
+        writer.submit(Self.block(from: 0, count: 125))
+        let status = await writer.finish()
+        XCTAssertTrue(status.failure?.contains("segment 0 not closed") == true, status.failure ?? "")
+        let seg = try await ProjectStore.open(at: store.directory).recording(id: writer.recordingID).manifest.segments[0]
+        XCTAssertEqual(seg.endReason, .error)
+        XCTAssertEqual(seg.detectedGaps, [])
+    }
+
+    /// `open` applies a lock note only to the segment it names, and only if it is plausible.
+    func testOpen_appliesALockNoteOnlyToItsOwnPlausibleSegment() async throws {
+        let cases: [(note: String, reason: EndReason, uncommitted: Int?)] = [
+            ("1 disk_full 40 3000000000", .diskFull, 40),                    // its segment: used
+            ("0 disk_full 40 3000000000", .processTerminated, nil),          // stale: names segment 0
+            ("1 stopped 0 3000000000", .processTerminated, nil),             // a failed close never says stopped
+            ("1 disk_full 9999999 3000000000", .processTerminated, nil),    // more than 1 s × 2 × 125 Hz could bring
+            ("1 disk_full 40 500000000", .processTerminated, nil),           // ended before it started
+            ("disk_full 40", .processTerminated, nil),                       // old format
+        ]
+        for (i, c) in cases.enumerated() {
+            let store = try ProjectStore.create(at: scratch.appendingPathComponent("note\(i).bciproj"), name: "n")
+            var m = manifest()
+            m.segments = [
+                .init(index: 0, sessionID: "s", runID: "r", startedAtWall: Date(), startedAtMonotonicNanos: 1,
+                      endedAtMonotonicNanos: 1_000_000_000, endReason: .disconnect, detectedGaps: []),
+                .init(index: 1, sessionID: "s", runID: "r", startedAtWall: Date(), startedAtMonotonicNanos: 2_000_000_000,
+                      endedAtMonotonicNanos: nil, endReason: nil, detectedGaps: []),
+            ]
+            let (_, lock) = try await store.createLiveRecording(m, hook: nil, fault: nil)
+            lock.release(keepFile: true)   // the writer died with this note in its lock file
+            let lockFile = store.recordingDirectory(m.recordingID).appendingPathComponent(".writer.lock")
+            try Data(c.note.utf8).write(to: lockFile)
+            let seg = try await ProjectStore.open(at: store.directory).recording(id: m.recordingID).manifest.segments[1]
+            XCTAssertEqual(seg.endReason, c.reason, c.note)
+            XCTAssertEqual(seg.uncommittedSampleCount, c.uncommitted, c.note)
+            XCTAssertEqual(seg.detectedGaps.map(\.evidence), c.reason == .processTerminated ? [.processTerminated] : [], c.note)
+        }
+    }
+
     func testUnreadableFreeSpace_failsSafe() async throws {
         var options = RecordingWriter.Options()
         options.freeBytes = { _ in nil }
