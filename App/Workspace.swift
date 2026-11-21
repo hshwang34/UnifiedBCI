@@ -70,6 +70,9 @@ final class Workspace {
     @ObservationIgnored private var windows: [URL: WeakWindow] = [:]
     @ObservationIgnored private var closeGuards: [URL: CloseGuard] = [:]
     @ObservationIgnored private var closeObservers: [URL: NSObjectProtocol] = [:]
+    @ObservationIgnored private var keyObservers: [URL: NSObjectProtocol] = [:]
+    /// Project windows in the order they last became key, most recent last.
+    @ObservationIgnored private(set) var activeOrder: [URL] = []
     @ObservationIgnored private let recentStore: RecentDocuments
 
     init(recents: RecentDocuments, launch: WorkerLaunch?) {
@@ -169,6 +172,8 @@ final class Workspace {
         }
         windows[key] = nil
         closeGuards[key] = nil
+        activeOrder.removeAll { $0 == key }
+        if let observer = keyObservers.removeValue(forKey: key) { NotificationCenter.default.removeObserver(observer) }
         if let observer = closeObservers.removeValue(forKey: key) { NotificationCenter.default.removeObserver(observer) }
         if let teardown = closing[key] { return await teardown.value }
         guard let session = sessions.removeValue(forKey: key) else { return }
@@ -225,6 +230,11 @@ final class Workspace {
         closeGuards[key] = closeGuard
         let closingID = ObjectIdentifier(window)
         if let old = closeObservers.removeValue(forKey: key) { NotificationCenter.default.removeObserver(old) }
+        noteActive(key)
+        if let old = keyObservers.removeValue(forKey: key) { NotificationCenter.default.removeObserver(old) }
+        keyObservers[key] = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.noteActive(key) }
+        }
         closeObservers[key] = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let registered = self.windows[key]?.window, ObjectIdentifier(registered) == closingID else { return }
@@ -315,12 +325,26 @@ final class Workspace {
         }
     }
 
-    /// The open project whose window is frontmost (ordered windows, front to back).
+    /// A project window became key: it is now the most recently active one.
+    func noteActive(_ url: URL) {
+        let key = Self.canonical(url)
+        activeOrder.removeAll { $0 == key }
+        activeOrder.append(key)
+    }
+
+    /// The open project whose window was most recently active (Welcome is key while its
+    /// button is clicked, so "frontmost" means the last project window that was key).
     func frontmostSession() -> ProjectSession? {
-        for window in NSApp.orderedWindows {
-            if let (key, _) = windows.first(where: { $0.value.window === window }), let s = sessions[key] { return s }
+        activeOrder.reversed().lazy.compactMap { self.sessions[$0] }.first
+    }
+
+    /// Before quitting: every Connect sheet goes away (AppKit won't quit past an attached
+    /// sheet), and a Connect in flight is released by the shutdown that follows.
+    func dismissSheetsForQuit() {
+        for session in sessions.values { session.showsConnectSheet = false }
+        for window in windows.values.compactMap(\.window) {
+            if let sheet = window.attachedSheet { window.endSheet(sheet) }
         }
-        return sessions.values.first
     }
 
     func openPanel(then: ((ProjectSession) -> Void)? = nil) {

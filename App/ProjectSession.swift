@@ -132,6 +132,12 @@ final class ProjectSession: Identifiable {
     /// acquisition screen when a board is already streaming.
     func showConnectSheet() {
         guard !isClosing else { return }
+        // While recording, New Recording… shows the recording in progress instead.
+        if let live, !live.isClosed, live.isRecordingNow {
+            section = .recordings
+            liveShown = true
+            return
+        }
         if live == nil || live?.isClosed == true { makeLive() }
         section = .recordings
         showsConnectSheet = true

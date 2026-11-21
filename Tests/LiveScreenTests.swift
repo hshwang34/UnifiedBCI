@@ -365,4 +365,57 @@ final class LiveScreenTests: XCTestCase {
         XCTAssertFalse(next === live, "a fresh controller after a closed one")
         await session.endLive()
     }
+
+    // MARK: Entry points (6b)
+
+    func testConnectHardware_usesTheMostRecentlyActiveProject() async throws {
+        let workspace = Workspace(recents: InMemoryRecentDocuments(), launch: nil)
+        let a = await workspace.adopt(try ProjectStore.create(at: scratch.appendingPathComponent("a.bciproj"), name: "a"))
+        let b = await workspace.adopt(try ProjectStore.create(at: scratch.appendingPathComponent("b.bciproj"), name: "b"))
+        XCTAssertNil(workspace.frontmostSession(), "no project window has been active yet")
+        workspace.noteActive(a.url)
+        workspace.noteActive(b.url)
+        XCTAssertTrue(workspace.frontmostSession() === b)
+        workspace.noteActive(a.url)
+        XCTAssertTrue(workspace.frontmostSession() === a)
+        await workspace.close(a.url)
+        XCTAssertTrue(workspace.frontmostSession() === b, "a closed window falls back to the previous one")
+        await workspace.closeAll()
+    }
+
+    func testQuitWithTheSheetOpenMidConnect_dismissesTheSheetAndReleasesTheBoard() async throws {
+        let url = scratch.appendingPathComponent("q.bciproj")
+        let store = try ProjectStore.create(at: url, name: "q")
+        let workspace = Workspace(recents: InMemoryRecentDocuments(), launch: nil)
+        let session = await workspace.adopt(store)
+        let live = session.wire(ConnectController(store: store, projectDirectory: url, demoFile: nil, scan: { [] }))
+        session.showsConnectSheet = true
+        live.selectedID = ConnectSource.synthetic.id
+        let connect = Task { await live.perform(.connect) }
+        while live.session == nil { await Task.yield() }
+        // What ⌘Q runs: the sheets go, then every project shuts down.
+        workspace.dismissSheetsForQuit()
+        XCTAssertFalse(session.showsConnectSheet)
+        let started = ContinuousClock.now
+        await workspace.closeAll()
+        await connect.value
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(5), "the quit never hangs")
+        XCTAssertTrue(session.isShutDown)
+        XCTAssertEqual(live.session?.snapshot.state, .disconnected, "the board opened mid-connect is released")
+    }
+
+    func testNewRecordingWhileRecording_showsTheLiveScreen_notTheSheet() async throws {
+        let (workspace, session, live, _) = try await liveProject()
+        await live.perform(.startPreview)
+        live.recordWithoutPositions()
+        await live.perform(.record)
+        session.liveShown = false
+        session.section = .results
+        session.showConnectSheet()
+        XCTAssertFalse(session.showsConnectSheet)
+        XCTAssertTrue(session.liveShown)
+        XCTAssertEqual(session.section, .recordings)
+        XCTAssertTrue(session.live === live)
+        await workspace.closeAll()
+    }
 }
