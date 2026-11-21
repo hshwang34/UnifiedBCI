@@ -533,9 +533,18 @@ extension ResultDetailModel {
 /// Copy for the export notice (brief 005 PR 7). Run plans the export left out are named, so
 /// a user never takes a partial export for a complete one.
 enum ExportNoticeText {
-    static func exported(_ url: URL, leftOut: String?) -> String {
-        let base = "Exported to \((url.path as NSString).abbreviatingWithTildeInPath)."
-        return leftOut.map { base + " " + $0 } ?? base
+    static func exported(_ url: URL, leftOut: String?, added: String? = nil) -> String {
+        (["Exported to \((url.path as NSString).abbreviatingWithTildeInPath)."] + [added, leftOut].compactMap { $0 }).joined(separator: " ")
+    }
+
+    /// What the export carries beyond the chosen result and its recording (brief 006), so a
+    /// reader isn't surprised by a model or live run from elsewhere; nil when nothing.
+    static func added(_ s: ExportSummary) -> String? {
+        let m = s.modelsFromOtherResults, r = s.liveRunsOnOtherRecordings
+        var parts: [String] = []
+        if m > 0 { parts.append(m == 1 ? "1 model frozen from another result" : "\(m) models frozen from other results") }
+        if r > 0 { parts.append(r == 1 ? "1 live run on another recording" : "\(r) live runs on other recordings") }
+        return parts.isEmpty ? nil : "Also includes " + parts.joined(separator: " and ") + "."
     }
 
     /// Nil when nothing was left out.
@@ -551,6 +560,15 @@ enum ExportNoticeText {
             parts.append(m == 1 ? "1 run plan file couldn't be read and was left out."
                                 : "\(m) run plan files couldn't be read and were left out.")
         }
+        func count(_ n: Int, _ one: String, _ many: String) { if n > 0 { parts.append(n == 1 ? one : "\(n) " + many) } }
+        count(s.unverifiedModels, "1 frozen model was left out because its model file is missing or changed since it was frozen.",
+              "frozen models were left out because their model files are missing or changed since they were frozen.")
+        count(s.unreadableModels, "1 frozen model folder couldn't be read and was left out.",
+              "frozen model folders couldn't be read and were left out.")
+        count(s.unverifiedLiveRuns, "1 live run was left out because its model couldn't be exported.",
+              "live runs were left out because their models couldn't be exported.")
+        count(s.unreadableLiveRuns, "1 live run folder couldn't be read and was left out.",
+              "live run folders couldn't be read and were left out.")
         return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 }

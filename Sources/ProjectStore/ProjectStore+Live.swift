@@ -272,6 +272,11 @@ public struct JSONLines<T: Decodable & Sendable>: Sendable {
         guard let data = BoundedRead.data(at: url, maxBytes: maxBytes) else {
             throw ProjectStoreError.invalidManifest("\(url.lastPathComponent) is not a regular file of at most \(maxBytes / 1_048_576) MB")
         }
+        return try parse(data, name: url.lastPathComponent)
+    }
+
+    /// The same rules over bytes already read (the export reads each log once).
+    static func parse(_ data: Data, name: String) throws -> JSONLines<T> {
         let decoder = ContractJSON.decoder()
         let lines = data.split(separator: 0x0A, omittingEmptySubsequences: false)
         var out: [T] = []
@@ -282,7 +287,7 @@ public struct JSONLines<T: Decodable & Sendable>: Sendable {
             } else if i == lines.count - 1, data.last != 0x0A {
                 truncated = true
             } else {
-                throw ProjectStoreError.invalidManifest("\(url.lastPathComponent) line \(i + 1) is not a record")
+                throw ProjectStoreError.invalidManifest("\(name) line \(i + 1) is not a record")
             }
         }
         return JSONLines(records: out, lastLineTruncated: truncated)
