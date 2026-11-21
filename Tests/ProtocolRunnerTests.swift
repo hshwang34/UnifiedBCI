@@ -103,6 +103,34 @@ final class ProtocolRunnerTests: XCTestCase {
                        origin + Int64(plan.trials[3].fixationOffsetMs) * 1_000_000)
     }
 
+    func testDisplayChange_pausesLikeADisconnect_abortsTheTrial_stallsFlagged() async throws {
+        let f = try await fixture()
+        f.display.onShow = { [clock = f.clock] frame, n, runner in
+            if case .cue = frame, n.cues == 2 {
+                let t = clock.nowNanos() + ProtocolRunner.Options().lookahead
+                clock.at(t + 1_000_000_000) { runner.displayChanged() }
+                clock.at(t + 5_000_000_000) {
+                    XCTAssertEqual(runner.status.state, .paused(.display))
+                    runner.resume()
+                }
+            }
+        }
+        f.runner.begin()
+        let final = await f.runner.run()
+        XCTAssertEqual(final.state, .ended(aborted: false))
+        let plan = try await plan(f)
+        let events = f.host.records.flatMap(\.events)
+        let pause = try XCTUnwrap(events.first { $0.label == "pause" })
+        XCTAssertEqual([pause.origin, pause.reason] as [String?], ["protocol", "display_changed"])
+        let abort = try XCTUnwrap(events.first { $0.label == "trial_abort" })
+        XCTAssertEqual(abort.trialID, plan.trials[1].trialID)
+        XCTAssertEqual(abort.reason, "display_changed")
+        XCTAssertEqual(final.abortedTrials, [plan.trials[1].trialID])
+        XCTAssertTrue(events.contains { $0.label == "resume" })
+        XCTAssertEqual(final.afterStall.count, final.latenessNanos.count)
+        XCTAssertFalse(final.afterStall.contains(true), "the fake display never stalls")
+    }
+
     func testPauseDuringFixation_abortsThatTrial_resumeStartsTheNextAfterTheLead() async throws {
         let f = try await fixture()
         f.display.onShow = { [clock = f.clock] frame, n, runner in
