@@ -82,6 +82,19 @@ public actor AcquisitionSession {
         public var chunk: SampleChunk
     }
 
+    /// One drained chunk for live inference (brief 006): the fourth consumer of the drain.
+    /// `firstSample` counts from the stream segment's start, so a consumer that lost frames
+    /// (its buffer is newest-wins) sees the jump and treats it as a discontinuity.
+    public struct InferenceFrame: Sendable {
+        public var segment: Int
+        public var firstSample: Int
+        public var chunk: SampleChunk
+        /// Detected gaps, `afterSampleIndex` relative to this chunk (-1 = before its first sample).
+        public var gaps: [RecordingManifest.Gap]
+        /// Monotonic and wall clock read together at drain (BrainFlow buffer wait).
+        public var clockPair: RecordingWriter.ClockPair?
+    }
+
     public enum SessionError: Error, Equatable {
         case notStreaming, alreadyRecording, streamEnded
         case configuration(ConfigurationProblem)
@@ -95,6 +108,22 @@ public actor AcquisitionSession {
     private nonisolated let previewSink: AsyncStream<PreviewFrame>.Continuation
     private nonisolated let published = Mutex(Snapshot())
     public nonisolated var snapshot: Snapshot { published.withLock { $0 } }
+    private nonisolated let inferenceSinks = Mutex<[UUID: AsyncStream<InferenceFrame>.Continuation]>([:])
+    /// Samples drained in the current stream segment (the next frame's `firstSample`).
+    private var segmentSamples = 0
+
+    /// Subscribes a live-inference consumer. Never blocks the drain: each subscriber has its
+    /// own buffer of `buffer` frames (≈ 50 ms each) that drops the oldest when full.
+    public nonisolated func inferenceFrames(buffer: Int = 64) -> (id: UUID, frames: AsyncStream<InferenceFrame>) {
+        let (stream, sink) = AsyncStream.makeStream(of: InferenceFrame.self, bufferingPolicy: .bufferingNewest(max(1, buffer)))
+        let id = UUID()
+        inferenceSinks.withLock { $0[id] = sink }
+        return (id, stream)
+    }
+
+    public nonisolated func removeInferenceConsumer(_ id: UUID) {
+        inferenceSinks.withLock { $0.removeValue(forKey: id) }?.finish()
+    }
 
     private let options: Options
     private let makeBoard: @Sendable () throws -> any AcquisitionBoard
@@ -149,6 +178,7 @@ public actor AcquisitionSession {
 
     deinit {
         previewSink.finish()
+        inferenceSinks.withLock { $0.values.forEach { $0.finish() } }
         power?.release()
     }
 
@@ -408,6 +438,9 @@ public actor AcquisitionSession {
         if chunk.count > 0 {
             lastSampleNanos = chunk.drainedAtMonotonicNanos
             previewSink.yield(.init(segment: health.health.segment, chunk: chunk))
+            let frame = InferenceFrame(segment: health.health.segment, firstSample: segmentSamples, chunk: chunk, gaps: block.gaps, clockPair: block.clockPair)
+            segmentSamples += chunk.count
+            inferenceSinks.withLock { sinks in for sink in sinks.values { sink.yield(frame) } }
             if let w = writer, !betweenRuns, case .refused = w.submit(block) {
                 // The writer stopped itself (disk full, backlog, write error); preview goes on.
                 // Detached synchronously: a new recording may start before this finishes.
@@ -492,6 +525,7 @@ public actor AcquisitionSession {
         }
         accounting?.reset()
         health?.beginSegment(reconnect: reconnect)
+        segmentSamples = 0
         lastSampleNanos = HostMonotonicClock.nowNanos()
         publishHealth(force: true)
     }
