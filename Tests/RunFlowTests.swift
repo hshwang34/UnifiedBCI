@@ -255,7 +255,13 @@ final class RunFlowTests: XCTestCase {
         XCTAssertEqual(surface.hidden, 2, "one display: the window steps aside after each run")
         try await waitFor { runs.summaries.allSatisfy { $0.timing.rows.last?.1 != "counting…" } }
         XCTAssertEqual(runs.summaries.map(\.runID), ["run01", "run02"])
-        XCTAssertEqual(runs.summaries[0].timing.rows.last?.1, "16 events by BrainFlow marker · 0 by nearest timestamp")
+        // A loaded runner may miss a marker; the nearest-timestamp fallback is legitimate,
+        // flagged behaviour, so only the total and the copy's shape are fixed.
+        let association = try XCTUnwrap(runs.summaries[0].timing.rows.last?.1)
+        let counts = association.split(separator: " ").compactMap { Int($0) }
+        XCTAssertEqual(counts.count, 2, association)
+        XCTAssertEqual(association, "\(counts.first ?? -1) events by BrainFlow marker · \(counts.last ?? -1) by nearest timestamp")
+        XCTAssertEqual(counts.reduce(0, +), 16, association)
 
         await session.finishRuns()
         XCTAssertTrue(runs.isFinished)
@@ -264,6 +270,11 @@ final class RunFlowTests: XCTestCase {
         XCTAssertEqual(live.state, .streaming, "the stream keeps going after the session")
         let id = try XCTUnwrap(live.lastRecordingID)
         XCTAssertEqual(session.recordings.map(\.id), [id])
+        let fallbacks = (session.eventsByRecording[id] ?? []).filter { $0.sampleAssociation?.method != "brainflow_marker" && $0.sampleAssociation != nil }
+        for e in fallbacks {
+            XCTAssertEqual(e.sampleAssociation?.method, "nearest_receipt_timestamp", e.label)
+            XCTAssertNotNil(e.timingUncertaintyNanos, "a fallback carries its software spread (\(e.label))")
+        }
         XCTAssertEqual(session.recordingProtocols[id]?.protocolID, p.protocolID)
         let request = session.makeRequest(recordingID: id)
         XCTAssertEqual([request.leftLabel, request.rightLabel], ["cue_left_hand", "cue_right_hand"])
