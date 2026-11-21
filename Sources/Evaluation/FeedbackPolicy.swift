@@ -5,17 +5,31 @@ import Foundation
 /// with the state named in words. Pure, so every rule is unit-tested; the worker only scores.
 public struct FeedbackPolicy: Sendable, Equatable {
     /// Confidence below this abstains (decision #39); stored with the live run.
-    public var threshold: Double
+    public private(set) var threshold: Double
     /// A prediction later than this after its window's last sample was drained, or no
     /// sample for this long, is `stale`.
-    public var staleLimitNanos: Int64
+    public private(set) var staleLimitNanos: Int64
 
     public static let defaultThreshold = 0.6
     public static let defaultStaleLimitMillis = 250
 
-    public init(threshold: Double = FeedbackPolicy.defaultThreshold, staleLimitMillis: Int = FeedbackPolicy.defaultStaleLimitMillis) {
+    /// The defaults (0.6, 250 ms).
+    public init() {
+        threshold = Self.defaultThreshold
+        staleLimitNanos = Int64(Self.defaultStaleLimitMillis) * 1_000_000
+    }
+
+    /// Refuses a threshold outside 0.5 ≤ t < 1 (model confidence is never below 0.5, and 1
+    /// would always abstain) or a stale limit outside 1…60 000 ms, before anything runs.
+    public init(threshold: Double, staleLimitMillis: Int = FeedbackPolicy.defaultStaleLimitMillis) throws {
+        guard threshold.isFinite, threshold >= 0.5, threshold < 1 else {
+            throw WorkerError(code: "invalid_threshold", message: "the abstention threshold must be at least 0.50 and below 1.00")
+        }
+        guard (1...60_000).contains(staleLimitMillis) else {
+            throw WorkerError(code: "invalid_threshold", message: "the stale limit must be 1 to 60 000 ms")
+        }
         self.threshold = threshold
-        self.staleLimitNanos = Int64(staleLimitMillis) * 1_000_000
+        staleLimitNanos = Int64(staleLimitMillis) * 1_000_000
     }
 
     public var staleLimitMillis: Int { Int(staleLimitNanos / 1_000_000) }

@@ -40,15 +40,15 @@ final class LiveInferenceRunnerTests: XCTestCase {
         return try await r.freeze(result: try await store.result(id: id), role: .reference, name: "Live")
     }
 
-    private func runner(_ model: ModelRecord, board: BoardDescription, session: AcquisitionSession, writer: LiveRunWriter?,
+    private func runner(_ model: ModelRecord, board: BoardDescription, session: AcquisitionSession?, writer: LiveRunWriter?,
                         now: @escaping @Sendable () -> Int64 = { HostMonotonicClock.nowNanos() }) async throws -> LiveInferenceRunner {
         var m = model
         m.expectedSampleRateHz = Double(board.samplingRate)
         let config = LiveInferenceRunner.Configuration(model: m, arraysPath: await store.arraysURL(for: model).path,
                                                        channelRows: Array(board.eegChannelRows.prefix(m.expectedChannelIDs.count)),
                                                        channelIDs: m.expectedChannelIDs, sampleRateHz: Double(board.samplingRate),
-                                                       timestampRow: board.timestampRow)
-        return LiveInferenceRunner(configuration: config, launch: try launch(), writer: writer, sourceState: { session.snapshot.state }, now: now)
+                                                       timestampRow: board.timestampRow, markerRow: board.markerRow)
+        return LiveInferenceRunner(configuration: config, launch: try launch(), writer: writer, sourceState: { session?.snapshot.state ?? .streaming }, now: now)
     }
 
     private func liveRun(_ model: ModelRecord) async throws -> LiveRunWriter {
@@ -81,18 +81,16 @@ final class LiveInferenceRunnerTests: XCTestCase {
         guard session.snapshot.state == .streaming, let board = session.snapshot.board else { return XCTFail("\(name): \(session.snapshot.state)") }
         let writer = try await liveRun(model)
         let r = try await runner(model, board: board, session: session, writer: writer)
-        let consumer = ConsumerBox()
-        try await r.start { let (id, frames) = session.inferenceFrames(); consumer.id.withLock { $0 = id }; return frames }
+        try await r.start(source: session)
         let shown = surface(r)
         try await waitFor("\(name): a valid window") { r.status.validity == .valid || r.status.validity == .stale }
-        await r.addCue(trialID: "t1", presentedAt: HostMonotonicClock.nowNanos(), lengthSeconds: 4)
+        await r.addCue(trialID: "t1", marker: nil, presentedAt: HostMonotonicClock.nowNanos(), lengthSeconds: 4)
         let stored = try await store.liveRuns().runs.first!.liveRunID
         try await waitFor("\(name): the cue-locked window and the feedback span", timeout: .seconds(15)) {
             let p = (try? await self.store.predictions(liveRun: stored).records) ?? []
             return p.contains { $0.windowKind == "cue_locked" } && p.contains { $0.feedbackEligible == true }
         }
         let (summary, latency) = await r.stop()
-        if let id = consumer.id.withLock({ $0 }) { session.removeInferenceConsumer(id) }
         shown.cancel()
         await session.disconnect()
 
@@ -147,7 +145,7 @@ final class LiveInferenceRunnerTests: XCTestCase {
         let recording = try await session.startRecording(.init(channels: channels, reference: "SRB2", montage: "undeclared"), in: store)
         let writer = try await liveRun(model)
         let r = try await runner(model, board: link.description, session: session, writer: writer)
-        try await r.start { session.inferenceFrames().frames }
+        try await r.start(source: session)
         try await waitFor("predictions") { r.status.predictions > 3 }
 
         // A stalled stream: stale within the limit, long before the session calls it interrupted.
@@ -196,10 +194,13 @@ final class LiveInferenceRunnerTests: XCTestCase {
         let writer = try await liveRun(model)
         let r = try await runner(model, board: link.description, session: session, writer: writer,
                                  now: { HostMonotonicClock.nowNanos() + 300_000_000 })
-        try await r.start { session.inferenceFrames().frames }
+        try await r.start(source: session)
         let id = await writer.record.liveRunID
-        try await waitFor("a late window", timeout: .seconds(10)) {
-            ((try? await self.store.predictions(liveRun: id).records) ?? []).contains { $0.validityDetail == "prediction_late" }
+        try await waitFor("frames") { r.status.predictions > 0 }
+        await r.addCue(trialID: "late", marker: nil, presentedAt: HostMonotonicClock.nowNanos(), lengthSeconds: 4)
+        try await waitFor("a late window and the cue-locked one", timeout: .seconds(12)) {
+            let p = (try? await self.store.predictions(liveRun: id).records) ?? []
+            return p.contains { $0.validityDetail == "prediction_late" } && p.contains { $0.windowKind == "cue_locked" && $0.trialID == "late" }
         }
         await r.stop()
         await session.disconnect()
@@ -207,7 +208,10 @@ final class LiveInferenceRunnerTests: XCTestCase {
         XCTAssertEqual(r.status.display, .hidden(words: "Signal delayed"))
         let preds = try await store.predictions(liveRun: id).records
         XCTAssertTrue(preds.contains { $0.validityDetail == "prediction_late" && $0.inputSampleRange != nil }, "past warm-up, late windows are stale")
-        XCTAssertFalse(preds.contains { $0.validity == .valid })
+        XCTAssertFalse(preds.contains { $0.validity == .valid && $0.windowKind == "hop" })
+        let outcome = try XCTUnwrap(preds.first { $0.windowKind == "cue_locked" && $0.trialID == "late" })
+        XCTAssertNotEqual(outcome.validity, .stale, "lateness never changes a trial's outcome window (decision #41)")
+        XCTAssertEqual(outcome.cueSampleMethod, LiveInferenceRunner.estimateMethod)
     }
 
     func testWrongChannelMap_isRefusedBeforeAnythingRuns() async throws {
@@ -218,14 +222,121 @@ final class LiveInferenceRunnerTests: XCTestCase {
         m.expectedSampleRateHz = 125
         var config = LiveInferenceRunner.Configuration(model: m, arraysPath: await store.arraysURL(for: model).path,
                                                        channelRows: Array(link.description.eegChannelRows.prefix(8)),
-                                                       channelIDs: Array(m.expectedChannelIDs.reversed()), sampleRateHz: 125, timestampRow: nil)
+                                                       channelIDs: Array(m.expectedChannelIDs.reversed()), sampleRateHz: 125, timestampRow: nil, markerRow: nil)
         config.workerTimeout = .seconds(2)
         let r = LiveInferenceRunner(configuration: config, launch: try launch(), writer: nil, sourceState: { session.snapshot.state })
         do {
-            try await r.start { AsyncStream { $0.finish() } }
+            try await r.start { (AsyncStream { $0.finish() }, {}) }
             XCTFail("a reordered map is refused")
         } catch let e as WorkerError {
             XCTAssertEqual(e.code, "channel_mismatch")
+        }
+    }
+
+    // MARK: Hand-made frames: drops and refused pushes
+
+    /// A hole in the fan-out is logged (`frames_dropped:N`) and restarts the worker segment;
+    /// a cue still waiting for its marker gets `cue_lost_frames_dropped`; a non-finite chunk
+    /// is `invalid_input` and the cue riding on it `cue_lost_push_refused`.
+    func testFrameDropAndRefusedPush_areLogged_andTheirCuesGetOutcomes() async throws {
+        let model = try await frozenModel()
+        let d = FakeLink().description
+        let writer = try await liveRun(model)
+        let r = try await runner(model, board: d, session: nil, writer: writer)
+        let (frames, sink) = AsyncStream.makeStream(of: AcquisitionSession.InferenceFrame.self)
+        try await r.start { (frames, { sink.finish() }) }
+        func frame(_ first: Int, poisoned: Bool = false) -> AcquisitionSession.InferenceFrame {
+            var values = [Double](repeating: 0, count: 6 * d.numRows)
+            for i in 0..<6 {
+                for (c, row) in d.eegChannelRows.enumerated() { values[row * 6 + i] = 20 * sin(Double(first + i) * (0.21 + 0.03 * Double(c))) }
+            }
+            if poisoned { values[d.eegChannelRows[0] * 6 + 2] = .nan }
+            return .init(segment: 0, firstSample: first, chunk: SampleChunk(numRows: d.numRows, count: 6, values: values,
+                         drainedAtMonotonicNanos: HostMonotonicClock.nowNanos(), availableBeforeDrain: 6, overflowSuspected: false), gaps: [], clockPair: nil)
+        }
+        let id = await writer.record.liveRunID
+        func preds() async -> [PredictionRecord] { (try? await store.predictions(liveRun: id).records) ?? [] }
+        for k in 0..<20 { sink.yield(frame(6 * k)) }
+        try await waitFor("hops") { await preds().count > 4 }
+        await r.addCue(trialID: "waits", marker: 42, presentedAt: HostMonotonicClock.nowNanos(), lengthSeconds: 4)
+        sink.yield(frame(6 * 25))                                   // 30 samples never arrived
+        try await waitFor("the drop") { await preds().contains { $0.validityDetail == "frames_dropped:30" } }
+        await r.addCue(trialID: "rides", marker: nil, presentedAt: HostMonotonicClock.nowNanos(), lengthSeconds: 4)
+        sink.yield(frame(6 * 26, poisoned: true))
+        for k in 27..<40 { sink.yield(frame(6 * k)) }
+        try await waitFor("the refusal and a new segment") {
+            let p = await preds()
+            return p.contains { $0.validity == .invalidInput } && Set(p.compactMap { $0.inputSampleRange == nil ? nil : $0.inputSegment }).count == 3
+        }
+        await r.stop()
+
+        let p = await preds()
+        let outcomes = FeedbackPolicy.trialOutcomes(p)
+        XCTAssertEqual(outcomes["waits"], .invalid(.insufficientWindow, "cue_lost_frames_dropped"))
+        XCTAssertEqual(outcomes["rides"], .invalid(.insufficientWindow, "cue_lost_push_refused"))
+        XCTAssertEqual(p.first { $0.validity == .invalidInput }?.validityDetail, "non_finite_samples")
+        let segments = p.compactMap { $0.inputSampleRange == nil ? nil : $0.inputSegment }
+        XCTAssertEqual(Set(segments).count, 3, "segment 0, after the drop, after the refusal")
+    }
+
+    /// Live and replay put a cue on the same sample: a protocol run on the synthetic board,
+    /// cues handed to the runner as the run records them (with their markers); each lands on
+    /// the marked sample, whose values are the ones the recording's event names.
+    func testProtocolRun_liveCuesLandOnTheSampleReplayUses() async throws {
+        let model = try await frozenModel()
+        let draft = ProtocolDraft(name: "Live cues", classes: ProtocolDraft.grazDefault.classes,
+                                  timing: .init(fixationMs: 250, cueMs: 800, restMinMs: 100, restMaxMs: 150),
+                                  trialsPerClass: 2, runsPerSession: 3, instructions: "Short test run.")
+        let p = try await store.createProtocolVersion(draft, basedOn: nil)
+        let session = AcquisitionSession(source: .synthetic, projectDirectory: store.directory)
+        await session.connect()
+        await session.startStreaming()
+        let d = try XCTUnwrap(session.snapshot.board)
+        let r = try await runner(model, board: d, session: session, writer: nil)
+        try await r.start(source: session)
+        // The test's own fan-out subscriber keeps every drained chunk by stream sample.
+        let (consumer, frames) = session.inferenceFrames(buffer: 4096)
+        let seen = Task.detached {
+            var all: [AcquisitionSession.InferenceFrame] = []
+            for await f in frames { all.append(f) }
+            return all
+        }
+        let channels = d.eegChannelRows.enumerated().map { ChannelSpec(id: String(format: "ch%02d", $0 + 1), label: "undeclared", kind: "eeg", unit: "uV", sourceRow: $1) }
+        let host = LiveCueHost(base: AcquisitionRunHost(session: session, request: .init(channels: channels, reference: "SRB2", montage: "undeclared"), store: store),
+                               runner: r, cueLabels: Set(p.classes.map(\.label)), cueSeconds: 0.8)
+        var o = ProtocolRunner.Options()
+        o.startLead = 600_000_000
+        let run = ProtocolRunner(protocol: p, runID: "run01", sessionID: "S", runIndex: 0, sessionSeed: 7, host: host,
+                                 display: TimedDisplay(), store: store, options: o)
+        run.begin()
+        _ = await run.run()
+        try await Task.sleep(for: .milliseconds(300))
+        let recordingID = try XCTUnwrap(session.snapshot.recordingID)
+        _ = await session.stopRecording()
+        session.removeInferenceConsumer(consumer)
+        let stream = await seen.value
+        await r.stop()
+        await session.disconnect()
+
+        let rec = try await store.recording(id: recordingID)
+        let cues = try rec.events().filter { p.classes.map(\.label).contains($0.label) }
+        XCTAssertEqual(cues.count, 4)
+        let placements = r.placements
+        for cue in cues {
+            let trial = try XCTUnwrap(cue.trialID)
+            let a = try XCTUnwrap(cue.sampleAssociation, trial)
+            XCTAssertEqual(a.method, "brainflow_marker", trial)
+            let live = try XCTUnwrap(placements[trial], trial)
+            XCTAssertEqual(live.method, LiveInferenceRunner.markerMethod, trial)
+            // The recorded values at the event's sample are the stream's at the live sample.
+            let entry = try XCTUnwrap(rec.chunks(inSegment: a.segment).first { (($0.firstSampleIndex)..<($0.firstSampleIndex + $0.sampleCount)).contains(a.sampleIndex) })
+            let values = try rec.chunk(entry)
+            let f = try XCTUnwrap(stream.first { $0.segment == live.streamSegment && ($0.firstSample..<($0.firstSample + $0.chunk.count)).contains(live.streamSample) })
+            let j = live.streamSample - f.firstSample
+            for ch in rec.manifest.channels {
+                XCTAssertEqual(values[ch.sourceRow * entry.sampleCount + (a.sampleIndex - entry.firstSampleIndex)], f.chunk.row(ch.sourceRow)[f.chunk.row(ch.sourceRow).startIndex + j], "\(trial) \(ch.id)")
+            }
+            XCTAssertEqual(f.chunk.row(d.markerRow)[f.chunk.row(d.markerRow).startIndex + j], ProtocolRunner.marker(for: cue.label, in: p), trial)
         }
     }
 
@@ -234,6 +345,9 @@ final class LiveInferenceRunnerTests: XCTestCase {
     func testFeedbackPolicy() {
         let policy = FeedbackPolicy()
         XCTAssertEqual(policy.threshold, 0.6)
+        for bad in [0.49, 1.0, .nan] { XCTAssertThrowsError(try FeedbackPolicy(threshold: bad), "\(bad)") }
+        XCTAssertThrowsError(try FeedbackPolicy(threshold: 0.7, staleLimitMillis: 0))
+        XCTAssertEqual(try FeedbackPolicy(threshold: 0.5).threshold, 0.5)
         XCTAssertEqual(policy.staleLimitMillis, 250)
         func p(_ v: Validity, c: Double? = 0.8, eligible: Bool = true, kind: String = "hop", trial: String? = nil) -> PredictionRecord {
             PredictionRecord(pipelineID: UUID(), inputSegment: 0, inputSampleRange: nil, score: 1, validity: v, emittedAtMonotonicNanos: 0,
@@ -265,5 +379,23 @@ final class LiveInferenceRunnerTests: XCTestCase {
     }
 }
 
-/// The fan-out subscription id a test removes afterwards.
-private final class ConsumerBox: Sendable { let id = Mutex<UUID?>(nil) }
+/// The run's host with the live runner beside it: every cue the run records (with its
+/// marker and presentation time) is also handed to the runner, as the live run will.
+private struct LiveCueHost: ProtocolRunHost {
+    let base: AcquisitionRunHost
+    let runner: LiveInferenceRunner
+    let cueLabels: Set<String>
+    let cueSeconds: Double
+
+    func beginRun(runID: String, sessionID: String) async throws -> UUID { try await base.beginRun(runID: runID, sessionID: sessionID) }
+    func endRun() async { await base.endRun() }
+    var isStreaming: Bool { base.isStreaming }
+
+    func record(_ events: [EventRecord], marker: Double?, associateAt: Int64?) async -> Bool {
+        // Queued first, so the runner waits for the marker before the board can write it.
+        for e in events where cueLabels.contains(e.label) {
+            if let trial = e.trialID, let at = associateAt { await runner.addCue(trialID: trial, marker: marker, presentedAt: at, lengthSeconds: cueSeconds) }
+        }
+        return await base.record(events, marker: marker, associateAt: associateAt)
+    }
+}
