@@ -395,13 +395,14 @@ public actor ProjectStore {
     }
 
     /// Child directories named by a UUID that contain `file`. Temp directories, stray
-    /// files and directories missing the file are not children, whatever else they hold.
+    /// files, symbolic links and directories missing the file are not children.
     private static func childIDs(in project: URL, child: String, requiring file: String) throws -> [UUID] {
         let fm = FileManager.default
         let dir = project.appendingPathComponent(child, isDirectory: true)
         let names = try fm.contentsOfDirectory(atPath: dir.path)
         return names.compactMap { name -> UUID? in
-            guard let id = UUID(uuidString: name),
+            // A child is a real directory: a symlinked one could point outside the project.
+            guard let id = UUID(uuidString: name), isRealDirectory(dir.appendingPathComponent(name)),
                   fm.fileExists(atPath: dir.appendingPathComponent(name).appendingPathComponent(file).path) else { return nil }
             return id
         }.sorted { $0.uuidString < $1.uuidString }
