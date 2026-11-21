@@ -372,7 +372,10 @@ training run must be in the source recording. One model per fit and role.
   end (`endedAt`, prediction summary, latency summary, live-vs-replay check), with the atomic
   rewrite; a live run without `endedAt` ended with the app. Its logs are created empty and
   fsynced with the directory at start. A log that would pass the 64 MB read cap stops
-  logging instead (`loggingStopped` names why), so it always stays readable. Both store the model, recording,
+  logging instead (`loggingStopped` names why), so it always stays readable. Any line
+  that could not be appended (a failed write or fsync, or logging already stopped) is counted
+  in `feedbackWriteFailures` / `predictionWriteFailures` (null when none), and the live-run
+  card names how many lines are missing. Both store the model, recording,
   runs, hop and abstention threshold (decision #39); a live run also its stale limit.
 - `predictions.jsonl` gets `sequence` (from 0, per run), `validityDetail`,
   `acquisitionReceiptMonotonicNanos`, `workerComputeNanos`, `confidence` (the uncalibrated
@@ -384,6 +387,63 @@ training run must be in the source recording. One model per fit and role.
   what the participant saw (bar side and length as a fraction of the half-width, or hidden
   and the words shown instead) and the presentation callback of the first frame showing it,
   keyed by prediction `sequence`.
+- Live cue-locked windows (`windowKind: cue_locked`, one per trial, the trial's outcome per
+  decision #41) also carry `cueSampleMethod`: how the cue's sample was found, as in
+  `EventRecord.sampleAssociation.method` (`brainflow_marker`, or the flagged estimate
+  `drain_time_minus_buffer_wait`). A refused start logs exactly one record, with
+  `validityDetail` `start_refused: <code>` and no sample range.
+
+### `feedback.jsonl`
+
+One `FeedbackRecord` per **change** of what the participant window draws, never one per
+frame: `predictionSequence`, `shown`, `side` and `length` (bar only), `words` (hidden only,
+null when nothing is written on screen), `presentedAtMonotonicNanos` (the display-link
+target time of the first frame that showed it, on `HostMonotonicClock`; null when unknown,
+never guessed) and `reason` when hidden:
+
+| `reason` | Shown instead of the bar |
+|---|---|
+| `no_cue` | nothing: fixation, rest, instructions or a pause (the bar shows only during a cue) |
+| `outside_span` | nothing: a valid window not wholly inside the imagery period (decision #40) |
+| `abstain` | "Model unsure" (confidence below the run's threshold, decision #39) |
+| `stale` | "Signal delayed" (the prediction reached the app more than 250 ms after its last sample was drained, or nothing was drained for 250 ms) |
+| `delayed` | "Signal delayed" (the bar was older than 250 ms at the refresh that would show it, the refresh time was unknown, or the display link stalled: the stale rule at presentation) |
+| `invalid` | "Waiting for enough signal", "Invalid signal" or "Channels don't match the model" |
+| `disconnected` | "Board disconnected" |
+| `worker` | "Analysis stopped" (the inference worker exited or didn't answer within 1 s) |
+| `stopped` | nothing: the run ended. Every live run's log ends with one; when no frame showed it, its presentation time is null |
+
+A change caused by a new prediction counts toward emission → presentation latency; one
+caused by the cue appearing or ending (including a prediction that arrived while the screen
+already showed the same thing) is logged but not counted. Stopping a run writes every
+queued record, then the `stopped` one, before `run.json` gets its final summaries.
+
+### Worker methods for frozen models (protocol v1, additive)
+
+Full shapes are in the `worker/src/bciworkspace_worker/protocol.py` docstring, mirrored in
+`WorkerClient.swift`; `hello` lists the methods, so `PROTOCOL_VERSION` stays 1.
+
+- `validate_model` checks a model's arrays (`allow_pickle=False`, only the documented keys,
+  float64 with int labels and a str `feature_kind`, shapes consistent with the channel count,
+  at most 4 MB and 32 members) and returns its summary, which freezing requires.
+- `replay_recording` streams a recording's verified chunks through the model at chunk sizes
+  1, 7, 13, 125 and a seeded random mix, beside the offline reference, and writes its
+  predictions to a staging file the app names (never over the pipe).
+- `live_open` / `live_push` / `live_close` run one live session (at most 2 per worker). Samples
+  cross the pipe here and only here, bounded: `live_push` carries one drained chunk, the
+  model's channel rows only, base64 little-endian float64, at most 512 samples (a drained
+  chunk is about 6), with at most 64 gaps and 64 cues per push and 64 cues open at once. A
+  non-finite sample, a segment that goes backwards, a `first_sample` that doesn't continue
+  the segment exactly, or a cue outside its bounds is refused with `bad_request` and leaves
+  the session unchanged.
+- Error codes: `bad_json`, `bad_request`, `unsupported_version`, `unknown_method`,
+  `cancelled`, `integrity`, `internal`, and for these methods `invalid_model` (the arrays fail
+  validation, or their SHA-256 no longer matches: "model file changed since it was frozen")
+  and `channel_mismatch` (channel ids, their order or the rate differ from the model's;
+  nothing is reordered or resampled). The app logs a refused start as `channel_mismatch` or
+  `invalid_input`, and a worker that can't start as `worker_unavailable`.
+
+Exporting models and live runs is documented in `docs/export-format.md`.
 
 ## Results and reproduction
 

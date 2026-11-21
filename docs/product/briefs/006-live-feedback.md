@@ -1,6 +1,6 @@
 # 006 — Frozen model, replay parity, and live feedback
 
-**Status:** approved · **Owner:** PM · **PR:** — · **Updated:** 2026-11-20
+**Status:** shipped (code) — awaiting PM hardware checklist · **Owner:** PM · **PR:** #40, #42, #43, #44, #45, #46, #47, #48, #49, #50, #51 · **Updated:** 2026-11-21
 
 ## Problem
 The app can evaluate a recording offline and stores the fitted arrays of every evaluation
@@ -87,7 +87,7 @@ Live feedback
       probability of intent.
 - [ ] The bar is shown only during the feedback span of each cue (Q3) and only for a `valid`,
       non-abstained prediction. Otherwise it is hidden and one line of words is shown instead:
-      abstain "Not confident", `insufficient_window` "Waiting for enough signal",
+      abstain "Model unsure" (shipped wording; drafted as "Not confident"), `insufficient_window` "Waiting for enough signal",
       `stale` "Signal delayed", `disconnected` "Board disconnected", `worker_unavailable`
       "Analysis stopped". The operator panel shows the same state plus the raw score.
 - [ ] Abstention: a valid prediction with confidence below the threshold (default 0.6, Q2) is
@@ -237,7 +237,7 @@ Tests
 6. **Swift service** — `LiveInferenceRunner` (own worker, validity state machine, latency stamps,
    logging) and `FeedbackPolicy`; synthetic/playback tests, killed-worker test.
 7. **Swift screens** — feedback bar in the participant window and the Live Test operator view;
-   reachable only behind a Debug flag (`-BCILiveFeedbackPreview`) until PR 8.
+   reachable only behind a Debug flag (`-BCILiveFeedbackPreview`) until PR 8 (removed there).
 8. **Swift screens** — Live Test setup and Start live run, Results live-run card with
    fresh-session evidence, latency summary and live-vs-replay check; flag removed.
 9. **Swift service** — export of models and live runs (`Export.swift`, `docs/export-format.md`

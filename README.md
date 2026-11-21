@@ -13,7 +13,15 @@ Product requirements and architecture: see the PRD this repo was started from
 Developer ID-signed, notarized DMG for Apple Silicon Macs on macOS 15 or later. Open it and
 drag the app to Applications.
 
-## Status — Phase 1 "replay to report" (brief 001, shipped)
+## Status
+
+Phases 1–3 of the PRD roadmap are built: replay to report (brief 001, released in 0.1.0),
+recording and cued protocols (briefs 004, 005), and closed-loop evaluation with live
+feedback (brief 006), all on main. Every hardware brief is waiting for its hand-run
+checklist on the real Cyton + Daisy (decision #26). Until a checklist passes, nothing here
+claims the board was tested, and no hardware latency is reported.
+
+## Replay to report (brief 001, shipped)
 
 What a user can do today, with no hardware and no terminal:
 
@@ -38,7 +46,6 @@ Also shipped since 0.1.0 (on main, in the next release): a first-run intro and a
 montage view of the declared electrode positions (brief 003), and a **Quality** tab on each
 recording with per-channel spectra (raw and band-passed) and flatline, clipping, large
 deflection, mains and outlier checks that each name their rule and measured value (brief 002).
-Live feedback (brief 006) comes next.
 
 ## Live acquisition (brief 004, on main)
 
@@ -105,6 +112,49 @@ relative to a motor-imagery window, which is why this protocol is offered and P3
 not. The Cyton + Daisy behaviour (where the marker lands on real packets, lateness with the
 board streaming, two-display setups) is checked by hand in brief 005's appendix.
 
+## Live feedback (brief 006, on main)
+
+- **Freeze for live use…** on a result turns the evaluation's own fit (the one whose held-out
+  score is on screen, decision #38) into a frozen model. The sheet lists the channels, rate,
+  band-pass, window and class labels it expects, and how long feedback can show in each cue.
+  Frozen models are listed under Pipelines.
+- **Replay…** runs a recording through the frozen model chunk by chunk (1, 7, 13, 125
+  samples and a random mix) beside the offline path. It reports "Streaming matches offline
+  within tolerance", or where and by how much it doesn't, against declared tolerances.
+- **Live Test** in the sidebar picks a frozen model, an abstention threshold (default 0.60,
+  decision #39) and a protocol, then **Start Live Run** runs the cued protocol with feedback.
+  During each cue the participant sees a bar grow toward the predicted side, but only for
+  windows wholly inside the imagery period (decision #40). Otherwise the bar is hidden and
+  the state is named in words: "Model unsure", "Waiting for enough signal", "Signal
+  delayed", "Board disconnected" or "Analysis stopped". The operator view mirrors the bar
+  under the same rules and adds the raw score, the abstain rate, software latency and each
+  trial's outcome. Evaluate and Replay are paused during a live run.
+- Afterwards the **live-run card** (in Live Test, and under the result the model came from)
+  shows balanced accuracy and accuracy over trials with a 95 % Clopper-Pearson interval, the
+  confusion matrix, abstained and invalid trials and why, the larger-class rate,
+  `cross-session` / `same-session` / `unknown-session` evidence, the offline result it came
+  from, and software latency (receipt → prediction p50 / p95 / max). The app also replays the
+  new recording through the model and shows "Live matched replay: n of n windows" or lists
+  the windows that differ.
+- Predictions (`predictions.jsonl`, every window, every validity) and what the participant
+  was shown (`feedback.jsonl`) are logged separately. **Export Result** includes the models
+  and live runs that belong to the result ([docs/export-format.md](docs/export-format.md)).
+- **Try it without hardware:** connect the **Demo**, record and evaluate three short runs
+  with a 2 s window, freeze the result, then start a live run from Live Test. In a Debug
+  build, `-BCIExploreExampleAt <new.bciproj> -BCIConnectSource demo -BCILiveTest 2` does all
+  of that unattended (add `-BCISnapshotDir <dir>` for screenshots).
+
+**Honest limits.** "Model confidence" is the shrinkage-LDA posterior of the class it
+picked. It is not calibrated, and it is not a probability of intent: a two-class model can't
+tell when nobody is imagining anything, so abstention is a policy and not a detector.
+Latency is software only, from the drain of a window's last sample to the prediction and
+then to the frame's presentation callback. Radio or USB transport and display delay are not
+measured. The Demo plays recorded EEG that has nothing to do with the arrows on screen, so
+a Demo live run is expected to land near chance. It tests the loop, not decoding, and the
+card shows it the same way as any other result. Live feedback on a real participant, real
+board latency against the 100 ms p95 target, and how often radio bursts trip the 250 ms
+stale rule are checked by hand in brief 006's appendix.
+
 ## Layout
 
 ```
@@ -116,7 +166,8 @@ Sources/WorkerClient/       JSON-lines IPC client that owns the Python worker pr
 Sources/Contracts/          on-disk record types: Project, Recording, Event, Pipeline, Result, Prediction
 Sources/ProjectStore/       .bciproj store: atomic chunk writer + CommitHook, verified reader,
                             bundled-example import, results, export
-Sources/Evaluation/         EvaluationRunner: worker lifecycle, typed progress, reproduction links
+Sources/Evaluation/         EvaluationRunner: worker lifecycle, typed progress, reproduction links;
+                            ReplayRunner, LiveInferenceRunner, FeedbackPolicy (brief 006)
 Sources/Protocol/           ProtocolRunner (phases, pauses, aborts, markers), ProtocolSchedule (seeded order)
 Sources/Acquisition/        AcquisitionSession (live state machine, drain loop, reconnect), stream
                             health, board configuration and readback, preview buffer
