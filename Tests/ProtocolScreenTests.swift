@@ -88,7 +88,7 @@ final class ProtocolScreenTests: XCTestCase {
         e.cue = "4.0005"
         e.fixation = "0"
         e.classes[1].label = "rest"
-        e.trialsPerClass = 101
+        e.trialsPerClass = "101"
         let texts = e.issues.map(\.text)
         XCTAssertTrue(texts.contains("Cue can have at most 3 decimal places: durations are kept to the millisecond."), "\(texts)")
         XCTAssertTrue(texts.contains("Fixation must be more than 0 s and at most 30 s."), "\(texts)")
@@ -97,7 +97,7 @@ final class ProtocolScreenTests: XCTestCase {
         XCTAssertNil(e.draft)
         XCTAssertFalse(e.canSave)
 
-        e.cue = "4"; e.fixation = "2"; e.trialsPerClass = 20
+        e.cue = "4"; e.fixation = "2"; e.trialsPerClass = "20"
         e.classes[1].label = "Cue-Right"
         XCTAssertEqual(e.issues.map(\.text), ["Label “Cue-Right” may only use a–z, 0–9 and _, 1–48 characters."])
         e.classes[1].label = "cue_left_hand"
@@ -112,6 +112,46 @@ final class ProtocolScreenTests: XCTestCase {
         XCTAssertEqual(e.draft?.timing.cueMs, 3250)
     }
 
+    func testDefaultIsWrittenOnlyOnEnteringTheSection_neverOverAnUnreadableFile() async throws {
+        let s = try store()
+        let dir = s.directory.appendingPathComponent("protocols")
+        try FileManager.default.removeItem(at: dir)                  // an older project: no protocols
+        let session = await ProjectSession.adopt(s, url: s.directory, launch: nil)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path), "opening a project never writes")
+        session.section = .protocols
+        await session.awaitProtocols()
+        XCTAssertEqual(session.protocolList?.protocols.count, 1)
+        await session.shutdown()
+
+        try FileManager.default.removeItem(at: dir)
+        let bad = dir.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: bad, withIntermediateDirectories: true)
+        try Data("{".utf8).write(to: bad.appendingPathComponent("protocol.json"))
+        let made = try await s.ensureDefaultProtocol()
+        XCTAssertNil(made, "an unreadable protocol is still a protocol: no default over it")
+    }
+
+    func testStoreErrors_inPlainWords_readOnlyNamed() {
+        XCTAssertEqual(ProtocolCopy.notSaved(ProjectStoreError.io("write", EROFS)), "Not saved: the project can't be written to.")
+        XCTAssertEqual(ProtocolCopy.notSaved(ProjectStoreError.invalidProtocol("nothing changed from version 1")),
+                       "Not saved: nothing changed from version 1.")
+        XCTAssertEqual(ProtocolCopy.notSaved(ProjectStoreError.io("write", ENOSPC)), "Not saved: the disk is full.")
+        XCTAssertFalse(ProtocolCopy.unreadableList(ProjectStoreError.invalidManifest("x")).contains("invalidManifest"))
+        XCTAssertEqual(ProtocolCopy.defaultNotSaved(ProjectStoreError.io("mkdir", EACCES), writable: false),
+                       "This project can't be written to, so the default protocol couldn't be added. Open a copy in a folder you can write to.")
+    }
+
+    func testWholeNumberFields_nameEmptyOrInvalidInput_andTheCreatedTimeIsUTC() {
+        let v1 = ProtocolRecord(draft: .grazDefault, parent: nil, createdAt: Date(timeIntervalSince1970: 1_800_000_000))
+        let e = ProtocolEditor(base: v1, lineage: [v1], windowEndMs: 4000)
+        e.trialsPerClass = ""
+        e.runsPerSession = "4x"
+        XCTAssertTrue(e.issues.map(\.text).contains("Trials per class must be a whole number."))
+        XCTAssertTrue(e.issues.map(\.text).contains("Runs per session must be a whole number."))
+        XCTAssertFalse(e.canSave)
+        XCTAssertEqual(ProtocolDetailModel.created(v1.createdAt), "2027-01-15 08:00 UTC")
+    }
+
     func testSession_listsTheDefault_savesANewVersionAndSelectsIt() async throws {
         let s = try store()
         let session = await ProjectSession.adopt(s, url: s.directory, launch: nil)
@@ -121,7 +161,7 @@ final class ProtocolScreenTests: XCTestCase {
         XCTAssertEqual(v1.name, ProtocolDraft.grazDefault.name)
         session.newProtocolVersion(of: v1)
         let editor = try XCTUnwrap(session.protocolEditor)
-        editor.runsPerSession = 6
+        editor.runsPerSession = "6"
         await session.saveProtocolEditor()
         XCTAssertNil(session.protocolEditor)
         XCTAssertEqual(session.selectedProtocol?.version, 2)

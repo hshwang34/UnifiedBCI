@@ -89,7 +89,7 @@ final class ProjectSession: Identifiable {
     var section: SidebarSection = .recordings {
         didSet {
             if section != oldValue, let n = notice, !n.isPersistent { notice = nil }
-            if section == .protocols, section != oldValue { loadProtocols() }
+            if section == .protocols, section != oldValue { loadProtocols(addingDefault: true) }
         }
     }
 
@@ -309,14 +309,18 @@ final class ProjectSession: Identifiable {
         }
     }
 
-    /// Lists the protocols and their use, giving a project without one the default (decision
-    /// #28). The store does its I/O off the main actor.
-    func loadProtocols() {
+    /// Lists the protocols and their use. `addingDefault` (only on entering the section)
+    /// first gives a project with no protocol at all the default (decision #28).
+    func loadProtocols(addingDefault: Bool = false) {
         protocolsTask?.cancel()
         protocolsTask = Task { [weak self] in
             guard let self else { return }
             var error: String?
-            do { _ = try await self.store.ensureDefaultProtocol() } catch let e { error = "The default protocol couldn't be saved: \(e)" }
+            if addingDefault {
+                do { _ = try await self.store.ensureDefaultProtocol() } catch let e {
+                    error = ProtocolCopy.defaultNotSaved(e, writable: FileManager.default.isWritableFile(atPath: self.url.path))
+                }
+            }
             do {
                 let list = try await self.store.protocols()
                 let usage = try await self.store.protocolUsage()
@@ -328,7 +332,7 @@ final class ProjectSession: Identifiable {
                     self.selectedProtocolID = ProtocolListModel(list: list, usage: usage).groups.first?.rows.first?.id
                 }
             } catch let e {
-                self.protocolsError = "The protocols couldn't be read: \(e)"
+                self.protocolsError = ProtocolCopy.unreadableList(e)
             }
         }
     }
@@ -366,7 +370,7 @@ final class ProjectSession: Identifiable {
             loadProtocols()
             await awaitProtocols()
         } catch {
-            editor.saveError = "Not saved: \(error)"
+            editor.saveError = ProtocolCopy.notSaved(error)
         }
     }
 

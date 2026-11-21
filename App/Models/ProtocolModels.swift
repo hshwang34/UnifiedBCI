@@ -58,6 +58,7 @@ extension CueSymbol {
 enum ProtocolCopy {
     static let emptyTitle = "No Protocols"
     static let noSelection = "No Protocol Selected"
+    static let emptyDescription = "This project has no protocol yet."
     static let newVersion = "New Version…"
     static let newVersionHelp = "Edit a copy of this version and save it as the next version. This version stays as it is."
     static let mislinkedRow = "Mislinked"
@@ -65,6 +66,31 @@ enum ProtocolCopy {
     static let immutable = "Versions never change. Editing saves a new version beside this one."
     static let timingCaveat = "Cue timing is logged by the app's software, not measured on the screen."
     static let orderDescription = "Seeded shuffle: the same seed gives the same order and rests on any Mac."
+
+    static func defaultNotSaved(_ error: Error, writable: Bool) -> String {
+        writable ? "The default protocol couldn't be added: \(storeError(error))"
+                 : "This project can't be written to, so the default protocol couldn't be added. Open a copy in a folder you can write to."
+    }
+
+    static func unreadableList(_ error: Error) -> String { "The protocols couldn't be read: \(storeError(error))" }
+
+    static func notSaved(_ error: Error) -> String { "Not saved: \(storeError(error))" }
+
+    /// A store error as a plain sentence; never a Swift enum description.
+    static func storeError(_ error: Error) -> String {
+        guard let e = error as? ProjectStoreError else { return "something went wrong while saving." }
+        switch e {
+        case .invalidProtocol(let why), .invalidRunPlan(let why): return sentence(why)
+        case .io(_, let code) where [EROFS, EACCES, EPERM].contains(code): return "the project can't be written to."
+        case .io(_, let code) where [ENOSPC, EDQUOT].contains(code): return "the disk is full."
+        case .io(_, let code): return sentence(String(cString: strerror(code)).lowercased())
+        case .alreadyExists: return "a version with that id already exists; try again."
+        case .notAProject, .unsupportedFormatVersion: return "this project can't be read by this version of the app."
+        default: return "the project's files are not as expected."
+        }
+    }
+
+    private static func sentence(_ s: String) -> String { s.hasSuffix(".") ? s : s + "." }
 
     static func unreadable(_ n: Int) -> String {
         n == 1 ? "1 protocol file couldn't be read and isn't listed." : "\(n) protocol files couldn't be read and aren't listed."
@@ -194,13 +220,11 @@ struct ProtocolDetailModel: Equatable {
     }
 
     /// "2026-11-20 14:05 UTC": the stored time, independent of the Mac's locale.
-    static func created(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(identifier: "UTC")
-        f.dateFormat = "yyyy-MM-dd HH:mm 'UTC'"
-        return f.string(from: date)
-    }
+    static func created(_ date: Date) -> String { createdFormat.format(date) }
+
+    private static let createdFormat = Date.VerbatimFormatStyle(
+        format: "\(year: .defaultDigits)-\(month: .twoDigits)-\(day: .twoDigits) \(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits) UTC",
+        locale: Locale(identifier: "en_US_POSIX"), timeZone: TimeZone(identifier: "UTC")!, calendar: Calendar(identifier: .gregorian))
 }
 
 // MARK: - Editor
@@ -234,8 +258,9 @@ final class ProtocolEditor: Identifiable {
     var cue: String
     var restMin: String
     var restMax: String
-    var trialsPerClass: Int
-    var runsPerSession: Int
+    /// Typed as text, so an empty or non-numeric entry is named rather than reverted.
+    var trialsPerClass: String
+    var runsPerSession: String
     var instructions: String
     var saveError: String?
     var isSaving = false
@@ -248,8 +273,8 @@ final class ProtocolEditor: Identifiable {
         cue = Fmt.secondsValue(ms: base.timing.cueMs)
         restMin = Fmt.secondsValue(ms: base.timing.restMinMs)
         restMax = Fmt.secondsValue(ms: base.timing.restMaxMs)
-        trialsPerClass = base.trialsPerClass
-        runsPerSession = base.runsPerSession
+        trialsPerClass = String(base.trialsPerClass)
+        runsPerSession = String(base.runsPerSession)
         instructions = base.instructions
     }
 
@@ -273,15 +298,25 @@ final class ProtocolEditor: Identifiable {
                 return nil
             }
         }
+        func count(_ text: String, _ what: String) -> Int? {
+            let t = text.trimmingCharacters(in: .whitespaces)
+            guard !t.isEmpty, t.count <= 6, t.utf8.allSatisfy({ (0x30...0x39).contains($0) }), let v = Int(t) else {
+                issues.append(.init(kind: .error, text: "\(what) must be a whole number."))
+                return nil
+            }
+            return v
+        }
+        let trials = count(e.trialsPerClass, "Trials per class"), runs = count(e.runsPerSession, "Runs per session")
         let parsed = (ms(e.fixation, "Fixation"), ms(e.cue, "Cue"), ms(e.restMin, "Shortest rest"), ms(e.restMax, "Longest rest"))
-        let parsesAll = parsed.0 != nil && parsed.1 != nil && parsed.2 != nil && parsed.3 != nil
+        let parsesAll = parsed.0 != nil && parsed.1 != nil && parsed.2 != nil && parsed.3 != nil && trials != nil && runs != nil
         // A field that doesn't parse is checked as the base's value, so every other rule
         // is still named; there is no draft until all parse.
         let t = e.base.timing
         let (f, c, rMin, rMax) = (parsed.0 ?? t.fixationMs, parsed.1 ?? t.cueMs, parsed.2 ?? t.restMinMs, parsed.3 ?? t.restMaxMs)
         let draft = ProtocolDraft(name: e.name, classes: e.classes.map { ProtocolClass(label: $0.label, displayName: $0.displayName, cue: $0.cue) },
                                   timing: .init(fixationMs: f, cueMs: c, restMinMs: rMin, restMaxMs: rMax),
-                                  trialsPerClass: e.trialsPerClass, runsPerSession: e.runsPerSession, instructions: e.instructions)
+                                  trialsPerClass: trials ?? e.base.trialsPerClass, runsPerSession: runs ?? e.base.runsPerSession,
+                                  instructions: e.instructions)
         issues += ProtocolRecord.problems(draft).map { Issue(kind: .error, text: ProtocolCopy.problem($0)) }
         if parsesAll, let same = e.lineage.first(where: { $0.draft == draft }) {
             issues.append(.init(kind: .error, text: "Nothing changed from v\(same.version). Change a value to save a new version."))

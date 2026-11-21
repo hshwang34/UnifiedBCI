@@ -12,7 +12,7 @@ struct ProtocolsList: View {
                 ContentUnavailableView {
                     Label(ProtocolCopy.emptyTitle, systemImage: SidebarSection.protocols.symbol)
                 } description: {
-                    Text(session.protocolsError ?? model.footnote ?? "").foregroundStyle(Theme.textSecondary)
+                    Text(session.protocolsError ?? model.footnote ?? ProtocolCopy.emptyDescription).foregroundStyle(Theme.textSecondary)
                 }
             } else {
                 List(selection: $session.selectedProtocolID) {
@@ -235,6 +235,7 @@ struct ProtocolEditorSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel, action: cancel).keyboardShortcut(.cancelAction)
+                    .disabled(editor.isSaving)
                 Button(editor.saveTitle) { Task { await save() } }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
@@ -272,12 +273,16 @@ struct ProtocolEditorSheet: View {
         }
     }
 
-    private func count(_ title: String, _ value: Binding<Int>, _ range: ClosedRange<Int>) -> some View {
-        LabeledContent(title) {
+    /// A whole-number field: typed text (an invalid entry stays visible and is named under
+    /// the form) with a stepper that works from the last valid value.
+    private func count(_ title: String, _ text: Binding<String>, _ range: ClosedRange<Int>) -> some View {
+        let number = Binding<Int>(get: { Int(text.wrappedValue.trimmingCharacters(in: .whitespaces)) ?? range.lowerBound },
+                                  set: { text.wrappedValue = String($0) })
+        return LabeledContent(title) {
             HStack(spacing: Theme.Space.s) {
-                TextField(title, value: value, format: .number)
+                TextField(title, text: text)
                     .labelsHidden().multilineTextAlignment(.trailing).monospacedDigit().frame(width: 64)
-                Stepper(title, value: value, in: range).labelsHidden()
+                Stepper(title, value: number, in: range).labelsHidden()
             }
         }
     }
