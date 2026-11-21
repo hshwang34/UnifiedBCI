@@ -29,26 +29,36 @@ enum AtomicFile {
     /// Creates (or truncates) `url`, writes all of `data`, and fsyncs the file. Never
     /// follows a symbolic link at `url`. `fresh` is for temp files: whatever is at `url`
     /// (a crash leftover, or a link planted in a hostile project) is unlinked first and
-    /// the file is created exclusively, so the bytes can only land in a new inode.
-    static func writeAndSync(_ data: Data, to url: URL, fresh: Bool = false, afterWrite: (() -> Void)? = nil) throws {
+    /// the file is created exclusively, so the bytes can only land in a new inode, and a
+    /// failure (ENOSPC mid-write) unlinks it again so a full disk is not left fuller.
+    static func writeAndSync(_ data: Data, to url: URL, fresh: Bool = false, afterWrite: (() throws -> Void)? = nil) throws {
         if fresh, unlink(url.path) != 0, errno != ENOENT { throw ProjectStoreError.io("unlink \(url.lastPathComponent)", errno) }
         let flags = O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC | (fresh ? O_EXCL : O_TRUNC)
         let fd = open(url.path, flags, 0o644)
         guard fd >= 0 else { throw ProjectStoreError.io("open \(url.lastPathComponent)", errno) }
         defer { close(fd) }
+        do {
+            try writeAll(data, fd: fd, name: url.lastPathComponent)
+            try afterWrite?()
+            try fullSync(fd, url.lastPathComponent)
+        } catch {
+            if fresh { unlink(url.path) }
+            throw error
+        }
+    }
+
+    private static func writeAll(_ data: Data, fd: Int32, name: String) throws {
         try data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
             var offset = 0
             while offset < buf.count {
                 let n = Foundation.write(fd, buf.baseAddress! + offset, buf.count - offset)
                 if n < 0 {
                     if errno == EINTR { continue }
-                    throw ProjectStoreError.io("write \(url.lastPathComponent)", errno)
+                    throw ProjectStoreError.io("write \(name)", errno)
                 }
                 offset += n
             }
         }
-        afterWrite?()
-        try fullSync(fd, url.lastPathComponent)
     }
 
     /// F_FULLFSYNC asks the drive to flush its own cache too; plain fsync(2) on macOS

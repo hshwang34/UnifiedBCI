@@ -301,12 +301,17 @@ public struct RecordingManifest: Codable, Sendable, Equatable {
         public var endedAtMonotonicNanos: Int64?
         public var endReason: EndReason?
         public var detectedGaps: [Gap]
+        /// Samples the app received for this segment but could not commit (disk full, the
+        /// writer fell behind). Absent when nothing was lost that way; an older reader that
+        /// ignores the key reads the committed samples exactly as before, so no format bump.
+        public var uncommittedSampleCount: Int?
 
         public init(index: Int, sessionID: String?, runID: String, startedAtWall: Date, startedAtMonotonicNanos: Int64,
-                    endedAtMonotonicNanos: Int64?, endReason: EndReason?, detectedGaps: [Gap]) {
+                    endedAtMonotonicNanos: Int64?, endReason: EndReason?, detectedGaps: [Gap], uncommittedSampleCount: Int? = nil) {
             self.index = index; self.sessionID = sessionID; self.runID = runID
             self.startedAtWall = startedAtWall; self.startedAtMonotonicNanos = startedAtMonotonicNanos
             self.endedAtMonotonicNanos = endedAtMonotonicNanos; self.endReason = endReason; self.detectedGaps = detectedGaps
+            self.uncommittedSampleCount = uncommittedSampleCount
         }
     }
 
