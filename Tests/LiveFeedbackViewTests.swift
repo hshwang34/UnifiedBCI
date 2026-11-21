@@ -133,8 +133,9 @@ final class LiveFeedbackViewTests: XCTestCase {
                               sampleAssociation: nil, timingUncertaintyNanos: nil)
         var fixation = cue
         fixation.label = "fixation"
-        XCTAssertTrue(await host.record([fixation], marker: 1, associateAt: 2))
-        XCTAssertTrue(await host.record([cue], marker: 10, associateAt: 2))
+        let first = await host.record([fixation], marker: 1, associateAt: 2)
+        let second = await host.record([cue], marker: 10, associateAt: 2)
+        XCTAssertTrue(first && second)
         XCTAssertEqual(inner.outcomesAtRecord, [0, 1], "the cue reached the runner before the host recorded (and marked) it")
         XCTAssertEqual(runner.status.outcomes["run01-t01"], .invalid(.insufficientWindow, "cue_lost_no_stream"))
         XCTAssertEqual(seen.labels, ["fixation", "cue_left_hand"])
@@ -167,7 +168,8 @@ final class LiveFeedbackViewTests: XCTestCase {
         let store = try ProjectStore.importBundledExample(from: try ProjectStoreTests.tinyFixtureURL(), into: scratch.appendingPathComponent("tiny.bciproj"))
         let launch = try XCTUnwrap(WorkerLaunch.locate(), "no worker found; run scripts/bootstrap.sh")
         let e = EvaluationRunner(store: store, launch: launch)
-        var request = EvaluationRunner.Request(recordingID: try XCTUnwrap(try await store.recordingIDs().first), seed: 0)
+        let ids = try await store.recordingIDs()
+        var request = EvaluationRunner.Request(recordingID: try XCTUnwrap(ids.first), seed: 0)
         request.windowLengthSeconds = 2
         let state = await e.evaluateAndWait(request)
         await e.shutdown()
@@ -193,7 +195,8 @@ final class LiveFeedbackViewTests: XCTestCase {
         } catch let error as WorkerError {
             XCTAssertEqual(error.code, "channel_mismatch")
         }
-        let run = try XCTUnwrap(try await store.liveRuns().runs.first)
+        let runs = try await store.liveRuns().runs
+        let run = try XCTUnwrap(runs.first)
         XCTAssertEqual(run.recordingID, rec.recordingID)
         XCTAssertNotNil(run.endedAt)
         let preds = try await store.predictions(liveRun: run.liveRunID).records
