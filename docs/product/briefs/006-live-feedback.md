@@ -87,7 +87,7 @@ Live feedback
       probability of intent.
 - [ ] The bar is shown only during the feedback span of each cue (Q3) and only for a `valid`,
       non-abstained prediction. Otherwise it is hidden and one line of words is shown instead:
-      abstain "Not confident", `insufficient_window` "Waiting for enough signal",
+      abstain "Model unsure" (shipped wording; drafted as "Not confident"), `insufficient_window` "Waiting for enough signal",
       `stale` "Signal delayed", `disconnected` "Board disconnected", `worker_unavailable`
       "Analysis stopped". The operator panel shows the same state plus the raw score.
 - [ ] Abstention: a valid prediction with confidence below the threshold (default 0.6, Q2) is

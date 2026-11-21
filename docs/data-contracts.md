@@ -372,7 +372,10 @@ training run must be in the source recording. One model per fit and role.
   end (`endedAt`, prediction summary, latency summary, live-vs-replay check), with the atomic
   rewrite; a live run without `endedAt` ended with the app. Its logs are created empty and
   fsynced with the directory at start. A log that would pass the 64 MB read cap stops
-  logging instead (`loggingStopped` names why), so it always stays readable. Both store the model, recording,
+  logging instead (`loggingStopped` names why), so it always stays readable. Any line
+  that could not be appended (a failed write or fsync, or logging already stopped) is counted
+  in `feedbackWriteFailures` / `predictionWriteFailures` (null when none), and the live-run
+  card names how many lines are missing. Both store the model, recording,
   runs, hop and abstention threshold (decision #39); a live run also its stale limit.
 - `predictions.jsonl` gets `sequence` (from 0, per run), `validityDetail`,
   `acquisitionReceiptMonotonicNanos`, `workerComputeNanos`, `confidence` (the uncalibrated
