@@ -1,0 +1,70 @@
+{
+  "createdAt" : "2027-01-15T08:00:00.000Z",
+  "formatVersion" : 1,
+  "order" : "seeded_shuffle_v1",
+  "protocolContentHash" : "7bbbb908f6201a21f34453b05a0bb3d6f3fa06fbc2fc2624afb03daac2a3b7e8",
+  "protocolID" : "00000000-0000-4000-8000-000000000002",
+  "protocolVersion" : 1,
+  "recordingID" : "00000000-0000-4000-8000-000000000001",
+  "runID" : "R1",
+  "runIndex" : 0,
+  "seed" : 41,
+  "sessionID" : "S",
+  "sessionSeed" : 41,
+  "trials" : [
+    {
+      "cueEndOffsetMs" : 6000,
+      "cueOffsetMs" : 2000,
+      "endOffsetMs" : 8419,
+      "fixationOffsetMs" : 0,
+      "label" : "cue_right_hand",
+      "restMs" : 2419,
+      "trialID" : "R1-t01"
+    },
+    {
+      "cueEndOffsetMs" : 14419,
+      "cueOffsetMs" : 10419,
+      "endOffsetMs" : 16902,
+      "fixationOffsetMs" : 8419,
+      "label" : "cue_right_hand",
+      "restMs" : 2483,
+      "trialID" : "R1-t02"
+    },
+    {
+      "cueEndOffsetMs" : 22902,
+      "cueOffsetMs" : 18902,
+      "endOffsetMs" : 24544,
+      "fixationOffsetMs" : 16902,
+      "label" : "cue_left_hand",
+      "restMs" : 1642,
+      "trialID" : "R1-t03"
+    },
+    {
+      "cueEndOffsetMs" : 30544,
+      "cueOffsetMs" : 26544,
+      "endOffsetMs" : 32914,
+      "fixationOffsetMs" : 24544,
+      "label" : "cue_left_hand",
+      "restMs" : 2370,
+      "trialID" : "R1-t04"
+    },
+    {
+      "cueEndOffsetMs" : 38914,
+      "cueOffsetMs" : 34914,
+      "endOffsetMs" : 41397,
+      "fixationOffsetMs" : 32914,
+      "label" : "cue_left_hand",
+      "restMs" : 2483,
+      "trialID" : "R1-t05"
+    },
+    {
+      "cueEndOffsetMs" : 47397,
+      "cueOffsetMs" : 43397,
+      "endOffsetMs" : 48973,
+      "fixationOffsetMs" : 41397,
+      "label" : "cue_right_hand",
+      "restMs" : 1576,
+      "trialID" : "R1-t06"
+    }
+  ]
+}

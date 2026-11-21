@@ -14,6 +14,8 @@ readable without the app: flat binary, JSON, JSON lines, and one `.npz` of plain
   evaluation.json     the worker's evaluation record, byte-identical to the stored one
   result.meta.json    ResultMeta: wall clock, durations, worker versions, reproduction link
   ATTRIBUTION.md      dataset source, license and citations, built from the manifest
+  runs/<runID>.plan.json            cued recordings only: each run's RunPlan, as stored
+  protocols/<uuid>/protocol.json    cued recordings only: each protocol version a plan names
 ```
 
 ## Samples
@@ -67,6 +69,49 @@ for `model.npz`; the test suite checks it reproduces the sklearn objects' predic
 `events.jsonl` lines are `EventRecord`s. A cue's sample position is
 `sampleAssociation.segment` / `sampleAssociation.sampleIndex`, an index into that
 segment's `.f64` file. `timingUncertaintyNanos` is `null` unless it was measured.
+
+## Run plans and protocols (cued recordings)
+
+A recording made with the cued protocol (brief 005) has one run plan per run. The export
+copies each plan and **exactly** the protocol versions those plans name, byte for byte
+from the project, at the same relative paths as in the project (`runs/` sits under the
+recording there). Each file is read once with a size cap, validated, and the validated
+bytes are what is written. `recording.json` then has a `runPlans` header; a recording
+without plan files has no `runPlans` key at all, so its export reads as before.
+
+```json
+"runPlans": {
+  "plans": [
+    {"file": "runs/R1.plan.json", "runID": "R1", "runIndex": 0, "sessionID": "…",
+     "protocolID": "…", "protocolVersion": 2, "protocolContentHash": "…", "seed": 41,
+     "sha256": "…"}
+  ],
+  "protocols": [
+    {"file": "protocols/<uuid>/protocol.json", "protocolID": "…",
+     "name": "Left vs right hand (Graz-style)", "version": 2, "contentHash": "…", "sha256": "…"}
+  ],
+  "unreadable": 0,
+  "unverified": []
+}
+```
+
+- `sha256` is over the exported file's bytes; `contentHash` / `protocolContentHash` is the
+  protocol's own hash over its timing and class fields (`docs/data-contracts.md`), so a
+  reader can check that each plan was made from the protocol beside it.
+- A plan is exported only when the protocol version it names is stored, readable, valid and
+  has the same content hash. Valid plans that fail this are listed by run id in
+  `unverified` and not copied; plan files that can't be read or fail validation are counted
+  in `unreadable`. Neither stops the export.
+- Two plans whose run ids differ only in case (possible on a case-sensitive volume) refuse
+  the export instead of overwriting each other.
+
+To reproduce a run's order and rests from the folder alone, feed the protocol and the
+plan's seed to the worker's mirror of the schedule (it imports nothing but the standard
+library; run from `worker/src`):
+
+```sh
+python -I -c "import json,sys;sys.path.insert(0,'.');from bciworkspace_worker.protocol_schedule import schedule;d,r=sys.argv[1:];p=json.load(open(f'{d}/runs/{r}.plan.json'));q=json.load(open(f'{d}/protocols/{p[\"protocolID\"]}/protocol.json'));t=q['timing'];print(schedule([c['label'] for c in q['classes']],q['trialsPerClass'],t['fixationMs'],t['cueMs'],t['restMinMs'],t['restMaxMs'],p['seed'],r)==p['trials'])" /path/to/export R1
+```
 
 ## Why `evaluation.json` is byte-identical
 

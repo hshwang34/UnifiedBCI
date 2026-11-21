@@ -529,3 +529,28 @@ extension ResultDetailModel {
             : LargerClass(rate: rate, sentence: "Interval lies entirely below the larger-class rate.", symbol: "arrow.down.circle")
     }
 }
+
+/// Copy for the export notice (brief 005 PR 7). Run plans the export left out are named, so
+/// a user never takes a partial export for a complete one.
+enum ExportNoticeText {
+    static func exported(_ url: URL, leftOut: String?) -> String {
+        let base = "Exported to \((url.path as NSString).abbreviatingWithTildeInPath)."
+        return leftOut.map { base + " " + $0 } ?? base
+    }
+
+    /// Nil when nothing was left out.
+    static func leftOut(_ s: ExportSummary) -> String? {
+        var parts: [String] = []
+        let n = s.unverifiedRunPlans.count
+        if n > 0 {
+            parts.append(n == 1 ? "1 run plan was left out because its protocol couldn't be verified."
+                                : "\(n) run plans were left out because their protocol couldn't be verified.")
+        }
+        let m = s.unreadableRunPlans
+        if m > 0 {
+            parts.append(m == 1 ? "1 run plan file couldn't be read and was left out."
+                                : "\(m) run plan files couldn't be read and were left out.")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+}

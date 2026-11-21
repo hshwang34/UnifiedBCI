@@ -3,6 +3,11 @@ both sides test against are regenerated here byte for byte."""
 
 from __future__ import annotations
 
+import json
+import shlex
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -46,3 +51,35 @@ def test_bad_inputs_are_refused():
     with pytest.raises(ValueError):
         ps.SplitMix64(0).below(-1)
     assert ps.SplitMix64(0).below(0) == 0xE220A8397B1DCDAF, "n = 0 is 2**64, as in Swift"
+
+
+EXPORT_FIXTURE = Path(__file__).resolve().parents[2] / "Tests" / "Fixtures" / "export_run_plans"
+EXPORT_DOC = Path(__file__).resolve().parents[2] / "docs" / "export-format.md"
+WORKER_SRC = Path(__file__).resolve().parents[1] / "src"
+
+
+def _doc_one_liner() -> list[str]:
+    """The reproduction command `docs/export-format.md` documents, as argv."""
+    line = next(l for l in EXPORT_DOC.read_text().splitlines() if l.startswith("python -I -c") and "protocol_schedule" in l)
+    argv = shlex.split(line)
+    assert argv[0] == "python" and argv[-2:] == ["/path/to/export", "R1"]
+    return [sys.executable] + argv[1:-2]
+
+
+def test_docs_one_liner_reproduces_a_swift_exported_run(tmp_path):
+    """`Tests/Fixtures/export_run_plans` is written by the Swift export (ExportProtocolTests);
+    the documented command regenerates its run from the protocol and seed alone."""
+    run = subprocess.run(_doc_one_liner() + [str(EXPORT_FIXTURE), "R1"], cwd=WORKER_SRC,
+                         capture_output=True, text=True, check=True)
+    assert run.stdout.strip() == "True"
+
+    # A changed trial in the plan no longer reproduces: the check can fail.
+    tampered = tmp_path / "export"
+    shutil.copytree(EXPORT_FIXTURE, tampered)
+    plan_path = tampered / "runs" / "R1.plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["trials"][0]["restMs"] += 1
+    plan_path.write_text(json.dumps(plan))
+    run = subprocess.run(_doc_one_liner() + [str(tampered), "R1"], cwd=WORKER_SRC,
+                         capture_output=True, text=True, check=True)
+    assert run.stdout.strip() == "False"
