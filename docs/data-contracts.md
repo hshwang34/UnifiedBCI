@@ -189,7 +189,8 @@ Added for brief 005 without a format bump: older readers never open `protocols/`
   fails is skipped and counted, never fatal. A new version's parent is re-read from the
   store; a draft identical to any version of its lineage is refused. A stored version whose
   `lineageID` differs from its parent's is flagged ("mislinked") and grouped as a lineage of
-  its own, never merged into the one it claims.
+  its own, never merged into the one it claims; so is every version on a `basedOn` cycle and
+  every version more than 256 below its root. The chain is walked iteratively.
 - `recordings/<uuid>/runs/<runID>.plan.json` (`RunPlan`) is written atomically before the
   run's first cue and never replaced. It names the protocol id, version and content hash,
   the session seed, the run index and `seed` = session seed + run index (run seeds stay

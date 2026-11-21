@@ -6,6 +6,8 @@ extension ProjectStore {
     public static let protocolFileName = "protocol.json"
     public static let runsDirectoryName = "runs"
     public static let runPlanSuffix = ".plan.json"
+    /// Longest `basedOn` chain followed when grouping versions; longer counts as mislinked.
+    public static let maxLineageWalk = 256
 
     /// Saves a new protocol version from `draft` (decision #28: every value is editable, and
     /// editing makes a new version). `parent` nil starts a new lineage at v1. Otherwise the
@@ -85,23 +87,50 @@ extension ProjectStore {
             return r
         }
         let byID = Dictionary(records.map { ($0.protocolID, $0) }, uniquingKeysWith: { a, _ in a })
-        let mislinked = Set(records.filter { r in r.basedOn.flatMap { byID[$0] }.map { $0.lineageID != r.lineageID } ?? false }.map(\.protocolID))
-        // Effective lineage: a mislinked version starts its own; others follow their parent chain.
-        var lineages: [UUID: UUID] = [:]
-        func lineage(_ r: ProtocolRecord, depth: Int = 0) -> UUID {
-            if let known = lineages[r.protocolID] { return known }
-            let value: UUID
-            if mislinked.contains(r.protocolID) { value = r.protocolID }
-            else if depth < ProtocolRecord.maxVersion, let p = r.basedOn.flatMap({ byID[$0] }), p.protocolID != r.protocolID { value = lineage(p, depth: depth + 1) }
-            else { value = r.lineageID }
-            lineages[r.protocolID] = value
-            return value
+        var mislinked = Set(records.filter { r in r.basedOn.flatMap { byID[$0] }.map { $0.lineageID != r.lineageID } ?? false }.map(\.protocolID))
+        // Effective lineage, iteratively (a hostile project can't exhaust the stack): walk up
+        // the parent chain with a visited set until a known, root or mislinked version, then
+        // assign down the path. A mislinked version starts its own lineage. A cycle makes every
+        // version on the walk mislinked; so does sitting more than `maxLineageWalk` versions
+        // below its root (and everything below that). Every version is walked at most once.
+        var lineages: [UUID: (lineage: UUID, depth: Int)] = [:]
+        for r in records where lineages[r.protocolID] == nil {
+            var path: [ProtocolRecord] = []
+            var visited = Set<UUID>()
+            var cur = r
+            var top: (lineage: UUID, depth: Int)?
+            while true {
+                if let known = lineages[cur.protocolID] { top = known; break }
+                if mislinked.contains(cur.protocolID) { lineages[cur.protocolID] = (cur.protocolID, 0); top = (cur.protocolID, 0); break }
+                guard visited.insert(cur.protocolID).inserted else { break }      // cycle
+                path.append(cur)
+                guard let p = cur.basedOn.flatMap({ byID[$0] }) else {        // a root (or its parent is unreadable)
+                    path.removeLast()
+                    lineages[cur.protocolID] = (cur.lineageID, 0)
+                    top = (cur.lineageID, 0)
+                    break
+                }
+                cur = p
+            }
+            guard var above = top else {
+                for v in path { mislinked.insert(v.protocolID); lineages[v.protocolID] = (v.protocolID, Self.maxLineageWalk + 1) }
+                continue
+            }
+            for v in path.reversed() {
+                let depth = above.depth + 1
+                if depth > Self.maxLineageWalk {
+                    mislinked.insert(v.protocolID)
+                    above = (v.protocolID, depth)
+                } else {
+                    above = (above.lineage, depth)
+                }
+                lineages[v.protocolID] = above
+            }
         }
-        for r in records { _ = lineage(r) }
         let sorted = records.sorted {
-            ($0.name, lineages[$0.protocolID]!.uuidString, $0.version) < ($1.name, lineages[$1.protocolID]!.uuidString, $1.version)
+            ($0.name, lineages[$0.protocolID]!.lineage.uuidString, $0.version) < ($1.name, lineages[$1.protocolID]!.lineage.uuidString, $1.version)
         }
-        return ProtocolList(protocols: sorted, unreadable: ids.count - records.count, mislinked: mislinked, lineages: lineages)
+        return ProtocolList(protocols: sorted, unreadable: ids.count - records.count, mislinked: mislinked, lineages: lineages.mapValues(\.lineage))
     }
 
     /// How many stored run plans name each protocol version ("used in n runs"). Plans whose
@@ -185,7 +214,8 @@ extension ProjectStore {
 public struct ProtocolList: Sendable, Equatable {
     public var protocols: [ProtocolRecord]
     public var unreadable: Int
-    /// Versions whose `lineageID` differs from their stored parent's.
+    /// Versions whose `lineageID` differs from their stored parent's, or whose `basedOn` chain
+    /// loops or runs longer than `ProjectStore.maxLineageWalk`.
     public var mislinked: Set<UUID>
     var lineages: [UUID: UUID]
 

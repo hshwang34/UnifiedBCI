@@ -468,6 +468,39 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(usage, [v1.protocolID: 1])
     }
 
+    func testCyclicAndOverlongBasedOnChainsAreMislinked_withoutRecursing() async throws {
+        let store = try newStore()
+        let v1 = try await store.protocols().protocols[0]
+        func version(_ n: Int, basedOn parent: UUID, id: UUID = UUID(), lineage: UUID) throws -> ProtocolRecord {
+            var d = v1.draft
+            d.trialsPerClass = 1 + n % 100
+            var r = ProtocolRecord(draft: d, parent: v1, version: 2 + n % 9000, protocolID: id)
+            r.basedOn = parent; r.lineageID = lineage
+            r.contentHash = ProtocolRecord.contentHash(of: r)
+            return r
+        }
+        // A → B → A, both claiming one lineage.
+        let (a, b, cycle) = (UUID(), UUID(), UUID())
+        try ProjectStore.writeProtocol(try version(1, basedOn: b, id: a, lineage: cycle), in: store.directory)
+        try ProjectStore.writeProtocol(try version(2, basedOn: a, id: b, lineage: cycle), in: store.directory)
+        // A legitimate-looking chain far past the walk bound, hanging off v1.
+        var parent = v1.protocolID
+        var chain: [UUID] = []
+        for n in 0..<(ProjectStore.maxLineageWalk + 50) {
+            let r = try version(n, basedOn: parent, lineage: v1.lineageID)
+            try ProjectStore.writeProtocol(r, in: store.directory)
+            chain.append(r.protocolID); parent = r.protocolID
+        }
+        let list = try await store.protocols()
+        XCTAssertTrue(list.mislinked.isSuperset(of: [a, b]), "a cycle is mislinked")
+        XCTAssertEqual(list.lineage(of: list.protocols.first { $0.protocolID == a }!), a)
+        XCTAssertTrue(chain[ProjectStore.maxLineageWalk...].allSatisfy(list.mislinked.contains), "past the bound is mislinked")
+        XCTAssertFalse(list.mislinked.contains(chain[ProjectStore.maxLineageWalk - 1]), "at the bound is not")
+        XCTAssertFalse(list.mislinked.contains(chain[10]), "a short chain still groups with v1")
+        XCTAssertEqual(list.lineage(of: list.protocols.first { $0.protocolID == chain[10] }!), v1.lineageID)
+        XCTAssertFalse(list.mislinked.contains(v1.protocolID))
+    }
+
     // MARK: Marker row
 
     func testMarkerRowIsOptional_roundTrips_andMustBeAChunkRow() throws {
