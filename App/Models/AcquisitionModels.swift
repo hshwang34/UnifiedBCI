@@ -201,6 +201,7 @@ enum ChannelMapModel {
     static let withoutPositions = "Record without positions"
     static let withoutPositionsCaption = "Labels stay BrainFlow's names and the montage is stored as \"undeclared\"; no electrode positions are shown."
     static let undecided = "Confirm a channel map, or choose Record without positions."
+    static let declaredByFile = "Labels, reference and montage are pre-filled from what the Demo file declares. Confirm the map to use them."
 
     static func mismatch(mapChannels: Int, boardChannels: Int) -> String {
         "This channel map's \(mapChannels) channels don't match this board's \(boardChannels) EEG channels. Pick another map or Record without positions."
@@ -230,8 +231,10 @@ enum RecordGate {
     static let notStreaming = "Start the preview to record."
 
     static func disabledReason(state: AcquisitionSession.State, source: ConnectSource, board: BoardDescription?,
-                               configuration: RecordingManifest.BoardConfiguration?, map: ChannelMapChoice) -> String? {
+                               configuration: RecordingManifest.BoardConfiguration?, map: ChannelMapChoice,
+                               freeBytes: Int64? = nil) -> String? {
         guard state == .streaming else { return notStreaming }
+        if let freeBytes, freeBytes < RecordingWriter.minimumFreeBytes { return diskTooFull(freeBytes) }
         if let c = configuration, let problem = AcquisitionSession.problem(c, isDevice: source.isDevice) { return ConfigurationModel.message(problem) }
         if case .confirmed(let m) = map, let board, !m.fits(board) {
             return ChannelMapModel.mismatch(mapChannels: m.channels.count, boardChannels: board.eegChannelRows.count)
@@ -243,6 +246,25 @@ enum RecordGate {
     static func warning(source: ConnectSource, configuration: RecordingManifest.BoardConfiguration?) -> String? {
         guard case .serial = source, let c = configuration, !CytonRegisterReadback.hasRegisters(c.readback) else { return nil }
         return ConfigurationModel.gainNotConfirmed
+    }
+
+    /// Below the writer's own stop threshold Record would end at once (decision #33).
+    static func diskTooFull(_ freeBytes: Int64) -> String {
+        "Not enough disk space to record: \(HealthModel.megabytes(freeBytes)), and recording stops under \(RecordingWriter.minimumFreeBytes / 1_048_576) MB. Free some space first."
+    }
+
+    /// A `startRecording` that failed for a reason other than the session refusing it.
+    static func startFailed(_ error: Error) -> String {
+        let why: String
+        switch error {
+        case ProjectStoreError.io(_, let code) where code == ENOSPC: why = "the disk is full"
+        case ProjectStoreError.io(_, let code) where code == EACCES || code == EPERM: why = "this app may not write to the project folder"
+        case ProjectStoreError.io(_, let code) where code == EROFS: why = "the project is on a read-only disk"
+        case ProjectStoreError.io(_, let code): why = "the project folder could not be written (\(String(cString: strerror(code))))"
+        case ProjectStoreError.notAProject: why = "the project folder is no longer there"
+        default: why = "\(error)"
+        }
+        return "The recording could not start: \(why). Nothing was recorded."
     }
 
     /// What a refused `startRecording` says.
@@ -340,7 +362,7 @@ enum ConnectSheetModel {
     static let noPorts = "No serial ports found. Plug in the dongle and choose Refresh."
     static let refresh = "Refresh"
     static let close = "Close"
-    static let closeHelp = "Close the sheet; a connected board is disconnected first."
+    static let closeHelp = "Close the sheet. A board that isn't streaming yet is disconnected; a streaming one stays on the acquisition screen."
     static let demoMissing = "The Demo file isn't in this build (it is generated at build time with uv)."
     static let connecting = "Opening the board, sending the channel settings and reading them back…"
     static let pickSource = "Pick a source to connect."

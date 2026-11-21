@@ -78,8 +78,8 @@ struct ProjectWindow: View {
                 
         }
         // The Evaluate inspector belongs to Recordings only; the preference is kept.
-        .inspector(isPresented: Binding(get: { session.showInspector && session.section == .recordings },
-                                        set: { session.showInspector = $0 })) {
+        .inspector(isPresented: Binding(get: { session.showInspector && session.section == .recordings && !showsLive },
+                                        set: { shown in if session.section == .recordings && !showsLive { session.showInspector = shown } })) {
             EvaluateInspector(session: session)
                 .inspectorColumnWidth(min: 250, ideal: 280, max: 400)
         }
@@ -111,21 +111,29 @@ struct ProjectWindow: View {
             FixedToolbarSpacer()
             ToolbarItem(placement: .primaryAction) {
                 Button { session.showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.trailing") }
-                    .disabled(session.section != .recordings)
+                    .disabled(session.section != .recordings || showsLive)
                     .help(session.showInspector ? "Hide Inspector (⌥⌘I)" : "Show Inspector (⌥⌘I)")
             }
         }
         .focusedSceneValue(\.projectSession, session)
         #if DEBUG
-        // Debug-only until PR 6 (brief 004).
-        .sheet(item: $session.connectSheet) { model in
-            ConnectSheet(model: model) { session.connectSheet = nil }
+        // Debug-only until PR 6b (brief 004). Escape and Close go through the controller,
+        // so a board that never streamed is released.
+        .sheet(isPresented: $session.showsConnectSheet, onDismiss: { session.connectSheetClosed() }) {
+            if let live = session.live {
+                ConnectSheet(model: live) { session.showsConnectSheet = false }
+            }
         }
         #endif
         .frame(minWidth: 1100, minHeight: 640)
     }
 
+    private var showsLive: Bool { session.section == .recordings && session.liveShown && session.hasLiveRow }
+
     private var subtitle: String {
+        if showsLive, let live = session.live, let source = live.source {
+            return AcquisitionStateModel.statusLine(live.state, source: source, recording: live.isRecording, reconnects: live.snapshot.health.reconnects)
+        }
         switch session.section {
         case .recordings: return session.selectedRecording.map { RecordingDetailModel.title(for: $0.manifest) } ?? "Recordings"
         case .results:
@@ -193,23 +201,32 @@ private struct ContentColumn: View {
     var body: some View {
         switch session.section {
         case .recordings:
-            if session.recordings.isEmpty {
+            if session.recordings.isEmpty && !session.hasLiveRow {
                 ContentUnavailableView {
                     Label("No Recordings", systemImage: "waveform")
                 } description: {
                     Text(session.loadError ?? "Recording from hardware arrives in phase 2.").foregroundStyle(Theme.textSecondary)
                 }
             } else {
-                List(session.recordings, id: \.id, selection: $session.selectedRecordingID) { handle in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(RecordingDetailModel.title(for: handle.manifest))
-                        Text(RecordingDetailModel.summary(for: handle.manifest)).font(.caption).foregroundStyle(Theme.textSecondary)
+                List(selection: recordingSelection) {
+                    if session.hasLiveRow, let live = session.live, let source = live.source {
+                        Section(LiveScreenModel.rowTitle) {
+                            LiveRow(live: live, source: source).tag(LiveScreenModel.rowID)
+                        }
                     }
-                    .padding(.vertical, 2)
-                    .tag(handle.id)
-                    .contextMenu {
-                        Button("Evaluate") { session.selectedRecordingID = handle.id; session.evaluate() }
-                            .disabled(session.isRunning)
+                    Section(SidebarSection.recordings.title) {
+                        ForEach(session.recordings, id: \.id) { handle in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(RecordingDetailModel.title(for: handle.manifest))
+                                Text(RecordingDetailModel.summary(for: handle.manifest)).font(.caption).foregroundStyle(Theme.textSecondary)
+                            }
+                            .padding(.vertical, 2)
+                            .tag(handle.id)
+                            .contextMenu {
+                                Button("Evaluate") { session.selectedRecordingID = handle.id; session.liveShown = false; session.evaluate() }
+                                    .disabled(session.isRunning)
+                            }
+                        }
                     }
                 }
             }
@@ -247,9 +264,39 @@ private struct ContentColumn: View {
 }
 
 extension ContentColumn {
+    /// The Live row (a sentinel tag) and the recordings share one selection.
+    var recordingSelection: Binding<UUID?> {
+        Binding(get: { session.liveShown && session.hasLiveRow ? LiveScreenModel.rowID : session.selectedRecordingID },
+                set: { id in
+                    if id == LiveScreenModel.rowID { session.liveShown = true } else { session.liveShown = false; session.selectedRecordingID = id }
+                })
+    }
+
     func expanded(_ id: UUID) -> Binding<Bool> {
         Binding(get: { !session.collapsedResults.contains(id) },
                 set: { if $0 { session.collapsedResults.remove(id) } else { session.collapsedResults.insert(id) } })
+    }
+}
+
+/// The Recordings list's Live row: the source and the state in words.
+private struct LiveRow: View {
+    let live: ConnectController
+    let source: ConnectSource
+
+    var body: some View {
+        let lines = AcquisitionStateModel.statusLines(live.state, source: source, recording: live.isRecording,
+                                                      reconnects: live.snapshot.health.reconnects)
+        HStack(spacing: Theme.Space.s) {
+            Image(systemName: AcquisitionStateModel.symbol(live.state, recording: live.isRecording))
+                .foregroundStyle(live.isRecording ? Theme.danger : Theme.accentInk)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(source.title).lineLimit(1)
+                Text(lines.state).font(.caption).foregroundStyle(Theme.textSecondary).lineLimit(1)
+            }
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -338,7 +385,9 @@ private struct DetailColumn: View {
     var body: some View {
         switch session.section {
         case .recordings:
-            if let handle = session.selectedRecording {
+            if session.liveShown, session.hasLiveRow, let live = session.live {
+                AcquisitionView(session: session, live: live)
+            } else if let handle = session.selectedRecording {
                 RecordingDetailView(model: RecordingDetailModel(manifest: handle.manifest, events: session.eventsByRecording[handle.id] ?? []),
                                     info: ExampleInfo(manifest: handle.manifest), session: session,
                                     tab: Binding(get: { session.recordingTab }, set: { session.recordingTab = $0 }))

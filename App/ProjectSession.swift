@@ -111,15 +111,74 @@ final class ProjectSession: Identifiable {
     @ObservationIgnored private var qualityModels: [UUID: QualityModel] = [:]
     /// Results whose reruns the user folded away in the list (all start expanded).
     var collapsedResults: Set<UUID> = []
-    /// The open Connect sheet (brief 004 PR 5); Debug-only entry points until PR 6.
-    var connectSheet: ConnectController?
+    // MARK: Live acquisition (brief 004)
 
-    #if DEBUG
-    // Debug-only until PR 6 wires New Recording… and the welcome button.
-    func showConnectSheet() {
-        if connectSheet == nil { connectSheet = ConnectController(store: store, projectDirectory: url) }
+    /// This project's live board: the Connect sheet, then the acquisition screen under
+    /// Recordings (decision #30). Nil until New Recording…; one per project.
+    private(set) var live: ConnectController?
+    var showsConnectSheet = false
+    /// The Recordings list's Live row is selected (the acquisition screen is the detail).
+    var liveShown = false {
+        didSet { if liveShown, let n = notice, !n.isPersistent { notice = nil } }
     }
-    #endif
+
+    /// The Live row exists while a board is connected or connecting through the screen.
+    var hasLiveRow: Bool { live.map { $0.hasStreamed && !$0.isClosed && $0.state != .disconnected } ?? false }
+    /// The list reload after a live recording ended (tests and snapshots wait on it).
+    @ObservationIgnored private(set) var liveReload: Task<Void, Never>?
+    var isRecording: Bool { live?.isRecordingNow ?? false }
+
+    /// New Recording… and the welcome screen's Connect hardware: the Connect sheet, or the
+    /// acquisition screen when a board is already streaming.
+    func showConnectSheet() {
+        guard !isClosing else { return }
+        if live == nil || live?.isClosed == true { makeLive() }
+        section = .recordings
+        showsConnectSheet = true
+    }
+
+    @discardableResult private func makeLive() -> ConnectController { wire(ConnectController(store: store, projectDirectory: url)) }
+
+    /// Hooks a controller to this project: the sheet hands over to the screen when the
+    /// stream starts, and the list reloads when a recording ends. Tests pass their own.
+    @discardableResult
+    func wire(_ c: ConnectController) -> ConnectController {
+        live = c
+        c.onStreamStarted = { [weak self] in
+            guard let self else { return }
+            self.showsConnectSheet = false
+            self.section = .recordings
+            self.liveShown = true
+        }
+        c.onRecordingEnded = { [weak self] _ in
+            guard let self else { return }
+            let previous = self.liveReload
+            self.liveReload = Task { await previous?.value; await self.reload() }
+        }
+        return c
+    }
+
+    /// The sheet went away (Close, Escape, or the stream started).
+    func connectSheetClosed() {
+        showsConnectSheet = false
+        if live?.isClosed == true { live = nil; liveShown = false }
+    }
+
+    /// The acquisition screen's Disconnect: a recording ends `stopped`, the board goes.
+    func endLive() async {
+        guard let live else { return }
+        await live.close()
+        if self.live === live { self.live = nil }
+        liveShown = false
+    }
+
+    /// "Show Recording": selects a recording the live board made.
+    func showRecording(_ id: UUID) {
+        liveShown = false
+        section = .recordings
+        selectedRecordingID = id
+    }
+
 
     private var defaultsTask: Task<Void, Never>?
     private var resultLoad: Task<Void, Never>?
@@ -259,7 +318,7 @@ final class ProjectSession: Identifiable {
         return false
     }
 
-    var canEvaluate: Bool { selectedRecordingID != nil && !isRunning }
+    var canEvaluate: Bool { selectedRecordingID != nil && !isRunning && !liveShown }
 
     var progress: ProgressDisplay? {
         guard case .running(let p) = runner.state else { return nil }
@@ -478,7 +537,8 @@ final class ProjectSession: Identifiable {
         resultLoad?.cancel()
         recipesTask?.cancel()
         isClosing = true
-        await connectSheet?.close()
+        // Stops a recording (`stopped`, partial chunk flushed) and releases the board.
+        await live?.close()
         // The inspection worker stops alongside the evaluation, inside the same budget.
         async let inspection: Void = inspector.shutdown()
         await runner.stop(within: Self.stopLimit)
