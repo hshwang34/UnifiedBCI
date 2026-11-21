@@ -12,7 +12,7 @@ public struct RecordingHandle: Sendable {
 
     init(directory: URL) throws {
         let url = directory.appendingPathComponent(ProjectStore.recordingFileName)
-        guard let data = FileManager.default.contents(atPath: url.path) else {
+        guard let data = BoundedRead.data(at: url, maxBytes: BoundedRead.recordingManifestBytes) else {
             throw ProjectStoreError.notAProject(directory)
         }
         self.directory = directory
@@ -107,7 +107,10 @@ public struct RecordingHandle: Sendable {
 
     public func events() throws -> [EventRecord] {
         let url = directory.appendingPathComponent(ProjectStore.eventsFileName)
-        guard let data = FileManager.default.contents(atPath: url.path) else { return [] }
+        guard BoundedRead.exists(url) else { return [] }
+        guard let data = BoundedRead.data(at: url, maxBytes: BoundedRead.eventsBytes) else {
+            throw ProjectStoreError.invalidManifest("\(ProjectStore.eventsFileName) is not a regular file of at most 64 MB")
+        }
         let decoder = ContractJSON.decoder()
         return try data.split(separator: UInt8(ascii: "\n")).compactMap { line in
             line.isEmpty ? nil : try decoder.decode(EventRecord.self, from: line)

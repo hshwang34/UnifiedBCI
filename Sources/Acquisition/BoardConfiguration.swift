@@ -78,8 +78,9 @@ public enum CytonRegisterReadback {
     static func isSuccess(_ reply: String) -> Bool { reply.hasPrefix("Success") }
 
     /// The first channel whose settings command was not acknowledged with a success reply.
+    /// Fails closed: on a real device a missing `acknowledged` key counts as not acknowledged.
     public static func unacknowledged(_ requested: [String: String]) -> Int? {
-        (1...DefaultChannelSettings.channelCount).first { requested[DefaultChannelSettings.key($0) + ".acknowledged"] == "no" }
+        (1...DefaultChannelSettings.channelCount).first { requested[DefaultChannelSettings.key($0) + ".acknowledged"] != "yes" }
     }
 
     /// Per-channel values (registers and acknowledgements) without the raw texts, to tell

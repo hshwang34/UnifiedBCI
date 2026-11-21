@@ -147,7 +147,7 @@ public actor ChunkWriter {
     /// space back and `verify` finds nothing unlisted. Returns the listed chunk count.
     func reconcileWithDisk() -> Int {
         let url = directory.appendingPathComponent(ProjectStore.recordingFileName)
-        if let data = FileManager.default.contents(atPath: url.path),
+        if let data = BoundedRead.data(at: url, maxBytes: BoundedRead.recordingManifestBytes),
            let disk = try? ContractJSON.decoder().decode(RecordingManifest.self, from: data) {
             manifest.chunks = disk.chunks
         }
