@@ -124,11 +124,10 @@ public final class SignalWindowRunner {
         } catch let error as WorkerError {
             guard state == .loading(request) else { return }
             // Our own cancel: the completion handler restarts the request if still wanted.
-            if error.code == "cancelled" {
-                if !inFlightCancelled { state = .idle }
-                return
-            }
-            let gone = ["worker_exited", "launch_failed", "ready_timeout", "protocol_mismatch", "bad_state", "write_failed", "timeout"].contains(error.code)
+            if error.code == "cancelled", inFlightCancelled { return }
+            // A cancel we never sent (the worker shutting down) is the worker going away, not
+            // "nothing to show": idle would leave the old trace up with no spinner or Retry.
+            let gone = ["cancelled", "worker_exited", "launch_failed", "ready_timeout", "protocol_mismatch", "bad_state", "write_failed", "timeout"].contains(error.code)
             state = gone ? .unavailable(request, reason: error.message) : .failed(request, reason: error.description)
         } catch {
             guard state == .loading(request) else { return }

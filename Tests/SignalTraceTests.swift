@@ -131,7 +131,7 @@ final class SignalTraceTests: XCTestCase {
         let second = try await source.waitForStarted(2)
         XCTAssertEqual(second.startS, 0)
         source.answer(second)
-        while runner.isBusy { await Task.yield() }
+        try await waitUntilIdle(runner)
         XCTAssertEqual(runner.state, .ready(a))
         XCTAssertEqual(runner.window?.startS, 0)
         XCTAssertEqual(source.started.map(\.startS), [0, 0], "B was never fetched")
@@ -144,12 +144,59 @@ final class SignalTraceTests: XCTestCase {
         let a = SignalWindowRunner.Request(recordingID: UUID(), segment: 0, startS: 0)
         runner.load(a)
         source.fail(try await source.waitForPending(1), WorkerError(code: "worker_exited", message: "gone"))
-        while runner.isBusy { await Task.yield() }
+        try await waitUntilIdle(runner)
         XCTAssertEqual(runner.state, .unavailable(a, reason: "gone"))
         runner.load(a)
         source.answer(try await source.waitForPending(1))
-        while runner.isBusy { await Task.yield() }
+        try await waitUntilIdle(runner)
         XCTAssertEqual(runner.state, .ready(a))
+    }
+
+    /// The worker cancelling a request we never cancelled (it is shutting down) must not
+    /// leave the old trace up as if nothing happened: it is unavailable, with Retry.
+    func testWorkerSideCancelIsUnavailableAndRetries() async throws {
+        let base = try SignalWindowTests.fixture("signal_window_tiny")
+        let source = FakeWindowSource(base: base)
+        let runner = SignalWindowRunner(inspector: source)
+        let a = SignalWindowRunner.Request(recordingID: UUID(), segment: 0, startS: 0)
+        runner.load(a)
+        source.fail(try await source.waitForPending(1), WorkerError(code: "cancelled", message: "worker shutting down"))
+        try await waitUntilIdle(runner)
+        XCTAssertEqual(runner.state, .unavailable(a, reason: "worker shutting down"))
+        XCTAssertTrue(source.cancelled.isEmpty, "the runner sent no cancel")
+        // Retry (the banner calls loadTrace → load) asks for the same window again.
+        runner.load(a)
+        source.answer(try await source.waitForPending(1))
+        try await waitUntilIdle(runner)
+        XCTAssertEqual(runner.state, .ready(a))
+        XCTAssertEqual(source.started.count, 2)
+    }
+
+    /// A refusal (`.failed`) is retried on the next load of the same window, as the banner's Retry does.
+    func testRefusedWindowIsRetriedOnTheNextLoad() async throws {
+        let base = try SignalWindowTests.fixture("signal_window_tiny")
+        let source = FakeWindowSource(base: base)
+        let runner = SignalWindowRunner(inspector: source)
+        let a = SignalWindowRunner.Request(recordingID: UUID(), segment: 0, startS: 0)
+        runner.load(a)
+        let refusal = WorkerError(code: "bad_params", message: "no such segment")
+        source.fail(try await source.waitForPending(1), refusal)
+        try await waitUntilIdle(runner)
+        XCTAssertEqual(runner.state, .failed(a, reason: refusal.description))
+        runner.load(a)
+        source.answer(try await source.waitForPending(1))
+        try await waitUntilIdle(runner)
+        XCTAssertEqual(runner.state, .ready(a))
+    }
+
+    /// Bounded, so a runner that never settles fails the test instead of hanging CI.
+    private func waitUntilIdle(_ runner: SignalWindowRunner, file: StaticString = #filePath, line: UInt = #line) async throws {
+        for _ in 0..<10_000 {
+            if !runner.isBusy { return }
+            await Task.yield()
+        }
+        XCTFail("runner still busy", file: file, line: line)
+        throw WorkerError(code: "test", message: "runner still busy")
     }
 
     // MARK: Runner (real worker)
