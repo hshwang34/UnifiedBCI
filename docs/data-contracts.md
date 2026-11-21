@@ -84,6 +84,19 @@ open. Append-only files (`events.jsonl`, `predictions.jsonl`) are appended with 
 - Chunks are ~1 s of samples (125 at 125 Hz) so forced termination loses ≤ 1 s plus whatever
   BrainFlow's ring buffer held. That buffered loss is reported as a gap with evidence
   `process_terminated`, not silently dropped.
+- **The one rewrite of a committed recording manifest.** A live writer holds
+  `recordings/<uuid>/.writer.lock` (`flock`, created before the manifest, removed when the
+  writer finishes). On open, a recording whose last segment has no `endReason` and whose
+  lock is free belonged to a killed writer: `ProjectStore.open` takes the lock, re-reads the
+  manifest, and closes each open segment with `endReason: process_terminated`,
+  `endedAtMonotonicNanos` = its last chunk's drain time, and a `process_terminated` gap after
+  its last committed sample. If the writer was alive but could not close the segment (a disk
+  so full the manifest rewrite failed), the lock file holds its note (`disk_full <n>`) and the
+  segment is closed with that reason and `uncommittedSampleCount: n` instead. Chunk entries and
+  everything else are left byte-for-byte as committed; this is the only post-hoc change a
+  committed recording ever gets. `StreamSegment.uncommittedSampleCount` (optional) counts
+  samples received for a segment but never committed (disk full, writer backlog), so nothing
+  is dropped silently.
 
 ## Timing semantics
 
