@@ -774,7 +774,7 @@ final class ProjectSession: Identifiable {
     func qualityModel(for id: UUID) -> QualityModel? {
         if let m = qualityModels[id] { return m }
         guard let report = inspector.report(for: id) else { return nil }
-        let m = QualityModel(report: report)
+        let m = QualityModel(report: report, segmentStarts: QualityModel.segmentStarts(recordings.first { $0.id == id }?.manifest.segments ?? []))
         qualityModels[id] = m
         return m
     }
