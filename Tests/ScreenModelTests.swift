@@ -27,17 +27,16 @@ final class ScreenModelTests: XCTestCase {
 
     // MARK: Criterion 1 — welcome
 
-    func testWelcomeActions_hardwareDisabledWithReason() {
+    func testWelcomeActions_allEnabled() {
         let actions = WelcomeModel.actions
         // UI spec §2 order: the no-hardware path first.
         XCTAssertEqual(actions.map(\.kind), [.example, .open, .hardware])
         XCTAssertTrue(actions.first { $0.kind == .example }!.isEnabled)
         XCTAssertTrue(actions.first { $0.kind == .open }!.isEnabled)
+        // Brief 004: Connect hardware is live; it opens or creates a project first.
         let hardware = try! XCTUnwrap(actions.first { $0.kind == .hardware })
-        XCTAssertFalse(hardware.isEnabled)
-        let reason = try! XCTUnwrap(hardware.disabledReason)
-        XCTAssertFalse(reason.isEmpty)
-        XCTAssertTrue(reason.contains("phase 2"), reason)
+        XCTAssertTrue(hardware.isEnabled)
+        XCTAssertNil(hardware.disabledReason)
         XCTAssertEqual(hardware.symbol, "cable.connector")
         XCTAssertTrue(actions.allSatisfy { !$0.caption.isEmpty })
     }

@@ -114,6 +114,7 @@ enum LiveScreenModel {
     static let disconnectHelp = "Stop streaming and release the board."
     static let showRecording = "Show Recording"
     static let recordingBadge = "Recording"
+    static let emptyRecordings = "No recordings yet. Choose New Recording… (⌥⌘N) to record from a board, the synthetic board or the Demo."
     static let disconnectQuestion = "Stop recording and disconnect?"
     static let disconnectInfo = "Everything recorded so far is saved; the recording ends here as stopped and the board is released."
     static let disconnectConfirm = "Stop Recording and Disconnect"
@@ -175,6 +176,39 @@ extension AcquisitionStateModel {
     }
 }
 
+/// What closing a project window asks first.
+enum CloseConfirmation: Equatable {
+    case evaluation, recording
+
+    var message: String {
+        switch self {
+        case .evaluation: return "Stop the evaluation and close?"
+        case .recording: return "Stop recording and close?"
+        }
+    }
+
+    var info: String {
+        switch self {
+        case .evaluation: return "Nothing will be saved."
+        case .recording: return "Everything recorded so far is saved; the recording ends here as stopped and the board is released."
+        }
+    }
+
+    var confirm: String {
+        switch self {
+        case .evaluation: return "Stop and Close"
+        case .recording: return "Stop Recording and Close"
+        }
+    }
+
+    var keep: String {
+        switch self {
+        case .evaluation: return "Keep Running"
+        case .recording: return "Keep Recording"
+        }
+    }
+}
+
 extension RecordingDetailModel {
     /// A recording made in this app has no subject; it is named by its source and start time.
     static func liveTitle(for m: RecordingManifest, timeZone: TimeZone = .current) -> String? {
@@ -194,3 +228,11 @@ extension RecordingDetailModel {
     }
 }
 
+/// Welcome ▸ Connect hardware with no project open (decision #30).
+enum ConnectHardwareModel {
+    static let needsProject = "Recordings are saved in a project"
+    static let needsProjectInfo = "Create a project or open one, then connect a board, the synthetic board or the Demo."
+    static let newProject = "New Project…"
+    static let openProject = "Open Project…"
+    static let cancel = "Cancel"
+}

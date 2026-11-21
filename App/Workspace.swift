@@ -70,6 +70,9 @@ final class Workspace {
     @ObservationIgnored private var windows: [URL: WeakWindow] = [:]
     @ObservationIgnored private var closeGuards: [URL: CloseGuard] = [:]
     @ObservationIgnored private var closeObservers: [URL: NSObjectProtocol] = [:]
+    @ObservationIgnored private var keyObservers: [URL: NSObjectProtocol] = [:]
+    /// Project windows in the order they last became key, most recent last.
+    @ObservationIgnored private(set) var activeOrder: [URL] = []
     @ObservationIgnored private let recentStore: RecentDocuments
 
     init(recents: RecentDocuments, launch: WorkerLaunch?) {
@@ -169,6 +172,8 @@ final class Workspace {
         }
         windows[key] = nil
         closeGuards[key] = nil
+        activeOrder.removeAll { $0 == key }
+        if let observer = keyObservers.removeValue(forKey: key) { NotificationCenter.default.removeObserver(observer) }
         if let observer = closeObservers.removeValue(forKey: key) { NotificationCenter.default.removeObserver(observer) }
         if let teardown = closing[key] { return await teardown.value }
         guard let session = sessions.removeValue(forKey: key) else { return }
@@ -225,6 +230,11 @@ final class Workspace {
         closeGuards[key] = closeGuard
         let closingID = ObjectIdentifier(window)
         if let old = closeObservers.removeValue(forKey: key) { NotificationCenter.default.removeObserver(old) }
+        noteActive(key)
+        if let old = keyObservers.removeValue(forKey: key) { NotificationCenter.default.removeObserver(old) }
+        keyObservers[key] = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.noteActive(key) }
+        }
         closeObservers[key] = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let registered = self.windows[key]?.window, ObjectIdentifier(registered) == closingID else { return }
@@ -240,9 +250,15 @@ final class Workspace {
 
     /// Whether closing this project's window must ask first: a run is in flight and can
     /// still be cancelled. (While storing, closing waits for the commit instead.)
-    static func closeNeedsConfirmation(_ session: ProjectSession?) -> Bool {
-        guard let session, session.isRunning else { return false }
-        return session.runner.state != .running(.storing)
+    static func closeNeedsConfirmation(_ session: ProjectSession?) -> Bool { closeConfirmation(session) != nil }
+
+    /// What closing must ask first: a recording in progress (brief 004: stop it first), else
+    /// a cancellable evaluation.
+    static func closeConfirmation(_ session: ProjectSession?) -> CloseConfirmation? {
+        guard let session else { return nil }
+        if session.isRecording { return .recording }
+        guard session.isRunning, session.runner.state != .running(.storing) else { return nil }
+        return .evaluation
     }
 
     // MARK: Recents
@@ -288,7 +304,50 @@ final class Workspace {
         }
     }
 
-    func openPanel() {
+    /// Welcome ▸ Connect hardware (decision #30): the Connect sheet in the frontmost open
+    /// project; with none open, asks to create or open one first, then shows the sheet there.
+    func connectHardware() {
+        if let session = frontmostSession() {
+            show(session.url)
+            session.showConnectSheet()
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = ConnectHardwareModel.needsProject
+        alert.informativeText = ConnectHardwareModel.needsProjectInfo
+        alert.addButton(withTitle: ConnectHardwareModel.newProject)
+        alert.addButton(withTitle: ConnectHardwareModel.openProject)
+        alert.addButton(withTitle: ConnectHardwareModel.cancel)
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: newProjectPanel { $0.showConnectSheet() }
+        case .alertSecondButtonReturn: openPanel { $0.showConnectSheet() }
+        default: break
+        }
+    }
+
+    /// A project window became key: it is now the most recently active one.
+    func noteActive(_ url: URL) {
+        let key = Self.canonical(url)
+        activeOrder.removeAll { $0 == key }
+        activeOrder.append(key)
+    }
+
+    /// The open project whose window was most recently active (Welcome is key while its
+    /// button is clicked, so "frontmost" means the last project window that was key).
+    func frontmostSession() -> ProjectSession? {
+        activeOrder.reversed().lazy.compactMap { self.sessions[$0] }.first
+    }
+
+    /// Before quitting: every Connect sheet goes away (AppKit won't quit past an attached
+    /// sheet), and a Connect in flight is released by the shutdown that follows.
+    func dismissSheetsForQuit() {
+        for session in sessions.values { session.showsConnectSheet = false }
+        for window in windows.values.compactMap(\.window) {
+            if let sheet = window.attachedSheet { window.endSheet(sheet) }
+        }
+    }
+
+    func openPanel(then: ((ProjectSession) -> Void)? = nil) {
         let panel = NSOpenPanel()
         panel.title = "Open Project"
         panel.prompt = "Open"
@@ -298,10 +357,13 @@ final class Workspace {
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.bciProject]
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await open(url) }
+        Task {
+            await open(url)
+            if let then, let s = sessions[Self.canonical(url)] { then(s) }
+        }
     }
 
-    func newProjectPanel() {
+    func newProjectPanel(then: ((ProjectSession) -> Void)? = nil) {
         let panel = NSSavePanel()
         panel.title = "New Project"
         panel.prompt = "Create"
@@ -316,6 +378,7 @@ final class Workspace {
                 let session = await adopt(store)
                 noteRecent(session.url)
                 show(session.url)
+                then?(session)
             } catch ProjectStoreError.alreadyExists {
                 Self.alert("A file named “\(url.lastPathComponent)” already exists.", info: "Projects are never overwritten. Choose a new name.")
             } catch {
@@ -468,18 +531,20 @@ final class CloseGuard: NSObject, NSWindowDelegate {
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         let current = session()
-        guard Workspace.closeNeedsConfirmation(current), let current else {
+        guard let ask = Workspace.closeConfirmation(current), let current else {
             return original?.windowShouldClose?(sender) ?? true
         }
         let alert = NSAlert()
-        alert.messageText = "Stop the evaluation and close?"
-        alert.informativeText = "Nothing will be saved."
-        alert.addButton(withTitle: "Stop and Close")
-        alert.addButton(withTitle: "Keep Running")
+        alert.messageText = ask.message
+        alert.informativeText = ask.info
+        alert.addButton(withTitle: ask.confirm)
+        alert.addButton(withTitle: ask.keep)
         alert.beginSheetModal(for: sender) { response in
             guard response == .alertFirstButtonReturn else { return }
             MainActor.assumeIsolated {
-                current.cancel()
+                // Closing runs `ProjectSession.shutdown`: the recording ends `stopped`, the
+                // board is released, and an evaluation is cancelled.
+                if ask == .evaluation { current.cancel() }
                 sender.close()
             }
         }

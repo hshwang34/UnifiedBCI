@@ -76,6 +76,29 @@ final class LiveScreenTests: XCTestCase {
         XCTAssertNil(RecordingEndModel.diskWarning(hoursLeft: 3, freeBytes: 1_000_000_000))
     }
 
+    func testCloseConfirmationCopy() {
+        XCTAssertEqual(CloseConfirmation.recording.message, "Stop recording and close?")
+        XCTAssertEqual(CloseConfirmation.recording.confirm, "Stop Recording and Close")
+        XCTAssertEqual(CloseConfirmation.recording.keep, "Keep Recording")
+        XCTAssertTrue(CloseConfirmation.recording.info.contains("ends here as stopped"))
+        XCTAssertEqual(CloseConfirmation.evaluation.message, "Stop the evaluation and close?")
+        XCTAssertEqual(CloseConfirmation.evaluation.info, "Nothing will be saved.")
+    }
+
+    func testWelcomeHardwareEnabled_introAndPlaceholderNoLongerSayPhase2() {
+        let hardware = WelcomeModel.actions.first { $0.kind == .hardware }!
+        XCTAssertTrue(hardware.isEnabled)
+        XCTAssertFalse(hardware.caption.contains("phase 2"))
+        XCTAssertTrue(hardware.caption.contains("Opens a project first"))
+        XCTAssertFalse(IntroModel.steps[3].title.contains("phase 2"))
+        XCTAssertFalse(IntroModel.steps[3].body.contains("phase 2"))
+        XCTAssertFalse(LiveScreenModel.emptyRecordings.contains("phase 2"))
+        XCTAssertTrue(LiveScreenModel.emptyRecordings.contains("New Recording…"))
+        // Protocols and Live Test still arrive later (briefs 005 / 006).
+        XCTAssertTrue(SidebarSection.protocols.placeholder!.contains("arrive"))
+        XCTAssertTrue(SidebarSection.liveTest.placeholder!.contains("arrives"))
+    }
+
     func testLiveRecordingTitle_namesSourceAndStart() throws {
         var m = try ContractJSON.decoder().decode(RecordingManifest.self, from: Data(contentsOf: fixtureManifest()))
         m.createdAt = Date(timeIntervalSince1970: 1_763_663_400)            // 2025-11-20 18:30 UTC
@@ -278,9 +301,11 @@ final class LiveScreenTests: XCTestCase {
         await live.perform(.record)
         XCTAssertTrue(live.isRecording)
         XCTAssertNotNil(live.recordingStartedAt)
+        XCTAssertEqual(Workspace.closeConfirmation(session), .recording)
         try await Task.sleep(for: .seconds(5))
         await live.perform(.stopRecording)
         XCTAssertFalse(live.isRecording)
+        XCTAssertNil(Workspace.closeConfirmation(session))
         XCTAssertEqual(live.state, .streaming, "Stop recording keeps the preview running")
         let id = try XCTUnwrap(live.lastRecordingID)
         XCTAssertEqual(live.recordMessage?.danger, false)
@@ -314,6 +339,7 @@ final class LiveScreenTests: XCTestCase {
         live.recordWithoutPositions()
         await live.perform(.record)
         let recording = try XCTUnwrap(live.snapshot.recordingID)
+        XCTAssertTrue(Workspace.closeNeedsConfirmation(session), "closing asks to stop first")
         try await Task.sleep(for: .seconds(2))
         // What "Stop Recording and Close" (and quitting, through closeAll) runs.
         await workspace.closeAll()
@@ -338,5 +364,58 @@ final class LiveScreenTests: XCTestCase {
         let next = try XCTUnwrap(session.live)
         XCTAssertFalse(next === live, "a fresh controller after a closed one")
         await session.endLive()
+    }
+
+    // MARK: Entry points (6b)
+
+    func testConnectHardware_usesTheMostRecentlyActiveProject() async throws {
+        let workspace = Workspace(recents: InMemoryRecentDocuments(), launch: nil)
+        let a = await workspace.adopt(try ProjectStore.create(at: scratch.appendingPathComponent("a.bciproj"), name: "a"))
+        let b = await workspace.adopt(try ProjectStore.create(at: scratch.appendingPathComponent("b.bciproj"), name: "b"))
+        XCTAssertNil(workspace.frontmostSession(), "no project window has been active yet")
+        workspace.noteActive(a.url)
+        workspace.noteActive(b.url)
+        XCTAssertTrue(workspace.frontmostSession() === b)
+        workspace.noteActive(a.url)
+        XCTAssertTrue(workspace.frontmostSession() === a)
+        await workspace.close(a.url)
+        XCTAssertTrue(workspace.frontmostSession() === b, "a closed window falls back to the previous one")
+        await workspace.closeAll()
+    }
+
+    func testQuitWithTheSheetOpenMidConnect_dismissesTheSheetAndReleasesTheBoard() async throws {
+        let url = scratch.appendingPathComponent("q.bciproj")
+        let store = try ProjectStore.create(at: url, name: "q")
+        let workspace = Workspace(recents: InMemoryRecentDocuments(), launch: nil)
+        let session = await workspace.adopt(store)
+        let live = session.wire(ConnectController(store: store, projectDirectory: url, demoFile: nil, scan: { [] }))
+        session.showsConnectSheet = true
+        live.selectedID = ConnectSource.synthetic.id
+        let connect = Task { await live.perform(.connect) }
+        while live.session == nil { await Task.yield() }
+        // What ⌘Q runs: the sheets go, then every project shuts down.
+        workspace.dismissSheetsForQuit()
+        XCTAssertFalse(session.showsConnectSheet)
+        let started = ContinuousClock.now
+        await workspace.closeAll()
+        await connect.value
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(5), "the quit never hangs")
+        XCTAssertTrue(session.isShutDown)
+        XCTAssertEqual(live.session?.snapshot.state, .disconnected, "the board opened mid-connect is released")
+    }
+
+    func testNewRecordingWhileRecording_showsTheLiveScreen_notTheSheet() async throws {
+        let (workspace, session, live, _) = try await liveProject()
+        await live.perform(.startPreview)
+        live.recordWithoutPositions()
+        await live.perform(.record)
+        session.liveShown = false
+        session.section = .results
+        session.showConnectSheet()
+        XCTAssertFalse(session.showsConnectSheet)
+        XCTAssertTrue(session.liveShown)
+        XCTAssertEqual(session.section, .recordings)
+        XCTAssertTrue(session.live === live)
+        await workspace.closeAll()
     }
 }

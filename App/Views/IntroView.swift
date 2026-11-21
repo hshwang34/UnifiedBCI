@@ -194,7 +194,7 @@ struct IntroView: View {
                  detail: "Next, on the welcome screen · PhysioNet S001 · 16 channels")
         case .hardwarePhase2:
             chip(id: "chip0", symbol: "cable.connector", title: "Connect hardware",
-                 detail: "OpenBCI Cyton + Daisy · phase 2")
+                 detail: "OpenBCI Cyton + Daisy · or the Demo, no kit needed")
         }
     }
 

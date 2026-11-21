@@ -94,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// storing its result finishes the commit, and each worker exits (the worker also
     /// exits on its own when its parent dies, so a force-quit leaves nothing behind).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        workspace.dismissSheetsForQuit()
         guard !workspace.sessions.isEmpty || workspace.isClosingAny else { return .terminateNow }
         var replied = false
         func reply() {
@@ -135,6 +136,20 @@ struct WorkspaceCommands: Commands {
             Divider()
             Button("Explore Example…") { workspace.exploreExamplePanel() }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
+            Divider()
+            // Brief 004: the Connect sheet in this project (decision #30).
+            Button(LiveScreenModel.newRecording) { session?.showConnectSheet() }
+                .keyboardShortcut("n", modifiers: [.command, .option])
+                .disabled(session == nil)
+        }
+        // ⌘Q with the Connect sheet open: close the sheet first, then quit (the shutdown
+        // releases a board mid-connect and ends a recording `stopped`).
+        CommandGroup(replacing: .appTermination) {
+            Button("Quit BCI Workspace") {
+                workspace.dismissSheetsForQuit()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
+            }
+            .keyboardShortcut("q")
         }
         CommandGroup(replacing: .importExport) {
             Button("Export Result…") { if let session { workspace.exportPanel(for: session) } }
@@ -161,9 +176,6 @@ struct WorkspaceCommands: Commands {
         #if DEBUG
         CommandMenu("Debug") {
             Button("Phase 0 Feasibility Checks") { openWindow(id: "feasibility") }
-            // Brief 004 PR 5: the Connect sheet, until PR 6 wires New Recording… for real.
-            Button("New Recording…") { session?.showConnectSheet() }
-                .disabled(session == nil)
         }
         #endif
     }
