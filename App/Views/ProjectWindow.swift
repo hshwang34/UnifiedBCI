@@ -127,6 +127,19 @@ struct ProjectWindow: View {
         .sheet(item: $session.protocolEditor) { editor in
             ProtocolEditorSheet(editor: editor, save: { await session.saveProtocolEditor() }, cancel: { session.protocolEditor = nil })
         }
+        // Brief 006: Freeze for live use… and Replay…, through one sheet.
+        .sheet(item: Bindable(session.frozen).sheet, onDismiss: { session.frozen.sheetClosed(); session.replaySheetClosed() }) { kind in
+            switch kind {
+            case .freeze:
+                if let draft = session.frozen.freezeDraft {
+                    FreezeSheet(session: session, draft: Binding(get: { session.frozen.freezeDraft ?? draft }, set: { session.frozen.updateFreezeDraft($0) }))
+                }
+            case .replay:
+                if let draft = session.frozen.replayDraft {
+                    ReplaySheet(session: session, draft: Binding(get: { session.frozen.replayDraft ?? draft }, set: { session.frozen.updateReplayDraft($0) }))
+                }
+            }
+        }
         .frame(minWidth: 1100, minHeight: 640)
     }
 
@@ -244,6 +257,8 @@ private struct ContentColumn: View {
                             .contextMenu {
                                 Button("Evaluate") { session.selectedRecordingID = handle.id; session.liveShown = false; session.evaluate() }
                                     .disabled(session.isRunning)
+                                Button(ReplayCopy.replayButton) { session.showReplay(recording: handle.id) }
+                                    .disabled(session.frozen.models.isEmpty || session.frozen.runner.isBusy)
                             }
                         }
                     }
@@ -358,43 +373,51 @@ private struct ResultRow: View {
     }
 }
 
-/// The two recipes phase 1 runs, read-only, described by the worker.
+/// Frozen models (brief 006), then the two recipes, read-only, described by the worker.
 private struct PipelinesList: View {
     let session: ProjectSession
 
     var body: some View {
-        switch session.defaults {
-        case .loading:
-            ProgressView("Asking the analysis worker…").frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .unavailable(let why):
-            ContentUnavailableView {
-                Label("Pipelines unavailable", systemImage: "exclamationmark.octagon")
-            } description: {
-                Text("The analysis worker did not describe its recipes. \(why)").foregroundStyle(Theme.textSecondary)
-            }
-        case .loaded:
-            List(session.recipes) { recipe in
-                VStack(alignment: .leading, spacing: Theme.Space.s) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(recipe.name).font(Theme.Fonts.sectionHeader)
-                        HStack(spacing: Theme.Space.s) {
-                            Text(recipe.id).font(Theme.Fonts.monoCaption)
-                            Text(recipe.role).font(.caption)
-                        }
-                        .foregroundStyle(Theme.textSecondary)
-                    }
-                    ForEach(recipe.steps, id: \.self) { step in
-                        Label {
-                            Text(step).font(.callout).fixedSize(horizontal: false, vertical: true)
-                        } icon: {
-                            Image(systemName: "circle.fill").font(.system(size: 5)).foregroundStyle(Theme.textSecondary)
-                        }
-                    }
+        List(selection: Bindable(session.frozen).selectedModelID) {
+            FrozenModelRows(session: session)
+            Section(ReplayCopy.recipesSection) {
+                switch session.defaults {
+                case .loading:
+                    ProgressView("Asking the analysis worker…").selectionDisabled()
+                case .unavailable(let why):
+                    Label("The analysis worker did not describe its recipes. \(why)", systemImage: "exclamationmark.octagon")
+                        .foregroundStyle(Theme.textSecondary).selectionDisabled()
+                case .loaded:
+                    ForEach(session.recipes) { RecipeRow(recipe: $0).selectionDisabled() }
                 }
-                .padding(.vertical, Theme.Space.s)
-                .accessibilityElement(children: .combine)
             }
         }
+    }
+}
+
+private struct RecipeRow: View {
+    let recipe: EvaluationDefaults.Recipe
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.s) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(recipe.name).font(Theme.Fonts.sectionHeader)
+                HStack(spacing: Theme.Space.s) {
+                    Text(recipe.id).font(Theme.Fonts.monoCaption)
+                    Text(recipe.role).font(.caption)
+                }
+                .foregroundStyle(Theme.textSecondary)
+            }
+            ForEach(recipe.steps, id: \.self) { step in
+                Label {
+                    Text(step).font(.callout).fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "circle.fill").font(.system(size: 5)).foregroundStyle(Theme.textSecondary)
+                }
+            }
+        }
+        .padding(.vertical, Theme.Space.s)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -427,8 +450,12 @@ private struct DetailColumn: View {
                 Placeholder(title: "No Result Selected", symbol: SidebarSection.results.symbol, text: nil)
             }
         case .pipelines:
-            Placeholder(title: "Read-only in phase 1", symbol: SidebarSection.pipelines.symbol,
+            if let model = session.frozen.selectedModel {
+                FrozenModelDetailView(session: session, model: model).id(model.modelID)
+            } else {
+                Placeholder(title: "Read-only in phase 1", symbol: SidebarSection.pipelines.symbol,
                         text: "These recipes run as shipped. Parameters… changes the window, CSP components and seed of one evaluation; the values are stored with its result.")
+            }
         case .protocols:
             if let r = session.selectedProtocol, let list = session.protocolList {
                 ProtocolDetailView(model: ProtocolDetailModel(r, list: list, usage: session.protocolUsage, windowEndMs: session.evaluationWindowEndMs)) {
@@ -691,7 +718,7 @@ private struct NoticeView: View {
 
     private var symbol: String {
         switch notice {
-        case .saved, .exported: return "checkmark.circle.fill"
+        case .saved, .exported, .frozen: return "checkmark.circle.fill"
         case .reproduced: return "arrow.triangle.2.circlepath"
         case .diverged, .exportFailed: return "exclamationmark.triangle.fill"
         case .cancelled: return "xmark.circle"
