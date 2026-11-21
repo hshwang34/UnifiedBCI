@@ -512,6 +512,31 @@ final class ChannelMapValidationTests: XCTestCase {
         XCTAssertEqual(unreadable, 1)
     }
 
+    func testSymlinkedOrNonRegularMapFiles_areSkippedWithoutHanging() async throws {
+        let store = try ProjectStore.create(at: scratch.appendingPathComponent("links.bciproj"), name: "links")
+        let good = ChannelMapRecord.defaults(for: daisy)
+        try await store.saveChannelMap(good)
+        let fm = FileManager.default
+        func dir(_ id: UUID) throws -> URL {
+            let d = store.directory.appendingPathComponent("montages").appendingPathComponent(id.uuidString)
+            try fm.createDirectory(at: d, withIntermediateDirectories: true)
+            return d.appendingPathComponent(ProjectStore.channelMapFileName)
+        }
+        // A valid map outside the project, reached through a symlink: refused, not followed.
+        let linked = ChannelMapRecord.defaults(for: daisy)
+        let outside = scratch.appendingPathComponent("outside.json")
+        try ContractJSON.encoder().encode(linked).write(to: outside)
+        try fm.createSymbolicLink(at: try dir(linked.mapID), withDestinationURL: outside)
+        try fm.createSymbolicLink(at: try dir(UUID()), withDestinationURL: URL(fileURLWithPath: "/dev/zero"))
+        let fifo = try dir(UUID())
+        XCTAssertEqual(mkfifo(fifo.path, 0o600), 0)
+        let (maps, unreadable) = try await store.channelMaps()          // a FIFO open would block here
+        XCTAssertEqual(maps.map(\.mapID), [good.mapID])
+        XCTAssertEqual(unreadable, 3)
+        XCTAssertNil(BoundedRead.data(at: outside, maxBytes: 16), "over the cap")
+        XCTAssertNotNil(BoundedRead.data(at: outside, maxBytes: ChannelMapRecord.maxFileBytes))
+    }
+
     func testMissingAcknowledgedKey_failsClosedOnADevice_only() {
         var requested = DefaultChannelSettings.requested
         for n in 1...DefaultChannelSettings.channelCount { requested[DefaultChannelSettings.key(n) + ".acknowledged"] = "yes" }

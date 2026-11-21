@@ -155,3 +155,32 @@ public struct IntegrityIssue: Error, Sendable, Equatable, CustomStringConvertibl
 
     public var description: String { "\(kind.rawValue) \(file): \(detail)" }
 }
+
+/// Bounded reads of small JSON files in a project that may come from anyone. One open, so
+/// the checks and the read see the same file: `O_NOFOLLOW` refuses a symbolic link at the
+/// last component, `O_NONBLOCK` keeps a FIFO from hanging the open, `fstat` requires a
+/// regular file no larger than the cap, and the read stops at cap + 1 bytes, so a file that
+/// grows after the `fstat` is refused too. Nil for anything else.
+enum BoundedRead {
+    static func data(at url: URL, maxBytes: Int) -> Data? {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var st = stat()
+        guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG, st.st_size <= maxBytes else { return nil }
+        var buffer = Data(count: maxBytes + 1)
+        let total = buffer.withUnsafeMutableBytes { raw -> Int in
+            var total = 0
+            while total < raw.count {
+                let n = read(fd, raw.baseAddress! + total, raw.count - total)
+                if n < 0, errno == EINTR { continue }
+                if n < 0 { return -1 }
+                if n == 0 { break }
+                total += n
+            }
+            return total
+        }
+        guard total >= 0, total <= maxBytes else { return nil }
+        return buffer.prefix(total)
+    }
+}
