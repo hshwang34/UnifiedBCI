@@ -148,8 +148,22 @@ Three clocks, never mixed:
   - `receipt_interval`, `process_terminated`, `disconnect` — as named.
 - Bursty receipt intervals are recorded as-is and are never used to infer sample loss.
 - Cue events carry `intendedAt` and `presentedAt` separately. `timingUncertaintyNanos` is
-  `nil` until it has been measured externally; it is never defaulted to 0.
+  `nil` until it has been measured externally; it is never defaulted to 0. One exception
+  (brief 005): an event whose `sampleAssociation.method` is `nearest_receipt_timestamp`
+  (no BrainFlow marker was found) carries the 95th percentile of the recent drain
+  intervals. A receipt timestamp is only known to within the drain that delivered it, so
+  this is a conservative software spread of the sample pick, not a measured onset error.
+  A `brainflow_marker` association leaves it `nil`. The evaluation counts fallback cues
+  (`warnings` kind `cue_by_nearest_timestamp`) and the result screen names them.
   `sourceTimeNanos` is for device-originated markers in the device's own clock.
+- Protocol events (brief 005) may carry `reason` (`trial_abort`, `pause`: `operator`,
+  `pause`, `disconnect`, `run_aborted`), `aborted` (`run_end` ended early) and
+  `plannedLabel` (`trial_abort`: the trial's planned class, so a trial aborted before its
+  cue appeared is still listed as excluded). All optional; older readers ignore them.
+- The worker never fails a protocol recording over one trial: a cue without an
+  association is excluded `no_sample_for_cue` (or `trial_aborted` when aborted), and a
+  last `events.jsonl` line cut off mid-write (no newline, not JSON) is ignored with the
+  warning `events_last_line_truncated`. Any other malformed line is still an error.
 
 ## Sessions, runs, and segments
 

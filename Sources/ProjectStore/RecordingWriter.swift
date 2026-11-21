@@ -26,11 +26,23 @@ public final class RecordingWriter: Sendable {
         public var drainedAtMonotonicNanos: Int64
         /// Gaps with `afterSampleIndex` relative to this block (-1 = before its first sample).
         public var gaps: [RecordingManifest.Gap]
+        /// Monotonic and wall clock read together at drain, for the fallback event association.
+        public var clockPair: ClockPair?
 
-        public init(values: [Double], rowCount: Int, sampleCount: Int, drainedAtMonotonicNanos: Int64, gaps: [RecordingManifest.Gap] = []) {
+        public init(values: [Double], rowCount: Int, sampleCount: Int, drainedAtMonotonicNanos: Int64, gaps: [RecordingManifest.Gap] = [],
+                    clockPair: ClockPair? = nil) {
             self.values = values; self.rowCount = rowCount; self.sampleCount = sampleCount
-            self.drainedAtMonotonicNanos = drainedAtMonotonicNanos; self.gaps = gaps
+            self.drainedAtMonotonicNanos = drainedAtMonotonicNanos; self.gaps = gaps; self.clockPair = clockPair
         }
+    }
+
+    public struct ClockPair: Sendable, Equatable {
+        public var monotonicNanos: Int64
+        public var wallSeconds: Double
+
+        public init(monotonicNanos: Int64, wallSeconds: Double) { self.monotonicNanos = monotonicNanos; self.wallSeconds = wallSeconds }
+
+        public static func now() -> ClockPair { .init(monotonicNanos: HostMonotonicClock.nowNanos(), wallSeconds: Date().timeIntervalSince1970) }
     }
 
     public struct Options: Sendable {
@@ -39,6 +51,8 @@ public final class RecordingWriter: Sendable {
         public var minimumFreeBytes = RecordingWriter.minimumFreeBytes
         /// BrainFlow timestamp row, for each chunk entry's first/last timestamp.
         public var timestampRow: Int?
+        /// BrainFlow marker row, where protocol events find their sample.
+        public var markerRow: Int?
         /// Free bytes on the recording's volume; replaced in tests.
         public var freeBytes: @Sendable (URL) -> Int64? = RecordingWriter.freeBytes(at:)
         public var hook: CommitHook?
@@ -59,6 +73,9 @@ public final class RecordingWriter: Sendable {
         public var uncommittedSamples = 0
         /// The error that ended the recording, or that prevented closing its segment.
         public var failure: String?
+        public var eventsWritten = 0
+        /// Events `events.jsonl` refused (the error is in `failure`).
+        public var eventsFailed = 0
     }
 
     public enum SubmitResult: Sendable, Equatable { case accepted, refused(EndReason) }
@@ -90,7 +107,8 @@ public final class RecordingWriter: Sendable {
         self.shared = shared
         let (segments, counterRow) = (manifest.segments, manifest.timing.sequenceCounterRow)
         consumer = Task.detached(priority: .userInitiated) {
-            var assembler = Assembler(writer: writer, segments: segments, counterRow: counterRow, options: options, shared: shared, lock: lock)
+            var assembler = Assembler(writer: writer, segments: segments, counterRow: counterRow, options: options, shared: shared, lock: lock,
+                                      events: EventAssociator(recordingID: manifest.recordingID))
             for await command in stream {
                 if await !assembler.handle(command) { break }
             }
@@ -142,10 +160,27 @@ public final class RecordingWriter: Sendable {
         enqueue(.endSegment(reason, endedAt: endedAtMonotonicNanos, gap: gap))
     }
 
-    /// Opens the next segment (index + 1, sample indices from 0, same session and run).
-    public func beginSegment(startedAtWall: Date, startedAtMonotonicNanos: Int64) {
-        enqueue(.beginSegment(wall: startedAtWall, monotonic: startedAtMonotonicNanos))
+    /// Opens the next segment (index + 1, sample indices from 0, same session; same run
+    /// unless `runID` names the next protocol run).
+    public func beginSegment(startedAtWall: Date, startedAtMonotonicNanos: Int64, runID: String? = nil) {
+        enqueue(.beginSegment(wall: startedAtWall, monotonic: startedAtMonotonicNanos, runID: runID))
     }
+
+    /// Queues protocol events for `events.jsonl` (brief 005). `associateAt` nil: no sample
+    /// association (run and operator events). Otherwise they share one association, by the
+    /// sample carrying `marker` (insert the marker after this call), else the fallback
+    /// around `associateAt` (`EventAssociator`). False once the recording has stopped.
+    @discardableResult
+    public func submitEvents(_ events: [EventRecord], marker: Double?, associateAt: Int64?) -> Bool {
+        shared.state.withLock { s in
+            guard s.accepting else { return false }
+            commands.yield(.events(events, marker: marker, at: associateAt, queuedAt: HostMonotonicClock.nowNanos()))
+            return true
+        }
+    }
+
+    /// The marker for `eventID` could not be inserted: associate it by the fallback.
+    public func markerFailed(_ eventID: UUID) { enqueue(.markerFailed(eventID)) }
 
     /// Stops: commits everything accepted (partial last chunk included), closes the open
     /// segment with `reason`, and returns the final status. Idempotent.
@@ -174,8 +209,10 @@ public final class RecordingWriter: Sendable {
 enum WriterCommand: Sendable {
     case block(RecordingWriter.Block)
     case endSegment(EndReason, endedAt: Int64, gap: GapEvidence?)
-    case beginSegment(wall: Date, monotonic: Int64)
+    case beginSegment(wall: Date, monotonic: Int64, runID: String?)
     case finish(EndReason, endedAt: Int64)
+    case events([EventRecord], marker: Double?, at: Int64?, queuedAt: Int64)
+    case markerFailed(UUID)
 }
 
 /// State the producer and the consumer share, behind one lock.
@@ -208,11 +245,12 @@ private struct Assembler {
     var pendingGaps: [RecordingManifest.Gap] = []
     var segmentOpen = true
     var attributedLoss = 0
+    var events: EventAssociator
 
     init(writer: ChunkWriter, segments: [RecordingManifest.StreamSegment], counterRow: Int?, options: RecordingWriter.Options,
-         shared: WriterShared, lock: RecordingLock) {
+         shared: WriterShared, lock: RecordingLock, events: EventAssociator) {
         self.writer = writer; self.segments = segments; self.counterRow = counterRow; self.options = options
-        self.shared = shared; self.lock = lock
+        self.shared = shared; self.lock = lock; self.events = events
     }
 
     private var buffered: Int { drainedAt.count }
@@ -238,14 +276,15 @@ private struct Assembler {
             while buffered >= options.samplesPerChunk {
                 guard await commit(options.samplesPerChunk) else { return false }
             }
+            await writeReadyEvents()
             return true
         case .endSegment(let reason, let endedAt, let gap):
             guard segmentOpen else { return true }
             return await flushAndClose(reason, endedAt: endedAt, gap: gap, final: false)
-        case .beginSegment(let wall, let monotonic):
+        case .beginSegment(let wall, let monotonic, let runID):
             if segmentOpen, !(await flushAndClose(.disconnect, endedAt: monotonic, gap: .disconnect, final: false)) { return false }
             let last = segments.last!
-            segments.append(.init(index: last.index + 1, sessionID: last.sessionID, runID: last.runID, startedAtWall: wall,
+            segments.append(.init(index: last.index + 1, sessionID: last.sessionID, runID: runID ?? last.runID, startedAtWall: wall,
                                   startedAtMonotonicNanos: monotonic, endedAtMonotonicNanos: nil, endReason: nil, detectedGaps: []))
             committedInSegment = 0; acceptedInSegment = 0; segmentOpen = true
             return true
@@ -256,7 +295,35 @@ private struct Assembler {
                 shared.state.withLock { $0.status.endReason = $0.status.endReason ?? reason }
                 if unsavedAttribution { _ = await save() }
             }
+            await write(events.drainAll(committed: committedInSegment))
             return false
+        case .events(let list, let marker, let at, let queuedAt):
+            events.enqueue(list, marker: marker, at: at, queuedAt: queuedAt, openSegment: segmentOpen ? segments.last!.index : nil)
+            await writeReadyEvents()
+            return true
+        case .markerFailed(let id):
+            events.markerFailed(id)
+            return true
+        }
+    }
+
+    private mutating func writeReadyEvents() async {
+        await write(events.ready(openSegment: segmentOpen ? segments.last!.index : nil, committed: committedInSegment))
+    }
+
+    /// Appends each event on its own line; a refused line is counted and named, never retried
+    /// (a partial retry could duplicate it), and doesn't stop the recording.
+    private func write(_ list: [EventRecord]) async {
+        for e in list {
+            do {
+                try await writer.appendEvent(e)
+                shared.state.withLock { $0.status.eventsWritten += 1 }
+            } catch {
+                shared.state.withLock { s in
+                    s.status.eventsFailed += 1
+                    s.status.failure = (s.status.failure.map { $0 + "; " } ?? "") + "event \(e.label) not written: \(error)"
+                }
+            }
         }
     }
 
@@ -266,6 +333,8 @@ private struct Assembler {
             rows[r].append(contentsOf: block.values[(r * block.sampleCount)..<((r + 1) * block.sampleCount)])
         }
         drainedAt.append(contentsOf: repeatElement(block.drainedAtMonotonicNanos, count: block.sampleCount))
+        events.observe(markers: slice(block, options.markerRow), timestamps: slice(block, options.timestampRow), firstIndex: acceptedInSegment,
+                       segment: segments.last!.index, drainedAt: block.drainedAtMonotonicNanos, pair: block.clockPair)
         for var gap in block.gaps {
             gap.afterSampleIndex += acceptedInSegment
             pendingGaps.append(gap)
@@ -315,6 +384,11 @@ private struct Assembler {
         guard leftOpen else { return }
         leftOpen = false
         lock.clearNote()
+    }
+
+    private func slice(_ block: RecordingWriter.Block, _ row: Int?) -> ArraySlice<Double>? {
+        guard let row, (0..<block.rowCount).contains(row) else { return nil }
+        return block.values[(row * block.sampleCount)..<((row + 1) * block.sampleCount)]
     }
 
     private func value(_ row: Int?, _ column: Int) -> Double? {
@@ -378,6 +452,8 @@ private struct Assembler {
         segments[segments.count - 1] = seg
         pendingGaps = []
         segmentOpen = false
+        events.closeSegment(seg.index, committed: committedInSegment)
+        await writeReadyEvents()
         if await save() { return true }
         // Still open on disk. Leave the reason in the lock file, so the next
         // `ProjectStore.open` closes it with this reason rather than process_terminated.

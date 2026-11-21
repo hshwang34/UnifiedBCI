@@ -14,6 +14,9 @@ import uuid
 from pathlib import Path
 
 import numpy as np
+import pytest
+
+from bciworkspace_worker.protocol import ProtocolError
 
 from bciworkspace_worker import pipeline, project_io
 from test_project import EXAMPLE, TINY, expect_integrity, hostile_copy, params, run_in_process, run_in_subprocess
@@ -95,6 +98,68 @@ def test_protocol_recording_evaluates_with_its_labels_runs_and_exclusions(tmp_pa
     assert (out["pipeline"]["configuration"]["label_left"], out["pipeline"]["configuration"]["label_right"]) == ("cue_left_hand", "cue_right_hand")
     used = len(m["holdout_trials"]) + sum(ev["class_counts"]["train"])
     assert used + len(ev["exclusions"]) == facts["n_cues"]
+
+
+def _evaluate_with_extra_events(tmp_path, extra: list[dict], raw_tail: str = ""):
+    project, rid, facts = write_protocol_project(tmp_path)
+    events_path = project / "recordings" / rid / "events.jsonl"
+    events_path.write_text(events_path.read_text() + "".join(json.dumps(e) + "\n" for e in extra) + raw_tail)
+    out, _ = run_in_process({"project_dir": str(project), "recording_id": rid, "seed": 0, "labels": LABELS})
+    return out["evaluation"], facts
+
+
+def test_cues_without_a_sample_are_excluded_by_name_never_fail_the_recording(tmp_path):
+    """Brief 005 fix round: an aborted trial's cue without a sample is listed `trial_aborted`;
+    any other cue without one is listed `no_sample_for_cue`. Neither stops the evaluation."""
+    dropped = {"eventID": str(uuid.uuid4()), "runID": "run03", "trialID": "run03-dropped", "label": LABELS["left"], "origin": "protocol"}
+    abort = {"eventID": str(uuid.uuid4()), "runID": "run03", "trialID": "run03-dropped", "label": "trial_abort", "origin": "protocol",
+             "reason": "disconnect", "plannedLabel": LABELS["left"]}
+    orphan = {"eventID": str(uuid.uuid4()), "runID": "run02", "trialID": "run02-orphan", "label": LABELS["right"], "origin": "protocol"}
+    ev, facts = _evaluate_with_extra_events(tmp_path, [dropped, abort, orphan])
+    reasons = {e["trial_id"]: (e["reason"], e["run_id"], e["label"]) for e in ev["exclusions"]}
+    assert reasons["run03-dropped"] == ("trial_aborted", "run03", 0)
+    assert reasons["run02-orphan"] == ("no_sample_for_cue", "run02", 1)
+    assert ev["data_source"]["n_trials"] == facts["n_cues"]
+    assert "warnings" not in ev
+
+
+def test_a_trial_aborted_before_its_cue_is_listed_with_its_planned_class(tmp_path):
+    """Decision #34: aborted trials are listed, so unequal class counts are visible, even when
+    the arrow never appeared (the `trial_abort` carries `plannedLabel`)."""
+    early = {"eventID": str(uuid.uuid4()), "runID": "run01", "trialID": "run01-early", "label": "trial_abort", "origin": "operator",
+             "reason": "operator", "plannedLabel": LABELS["right"]}
+    unknown = {"eventID": str(uuid.uuid4()), "runID": "run01", "trialID": "run01-nolabel", "label": "trial_abort", "origin": "operator"}
+    ev, _ = _evaluate_with_extra_events(tmp_path, [early, unknown])
+    listed = [e for e in ev["exclusions"] if e["trial_id"] == "run01-early"]
+    assert listed == [{"trial_id": "run01-early", "run_id": "run01", "label": 1, "reason": "trial_aborted",
+                       "window_start_sample": None, "window_stop_sample": None}]
+    assert ev["warnings"] == [{"kind": "abort_names_unknown_trial", "trial_id": "run01-nolabel"}]
+
+
+def test_fallback_associations_are_counted_and_named(tmp_path):
+    project, rid, facts = write_protocol_project(tmp_path)
+    events_path = project / "recordings" / rid / "events.jsonl"
+    lines = [json.loads(l) for l in events_path.read_text().splitlines()]
+    cues = [e for e in lines if e.get("sampleAssociation")]
+    for e in cues[:3]:
+        e["sampleAssociation"]["method"] = "nearest_receipt_timestamp"
+    events_path.write_text("".join(json.dumps(e) + "\n" for e in lines))
+    out, _ = run_in_process({"project_dir": str(project), "recording_id": rid, "seed": 0, "labels": LABELS})
+    w = out["evaluation"]["warnings"]
+    assert w == [{"kind": "cue_by_nearest_timestamp", "count": 3, "trial_ids": sorted(e["trialID"] for e in cues[:3])}]
+
+
+def test_a_truncated_last_line_is_ignored_with_a_warning_a_bad_middle_line_still_fails(tmp_path):
+    ev, facts = _evaluate_with_extra_events(tmp_path / "a", [], raw_tail='{"eventID": "x", "label": "cue_le')
+    assert ev["data_source"]["n_trials"] == facts["n_cues"]
+    assert ev["warnings"][-1]["kind"] == "events_last_line_truncated"
+
+    project, rid, _ = write_protocol_project(tmp_path / "b")
+    events_path = project / "recordings" / rid / "events.jsonl"
+    events_path.write_text('{"broken\n' + events_path.read_text())
+    with pytest.raises(ProtocolError) as exc:
+        run_in_process({"project_dir": str(project), "recording_id": rid, "seed": 0, "labels": LABELS})
+    assert "not JSON" in exc.value.message
 
 
 def test_marker_row_outside_a_chunk_is_an_integrity_error(tmp_path):

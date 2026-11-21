@@ -46,6 +46,8 @@ public actor AcquisitionSession {
         /// Set when a reconnect found the board configured differently from what the
         /// recording describes, so the recording was ended rather than continued.
         public var recordingEndedByReconnect: ConfigurationProblem?
+        /// A protocol run's segment is open (brief 005); false between runs and outside them.
+        public var runSegmentOpen = false
     }
 
     /// Why a board configuration can't carry a recording (µV scaling would be wrong or
@@ -130,6 +132,9 @@ public actor AcquisitionSession {
     private var disconnecting: Task<Void, Never>?
     private var lastSampleNanos: Int64 = 0
     private var lastPublishNanos: Int64 = 0
+    /// The recording is kept between protocol runs with its segment closed: drained blocks
+    /// are not recorded until the next run's segment opens (brief 005).
+    private var betweenRuns = false
 
     /// `projectDirectory` is where free space is measured. `makeBoard` replaces the source's
     /// board (tests); it is called once per connect and once per reconnect attempt.
@@ -227,6 +232,7 @@ public actor AcquisitionSession {
             boardConfiguration: configuration, chunks: [], segments: [])
         var writerOptions = options.writer
         writerOptions.timestampRow = d.timestampRow
+        writerOptions.markerRow = d.markerRow
         let w = try await RecordingWriter.start(in: store, manifest: manifest, startedAtWall: wall,
                                                 startedAtMonotonicNanos: now, options: writerOptions)
         latestRecordingID = w.recordingID
@@ -315,6 +321,53 @@ public actor AcquisitionSession {
         }
     }
 
+    // MARK: Protocol runs (brief 005)
+
+    /// Opens a protocol run's segment: the first run starts the recording (`request` with
+    /// this run and session id), a later one opens the next segment of it, under its own run
+    /// id. Streaming only. Returns the recording id.
+    public func beginRunSegment(runID: String, sessionID: String, request: RecordingRequest, in store: ProjectStore) async throws -> UUID {
+        guard state == .streaming else { throw SessionError.notStreaming }
+        if let w = writer {
+            guard betweenRuns else { throw SessionError.alreadyRecording }
+            betweenRuns = false
+            w.beginSegment(startedAtWall: Date(), startedAtMonotonicNanos: HostMonotonicClock.nowNanos(), runID: runID)
+            published.withLock { $0.runSegmentOpen = true }
+            return w.recordingID
+        }
+        var r = request
+        r.runID = runID
+        r.sessionID = sessionID
+        let id = try await startRecording(r, in: store)
+        published.withLock { $0.runSegmentOpen = true }
+        return id
+    }
+
+    /// Closes the run's segment `stopped` at the last drain; the stream, the preview and the
+    /// recording go on (decision: "one contiguous recorded span" per run).
+    public func endRunSegment() {
+        guard let w = writer, !betweenRuns else { return }
+        betweenRuns = true
+        w.endSegment(.stopped, endedAtMonotonicNanos: lastSampleNanos, gap: nil)
+        published.withLock { $0.runSegmentOpen = false }
+    }
+
+    /// Queues protocol events on the recording; with `marker`, then inserts that BrainFlow
+    /// marker, so the writer finds the sample it lands on (queued first, so no drain can
+    /// commit the marked sample before the writer waits for it). False without a recording.
+    @discardableResult
+    public func recordProtocolEvents(_ events: [EventRecord], marker: Double?, associateAt: Int64?) async -> Bool {
+        guard let w = writer, !betweenRuns, w.submitEvents(events, marker: marker, associateAt: associateAt) else { return false }
+        guard let marker, let id = events.first?.eventID else { return true }
+        do {
+            guard let board, state == .streaming else { throw SessionError.notStreaming }
+            try await board.insertMarker(marker)
+        } catch {
+            w.markerFailed(id)
+        }
+        return true
+    }
+
     // MARK: Drain loop
 
     /// Drains until cancelled; on an interruption closes the segment, retries, and resumes.
@@ -348,13 +401,14 @@ public actor AcquisitionSession {
         let d = board.description
         var block = RecordingWriter.Block(chunk, findings: chunk.count == 0 ? [] :
             accounting.ingest(counters: chunk.row(d.packageNumRow), timestamps: chunk.row(d.timestampRow)))
+        block.clockPair = .now()
         if let pause = health.ingest(chunk, gaps: block.gaps) { block.gaps.insert(pause, at: 0) }
         self.accounting = accounting
         self.health = health
         if chunk.count > 0 {
             lastSampleNanos = chunk.drainedAtMonotonicNanos
             previewSink.yield(.init(segment: health.health.segment, chunk: chunk))
-            if let w = writer, case .refused = w.submit(block) {
+            if let w = writer, !betweenRuns, case .refused = w.submit(block) {
                 // The writer stopped itself (disk full, backlog, write error); preview goes on.
                 // Detached synchronously: a new recording may start before this finishes.
                 _ = detachRecording()
@@ -408,7 +462,7 @@ public actor AcquisitionSession {
                         published.withLock { $0.recordingEndedByReconnect = change }
                         // Its last segment already ended `disconnect`.
                         _ = finish(w, .disconnect)
-                    } else {
+                    } else if !betweenRuns {
                         w.beginSegment(startedAtWall: Date(), startedAtMonotonicNanos: HostMonotonicClock.nowNanos())
                     }
                 }
@@ -458,6 +512,8 @@ public actor AcquisitionSession {
         guard let w = writer else { return nil }
         writer = nil
         recordingConfiguration = nil
+        betweenRuns = false
+        published.withLock { $0.runSegmentOpen = false }
         power?.release()
         power = nil
         published.withLock { $0.recordingID = nil; $0.holdsPowerAssertion = false }

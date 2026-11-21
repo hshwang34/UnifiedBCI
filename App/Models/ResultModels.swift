@@ -88,6 +88,16 @@ struct EvaluationReport: Decodable, Equatable {
     var models: [String: Model]
     var comparison: Comparison
     var dataSource: DataSource?
+    /// Things the worker reports beside the numbers (brief 005); absent on earlier records.
+    var warnings: [Warning]?
+
+    struct Warning: Decodable, Equatable {
+        var kind: String
+        var count: Int?
+        var trialIds: [String]?
+        var trialId: String?
+        var line: Int?
+    }
 
     static func decode(_ data: Data) throws -> EvaluationReport {
         let d = JSONDecoder()
@@ -113,6 +123,24 @@ enum EvidenceText {
         }
     }
 
+    /// One worker warning as a sentence (brief 005); nil for a kind this app doesn't know.
+    static func warning(_ w: EvaluationReport.Warning) -> String? {
+        switch w.kind {
+        case "cue_by_nearest_timestamp":
+            let n = w.count ?? w.trialIds?.count ?? 0
+            let trials = (w.trialIds ?? []).prefix(6).joined(separator: ", ")
+            let more = (w.trialIds?.count ?? 0) > 6 ? ", …" : ""
+            return "\(n) cue\(n == 1 ? " was" : "s were") placed on the EEG by the nearest receipt timestamp, not a BrainFlow marker"
+                + (trials.isEmpty ? "" : " (\(trials)\(more))") + ". That placement is software-only and less precise."
+        case "events_last_line_truncated":
+            return "The last line of the recording's event log was cut off (line \(w.line ?? 0)) and was ignored."
+        case "abort_names_unknown_trial":
+            return "An abort names trial \(w.trialId ?? "?"), which has no cue in this recording."
+        default:
+            return nil
+        }
+    }
+
     /// The evidence as a short phrase for running text; never the raw token.
     static func short(_ evidence: String) -> String {
         switch evidence {
@@ -131,6 +159,7 @@ enum EvidenceText {
         case "window_exceeds_segment": return "window runs past the end of the recording"
         case "trial_aborted": return "trial was aborted"
         case "window_spans_detected_gap": return "window or its filter warm-up spans a detected gap"
+        case "no_sample_for_cue": return "no EEG sample could be matched to its cue"
         default: return code.replacingOccurrences(of: "_", with: " ")
         }
     }
@@ -217,6 +246,8 @@ struct ResultDetailModel {
     let headline: Headline
     let trialsLine: String
     let warning: String?
+    /// The worker's warnings in words: fallback cue placement, a cut-off event log.
+    let notes: [String]
     let evidence: (symbol: String, text: String)
     let reproduction: Reproduction?
     let cells: [Cell]
@@ -264,6 +295,7 @@ struct ResultDetailModel {
         heroAccessibilityLabel = "Balanced accuracy \(Fmt.fixed(h.balancedAccuracy)). Accuracy \(Fmt.fixed(h.accuracy)), \(ci), trial-level, \(h.nTestTrials) trials. \(headline.balancedAccuracyInterval)"
         trialsLine = "n = \(h.nTestTrials) held-out trials in \(h.nTestRuns) run\(h.nTestRuns == 1 ? "" : "s") · \(EvidenceText.short(r.splitPolicy.evidence))"
         warning = isDemo ? nil : r.dataSource?.warning
+        notes = (r.warnings ?? []).compactMap(EvidenceText.warning)
         evidence = EvidenceText.describe(r.splitPolicy.evidence)
 
         let original = stored.meta.reproductionOf ?? stored.meta.divergedFrom
