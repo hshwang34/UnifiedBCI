@@ -66,7 +66,9 @@ public enum JSONValue: Sendable, Equatable, Encodable,
     }
 }
 
-/// Owns one worker process and multiplexes JSON-line requests over its stdio.
+/// Owns one worker process and multiplexes JSON-line requests over its stdio. Sample data
+/// never crosses the pipe (requests reference chunk files), except `live_push`: one drained
+/// chunk of a live stream, at most `maxPushSamples`, bounded and small (ModelMethods.swift).
 /// Lifetime: `start()` → any number of `call()` → `shutdown()`. If the process dies,
 /// every pending call fails with `worker_exited` and the client must be recreated;
 /// the app treats that as a visible "analysis unavailable" state, never a silent retry.
