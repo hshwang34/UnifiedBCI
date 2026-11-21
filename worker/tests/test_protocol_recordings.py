@@ -14,6 +14,9 @@ import uuid
 from pathlib import Path
 
 import numpy as np
+import pytest
+
+from bciworkspace_worker.protocol import ProtocolError
 
 from bciworkspace_worker import pipeline, project_io
 from test_project import EXAMPLE, TINY, expect_integrity, hostile_copy, params, run_in_process, run_in_subprocess
@@ -95,6 +98,25 @@ def test_protocol_recording_evaluates_with_its_labels_runs_and_exclusions(tmp_pa
     assert (out["pipeline"]["configuration"]["label_left"], out["pipeline"]["configuration"]["label_right"]) == ("cue_left_hand", "cue_right_hand")
     used = len(m["holdout_trials"]) + sum(ev["class_counts"]["train"])
     assert used + len(ev["exclusions"]) == facts["n_cues"]
+
+
+def test_an_aborted_trials_cue_without_a_sample_is_skipped_any_other_fails(tmp_path):
+    """The app can't associate a cue presented as the stream dropped; that trial is always
+    aborted (brief 005 PR 3), so its unassociated cue is skipped. Any other one still fails."""
+    project, rid, facts = write_protocol_project(tmp_path)
+    events_path = project / "recordings" / rid / "events.jsonl"
+    lines = events_path.read_text()
+    orphan = {"eventID": str(uuid.uuid4()), "runID": "run03", "trialID": "run03-dropped", "label": LABELS["left"], "origin": "protocol"}
+    abort = {"eventID": str(uuid.uuid4()), "runID": "run03", "trialID": "run03-dropped", "label": "trial_abort", "origin": "protocol",
+             "reason": "disconnect"}
+    events_path.write_text(lines + json.dumps(orphan) + "\n" + json.dumps(abort) + "\n")   # the abort comes after its cue
+    out, _ = run_in_process({"project_dir": str(project), "recording_id": rid, "seed": 0, "labels": LABELS})
+    assert out["evaluation"]["data_source"]["n_trials"] == facts["n_cues"]
+
+    events_path.write_text(lines + json.dumps(orphan) + "\n")
+    with pytest.raises(ProtocolError) as exc:
+        run_in_process({"project_dir": str(project), "recording_id": rid, "seed": 0, "labels": LABELS})
+    assert "no sample association" in exc.value.message
 
 
 def test_marker_row_outside_a_chunk_is_an_integrity_error(tmp_path):

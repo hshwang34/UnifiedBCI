@@ -261,13 +261,17 @@ def load_segments(rec: Recording, labels: dict[str, int] | None, only: int | Non
 
 
 def _events_by_segment(rec: Recording, labels: dict[str, int]) -> tuple[dict[int, list[tuple[int, int, str]]], frozenset[str]]:
-    """Cue events by segment, and the trial ids of `trial_abort` events (brief 005)."""
+    """Cue events by segment, and the trial ids of `trial_abort` events (brief 005).
+
+    A cue event must name its sample, except one of an aborted trial: the app can't
+    associate a cue presented as the stream dropped (no sample of it reached the disk), and
+    that trial is excluded anyway, so it is skipped rather than failing the recording."""
     path = rec.directory / "events.jsonl"
     try:
         lines = _read_regular_text(path).splitlines()
     except (OSError, ValueError) as exc:
         raise ProjectError(f"cannot read {path}: {exc}") from exc
-    out: dict[int, list[tuple[int, int, str]]] = {}
+    parsed: list[tuple[int, dict[str, Any]]] = []
     aborted: set[str] = set()
     for n, line in enumerate(lines, 1):
         if not line.strip():
@@ -278,13 +282,18 @@ def _events_by_segment(rec: Recording, labels: dict[str, int]) -> tuple[dict[int
             raise ProjectError(f"{path}:{n}: not JSON: {exc}") from exc
         if not isinstance(ev, dict):
             raise ProjectError(f"{path}:{n}: not an event object")
-        label = ev.get("label")
-        if label == ABORT_LABEL and isinstance(ev.get("trialID"), str):
+        if ev.get("label") == ABORT_LABEL and isinstance(ev.get("trialID"), str):
             aborted.add(ev["trialID"])
-            continue
+        else:
+            parsed.append((n, ev))
+    out: dict[int, list[tuple[int, int, str]]] = {}
+    for n, ev in parsed:
+        label = ev.get("label")
         if not isinstance(label, str) or label not in labels:
             continue
         assoc = ev.get("sampleAssociation")
+        if assoc is None and ev.get("trialID") in aborted:
+            continue
         if not isinstance(assoc, dict) or str(assoc.get("recordingID")).lower() != rec.recording_id:
             raise ProjectError(f"{path}:{n}: cue event {ev.get('eventID')} has no sample association for this recording")
         trial_id = ev.get("trialID") or str(ev.get("eventID"))

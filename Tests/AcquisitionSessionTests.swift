@@ -478,6 +478,9 @@ final class FakeLink: Sendable {
         var registerReply: String?
         /// Reply to channel commands; nil is the firmware's success reply.
         var channelReply: String?
+        /// Inserted markers not yet on a sample; each lands on the next sample delivered.
+        var markers: [Double] = []
+        var markerFails = false
     }
     let script = Mutex(Script())
     let description = try! BrainFlowBoard.describe(boardID: KnownBoard.cytonDaisy)
@@ -533,14 +536,14 @@ actor FakeBoard: AcquisitionBoard {
 
     func readAll() throws -> SampleChunk {
         let d = description
-        let (first, skew) = try link.script.withLock { s -> (Int?, Int64) in
+        let (first, skew, markers) = try link.script.withLock { s -> (Int?, Int64, [Double]) in
             if s.readErrors > 0 {
                 s.readErrors -= 1
                 throw BrainFlowError(code: BrainFlowExitCode.generalError.rawValue, operation: "get_board_data")
             }
-            guard !s.silent else { return (nil, s.clockSkewNanos) }
-            defer { s.counters += (s.counter..<(s.counter + 6)).map { ($0 * 2) % 256 }; s.counter += 6; s.delivered += 6 }
-            return (s.counter, s.clockSkewNanos)
+            guard !s.silent else { return (nil, s.clockSkewNanos, []) }
+            defer { s.counters += (s.counter..<(s.counter + 6)).map { ($0 * 2) % 256 }; s.counter += 6; s.delivered += 6; s.markers = [] }
+            return (s.counter, s.clockSkewNanos, s.markers)
         }
         let n = first == nil ? 0 : 6
         var values = [Double](repeating: 0, count: n * d.numRows)
@@ -549,9 +552,17 @@ actor FakeBoard: AcquisitionBoard {
             values[d.packageNumRow * n + i] = Double((k * 2) % 256)
             values[d.timestampRow * n + i] = 1_700_000_000 + Double(k) / 125
             for r in d.eegChannelRows { values[r * n + i] = Double(k % 50) }
+            if i < markers.count { values[d.markerRow * n + i] = markers[i] }
         }
         return SampleChunk(numRows: d.numRows, count: n, values: values, drainedAtMonotonicNanos: HostMonotonicClock.nowNanos() + skew,
                            availableBeforeDrain: n, overflowSuspected: false)
+    }
+
+    func insertMarker(_ value: Double) throws {
+        try link.script.withLock { s in
+            if s.markerFails || !prepared { throw BrainFlowError(code: BrainFlowExitCode.boardNotReady.rawValue, operation: "insert_marker") }
+            s.markers.append(value)
+        }
     }
 
     func release() {
