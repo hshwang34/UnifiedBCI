@@ -128,9 +128,18 @@ public struct LiveRunRecord: Codable, Sendable, Equatable, Identifiable {
         public var boundaryWindows: Int
         public var firstValidWindowStop: [Int]     // per segment, in segment order; -1 when none
         public var chunkings: [String]
-        public init(passed: Bool, windowsCompared: Int, deviations: [Deviation], boundaryWindows: Int, firstValidWindowStop: [Int], chunkings: [String]) {
+        /// Cue-locked (training-window) windows among those compared.
+        public var cueLockedCompared: Int?
+        /// Where streaming and offline disagree, one plain line each (at most `maxMismatches`).
+        public var mismatches: [String]?
+        /// Which chunking's streamed predictions `predictions.jsonl` holds (the first one).
+        public var storedChunking: String?
+        public static let maxMismatches = 50
+        public init(passed: Bool, windowsCompared: Int, deviations: [Deviation], boundaryWindows: Int, firstValidWindowStop: [Int], chunkings: [String],
+                    cueLockedCompared: Int? = nil, mismatches: [String]? = nil, storedChunking: String? = nil) {
             self.passed = passed; self.windowsCompared = windowsCompared; self.deviations = deviations
             self.boundaryWindows = boundaryWindows; self.firstValidWindowStop = firstValidWindowStop; self.chunkings = chunkings
+            self.cueLockedCompared = cueLockedCompared; self.mismatches = mismatches; self.storedChunking = storedChunking
         }
     }
 
@@ -185,7 +194,7 @@ public struct LiveRunRecord: Codable, Sendable, Equatable, Identifiable {
         guard formatVersion >= 1, formatVersion <= ContractVersion.format else { return "format \(formatVersion)" }
         guard liveRunID == directoryID else { return "id does not match its directory" }
         guard hopSamples > 0, hopSamples <= 100_000 else { return "hop out of range" }
-        guard abstainThreshold.isFinite, (0.5...1).contains(abstainThreshold) else { return "abstention threshold out of range" }
+        guard abstainThreshold.isFinite, abstainThreshold >= 0.5, abstainThreshold < 1 else { return "abstention threshold out of range" }
         guard runIDs.count <= 1_000, staleLimitMillis.map({ (1...60_000).contains($0) }) ?? true else { return "runs or stale limit out of range" }
         return nil
     }

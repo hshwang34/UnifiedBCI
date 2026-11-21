@@ -517,6 +517,8 @@ public struct PredictionRecord: Codable, Sendable, Equatable {
     /// `hop` (every 16 samples) or `cue_locked` (the trial's training window).
     public var windowKind: String?
     public var trialID: String?
+    /// The worker's class index (0 = `classLabels[0]`), when it scored the window.
+    public var predictedClass: Int?
     public var feedbackEligible: Bool?
     /// Replay only: the offline reference for the same window.
     public var offline: Offline?
@@ -525,13 +527,13 @@ public struct PredictionRecord: Codable, Sendable, Equatable {
                 emittedAtMonotonicNanos: Int64?, action: Action, feedbackPresentedAtMonotonicNanos: Int64?,
                 sequence: Int? = nil, validityDetail: String? = nil, acquisitionReceiptMonotonicNanos: Int64? = nil,
                 workerComputeNanos: Int64? = nil, confidence: Double? = nil, windowKind: String? = nil, trialID: String? = nil,
-                feedbackEligible: Bool? = nil, offline: Offline? = nil) {
+                predictedClass: Int? = nil, feedbackEligible: Bool? = nil, offline: Offline? = nil) {
         self.pipelineID = pipelineID; self.inputSegment = inputSegment; self.inputSampleRange = inputSampleRange
         self.score = score; self.validity = validity; self.emittedAtMonotonicNanos = emittedAtMonotonicNanos
         self.action = action; self.feedbackPresentedAtMonotonicNanos = feedbackPresentedAtMonotonicNanos
         self.sequence = sequence; self.validityDetail = validityDetail
         self.acquisitionReceiptMonotonicNanos = acquisitionReceiptMonotonicNanos; self.workerComputeNanos = workerComputeNanos
-        self.confidence = confidence; self.windowKind = windowKind; self.trialID = trialID
+        self.confidence = confidence; self.windowKind = windowKind; self.trialID = trialID; self.predictedClass = predictedClass
         self.feedbackEligible = feedbackEligible; self.offline = offline
     }
 
