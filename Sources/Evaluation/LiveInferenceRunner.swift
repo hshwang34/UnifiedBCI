@@ -31,6 +31,10 @@ public actor LiveInferenceRunner {
         /// `live_push` answers within this or the worker counts as unavailable (brief: 1 s).
         public var workerTimeout: Duration = .seconds(1)
         public var tickInterval: Duration = .milliseconds(50)
+        /// A live run's setting: push only recorded frames, one worker segment per recording
+        /// segment (same index when nothing was dropped), so the live windows are the windows
+        /// a replay of the recording computes. Off: every drained frame (tests, previews).
+        public var recordedOnly = false
 
         public init(model: ModelRecord, arraysPath: String, channelRows: [Int], channelIDs: [String], sampleRateHz: Double,
                     timestampRow: Int?, markerRow: Int?, policy: FeedbackPolicy = .init()) {
@@ -115,6 +119,8 @@ public actor LiveInferenceRunner {
     private var workerOrigin = 0
     private var lastDrain: Int64?
     private var lastFrameEnd: (sample: Int, drained: Int64)?
+    /// The recording segment the worker segment follows (`recordedOnly`).
+    private var recordedSegment: Int?
     /// Cues waiting for their marked sample, and cues placed but not yet sent.
     private var waiting: [WaitingCue] = []
     private var pendingCues: [LiveCue] = []
@@ -183,7 +189,7 @@ public actor LiveInferenceRunner {
     /// windows are logged), stops the worker and writes the summaries into `run.json` (with
     /// `runIDs`, the protocol runs it covered, when given).
     @discardableResult
-    public func stop(runIDs: [String]? = nil) async -> (summary: LiveRunRecord.Summary, latency: LiveRunRecord.LatencySummary) {
+    public func stop(runIDs: [String]? = nil, finishing: Bool = true) async -> (summary: LiveRunRecord.Summary, latency: LiveRunRecord.LatencySummary) {
         unsubscribe?()
         unsubscribe = nil
         loops.forEach { $0.cancel() }
@@ -206,7 +212,8 @@ public actor LiveInferenceRunner {
                                             abstained: records.filter { $0.validity == .valid && $0.action.kind == .abstain }.count)
         let latency = LiveRunRecord.LatencySummary(receiptToEmission: Self.percentiles(receiptMs), bufferWait: Self.percentiles(bufferWaitsMs),
                                                    emissionToPresentation: Self.percentiles(presentationMs))
-        try? await writer?.finish(endedAt: Date(), summary: summary, latency: latency, replayCheck: nil, runIDs: runIDs)
+        // Not finishing: the caller writes `run.json` once, after its live-vs-replay check.
+        if finishing { try? await writer?.finish(endedAt: Date(), summary: summary, latency: latency, replayCheck: nil, runIDs: runIDs) }
         return (summary, latency)
     }
 
@@ -259,23 +266,39 @@ public actor LiveInferenceRunner {
            case let wait = (pair.wallSeconds - last) * 1000, wait.isFinite, (0...10_000).contains(wait) {
             bufferWaitsMs.append(wait)
         }
+        // Between runs nothing is recorded, so nothing is pushed; the stream position is kept.
+        if configuration.recordedOnly, frame.recordedSegment == nil {
+            streamSegment = frame.segment
+            nextStreamSample = frame.firstSample + chunk.count
+            recordedSegment = nil
+            if condition == .stale || condition == .disconnected { condition = nil }
+            return
+        }
+        let newRecorded = configuration.recordedOnly && frame.recordedSegment != recordedSegment
         // A new stream segment, or frames lost from the newest-wins buffer: the worker starts
-        // a new segment (filter reset, warm-up again), never joins across the hole.
+        // a new segment (filter reset, warm-up again), never joins across the hole. So does a
+        // new recording segment in a live run.
         // State changes first, logging after: a log line suspends the actor, and a cue added
         // meanwhile must land in the new segment, not be counted as lost with the old one.
         var lost: (cues: [String], reason: String, dropped: Int?)?
-        if frame.segment != streamSegment || frame.firstSample != nextStreamSample {
-            if streamSegment != nil {
+        if newRecorded || frame.segment != streamSegment || frame.firstSample != nextStreamSample {
+            let continuous = frame.segment == streamSegment && frame.firstSample == nextStreamSample
+            if newRecorded, continuous {
+                lost = (waiting.map(\.trialID) + pendingCues.map(\.trialID), "cue_lost_run_ended", nil)
+                waiting = []
+                pendingCues = []
+            } else if streamSegment != nil {
                 let dropped = frame.segment == streamSegment
                 lost = (waiting.map(\.trialID) + pendingCues.map(\.trialID), dropped ? "cue_lost_frames_dropped" : "cue_lost_stream_restarted",
                         dropped ? frame.firstSample - nextStreamSample : nil)
                 waiting = []
                 pendingCues = []
             }
-            workerSegment += 1
+            workerSegment = newRecorded ? max(workerSegment + 1, frame.recordedSegment ?? 0) : workerSegment + 1
             workerNext = 0
             workerOrigin = frame.firstSample
         }
+        recordedSegment = frame.recordedSegment
         streamSegment = frame.segment
         nextStreamSample = frame.firstSample + chunk.count
         let first = workerNext

@@ -20,6 +20,14 @@ struct ResultDetailView: View {
                         StatusChip(kind: .warning, text: warning)
                     }
                     ReproductionChip(model: m, session: session)
+                    // Brief 006: live runs of models frozen from this result, as fresh-session evidence.
+                    let models = Set(session.frozen.models.filter { $0.sourceResultID == stored.meta.resultID }.map(\.modelID))
+                    let live = session.frozen.liveRuns.filter { models.contains($0.modelID) && $0.endedAt != nil }
+                    if !live.isEmpty {
+                        Text(LiveRunCopy.liveRunsUnderResult).font(Theme.Fonts.title).foregroundStyle(Theme.textPrimary)
+                            .padding(.top, Theme.Space.l).accessibilityAddTraits(.isHeader)
+                        ForEach(live) { LiveRunCard(session: session, run: $0) }
+                    }
                     ViewThatFits(in: .horizontal) {
                         Grid(horizontalSpacing: Theme.Space.cardGap, verticalSpacing: Theme.Space.cardGap) {
                             GridRow(alignment: .top) {
@@ -205,7 +213,7 @@ private struct ConfusionCard: View {
     }
 }
 
-private struct MatrixCell: View {
+struct MatrixCell: View {
     let cell: ResultDetailModel.Cell
     @Environment(\.colorScheme) private var scheme
 

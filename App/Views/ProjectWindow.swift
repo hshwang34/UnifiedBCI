@@ -96,7 +96,7 @@ struct ProjectWindow: View {
                         .labelStyle(.titleAndIcon)
                         .buttonStyle(.borderedProminent)
                         .disabled(!session.canEvaluate)
-                        .help("Evaluate the selected recording (⌘R)")
+                        .help(session.isLiveRunning ? LiveRunCopy.pausedDuringLive : "Evaluate the selected recording (⌘R)")
                 }
             }
             FixedToolbarSpacer()
@@ -258,7 +258,7 @@ private struct ContentColumn: View {
                                 Button("Evaluate") { session.selectedRecordingID = handle.id; session.liveShown = false; session.evaluate() }
                                     .disabled(session.isRunning)
                                 Button(ReplayCopy.replayButton) { session.showReplay(recording: handle.id) }
-                                    .disabled(session.frozen.models.isEmpty || session.frozen.runner.isBusy)
+                                    .disabled(session.frozen.models.isEmpty || session.frozen.runner.isBusy || session.isLiveRunning)
                             }
                         }
                     }
@@ -267,8 +267,7 @@ private struct ContentColumn: View {
         case .protocols:
             ProtocolsList(session: session)
         case .liveTest:
-            // The placeholder lives in the detail column; this column stays empty.
-            Color.clear
+            LiveRunsList(session: session)
         case .pipelines:
             PipelinesList(session: session)
         case .results:

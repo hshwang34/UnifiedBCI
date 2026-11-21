@@ -198,6 +198,8 @@ final class ProjectSession: Identifiable {
         guard let live else { return }
         runs?.tearDown()
         runs = nil
+        // A check in progress is called off (its replay cancelled); stop still writes run.json.
+        if liveFeedback?.phase == .checking { frozen.runner.cancel() }
         await liveFeedback?.stop()
         await live.close()
         if self.live === live { self.live = nil }
@@ -238,13 +240,6 @@ final class ProjectSession: Identifiable {
 
     /// Opens the participant window on the chosen display and starts the first run.
     func startRuns(_ form: StartRunForm) {
-        #if DEBUG
-        // PR 7 preview: Start run… becomes a live run with the newest frozen model.
-        if LaunchArguments.liveFeedbackPreview, let model = frozen.models.first {
-            Task { await startLiveRuns(form, model: model, policy: FeedbackPolicy()) }
-            return
-        }
-        #endif
         guard let (setup, host, screen) = prepareRuns(form) else { return }
         startRunForm = nil
         startRuns(setup, host: host, surface: CueWindowController(scheduler: CueFrameScheduler(), screen: screen))
@@ -270,11 +265,72 @@ final class ProjectSession: Identifiable {
     private(set) var liveFeedback: LiveFeedbackController?
     /// Set while a live run's worker starts; Start stays disabled.
     private(set) var isStartingLive = false
+    /// From Start until its replay check is stored: Evaluate and Replay are paused.
+    var isLiveRunning: Bool { liveFeedback.map { $0.phase != .ended } ?? false }
+    /// The Live Test list's selection: a live run, or nil for the setup.
+    var selectedLiveRunID: UUID?
+    /// Live Test setup: the protocol run's form (protocol, seed, display) and the live part.
+    var liveRunForm: StartRunForm?
+    var liveTestForm = LiveTestForm()
+
+    /// The setup's choices: protocols (the default added if none), displays, and a model that
+    /// fits the connected stream when there is one.
+    func prepareLiveSetup(operatorScreen: NSScreen?) async {
+        await frozen.awaitLoads()
+        if let list = try? await { _ = try await store.ensureDefaultProtocol(); return try await store.protocols() }() {
+            let protocols = list.protocols.filter { !list.mislinked.contains($0.protocolID) }
+            if liveRunForm == nil || liveRunForm?.protocols != protocols {
+                var form = StartRunForm(protocols: protocols, displays: CueWindowController.displays(operatorScreen: operatorScreen),
+                                        remembered: CueDisplayPicker.remembered(in: .standard))
+                if let keep = liveRunForm?.protocolID, protocols.contains(where: { $0.protocolID == keep }) { form.pick(keep) }
+                liveRunForm = form
+            }
+        }
+        if liveTestForm.modelID.map({ id in !frozen.models.contains { $0.modelID == id } }) ?? true {
+            liveTestForm.modelID = (frozen.models.first { liveMismatch($0) == nil } ?? frozen.models.first)?.modelID
+        }
+    }
+
+    /// Why `model` can't run on the connected stream, or nil (also nil with nothing connected).
+    func liveMismatch(_ model: ModelRecord) -> String? {
+        guard let live, let board = live.snapshot.board, let request = live.runHost()?.request else { return nil }
+        return LiveRunCopy.mismatch(model: model, channelIDs: request.channels.map(\.id), rateHz: Double(board.samplingRate))
+    }
+
+    /// This project's window (the operator's display for the setup's display list).
+    var projectWindow: NSWindow? { NSApp.windows.first { $0.title == name && $0.styleMask.contains(.titled) } }
+
+    var liveSetupModel: ModelRecord? { frozen.models.first { $0.modelID == liveTestForm.modelID } }
+
+    /// Why Start Live Run is disabled, or nil.
+    var liveStartDisabledReason: String? {
+        if isStartingLive { return LiveRunCopy.starting }
+        if frozen.models.isEmpty { return LiveRunCopy.noModels }
+        guard live?.snapshot.board != nil, live?.state == .streaming else { return LiveRunCopy.noSource }
+        guard let model = liveSetupModel else { return LiveRunCopy.noModels }
+        if let m = liveMismatch(model) { return m }
+        if case .failure(let p) = liveTestForm.policy { return p.text }
+        guard let form = liveRunForm else { return StartRunCopy.noProtocol }
+        if let p = form.selected, let m = LiveRunCopy.classMismatch(model: model, protocolRecord: p) { return m }
+        if let p = form.selected, FeedbackFeed.directions(classes: p.classes, modelLabels: model.classLabels) == nil { return LiveTestCopy.directionProblem }
+        return form.disabledReason(streamReason: startRunDisabledReason)
+    }
+
+    /// Start Live Run in the Live Test setup.
+    func startLiveFromSetup() async {
+        guard liveStartDisabledReason == nil, let form = liveRunForm, let model = liveSetupModel, case .success(let policy) = liveTestForm.policy else { return }
+        await startLiveRuns(form, model: model, policy: policy)
+    }
 
     /// Starts a live run: the inference worker first (a model that doesn't match the stream
     /// is refused here, before anything runs), then the protocol runs with feedback on.
     func startLiveRuns(_ form: StartRunForm, model: ModelRecord, policy: FeedbackPolicy) async {
-        guard !isStartingLive, let (setup, host, screen) = prepareRuns(form), let board = live?.snapshot.board else { return }
+        guard !isStartingLive, !isLiveRunning, let (setup, host, screen) = prepareRuns(form), let board = live?.snapshot.board else { return }
+        // Checked again here, not only in the setup: the classes must be the model's, and cue on opposite sides.
+        if let m = LiveRunCopy.classMismatch(model: model, protocolRecord: setup.protocolRecord) { startRunSheetError = m; return }
+        if FeedbackFeed.directions(classes: setup.protocolRecord.classes, modelLabels: model.classLabels) == nil {
+            startRunSheetError = LiveTestCopy.directionProblem; return
+        }
         isStartingLive = true
         defer { isStartingLive = false }
         var request = host.request
@@ -312,8 +368,25 @@ final class ProjectSession: Identifiable {
 
     func finishRuns() async {
         await runs?.finish()
-        await liveFeedback?.stop()
         await liveReload?.value
+        if let c = liveFeedback, c.phase == .running {
+            await c.stop(replay: { [weak self] model, recording, threshold, cue in
+                guard let self else { return .failure(.init(reason: "the project closed")) }
+                return await self.replayForCheck(model: model, recording: recording, threshold: threshold, cue: cue)
+            })
+            await frozen.reload()
+            if let run = frozen.liveRuns.first(where: { $0.liveRunID == c.liveRunID }) { await frozen.loadInputs(run, force: true) }
+            selectedLiveRunID = c.liveRunID
+        }
+    }
+
+    /// The live-vs-replay check's replay: the frozen-model worker, as Replay… uses it.
+    private func replayForCheck(model: ModelRecord, recording: UUID, threshold: Double, cue: Double)
+        async -> Result<[PredictionRecord], LiveFeedbackController.ReplayFailure> {
+        let state = await frozen.runner.replay(model: model, recordingID: recording, abstainThreshold: threshold, cueLengthSeconds: cue)
+        if case .cancelled = state { return .failure(.init(reason: LiveRunCopy.checkCancelled)) }
+        guard case .done(let id) = state else { return .failure(.init(reason: "the replay didn't finish (\(state))")) }
+        do { return .success(try await store.predictions(liveRun: id).records) } catch { return .failure(.init(reason: "\(error)")) }
     }
 
     func dismissRuns() {
@@ -544,7 +617,7 @@ final class ProjectSession: Identifiable {
     }
 
     var canEvaluate: Bool {
-        guard let handle = selectedRecording, !isRunning, !liveShown else { return false }
+        guard let handle = selectedRecording, !isRunning, !liveShown, !isLiveRunning else { return false }
         return RunCountModel.evaluableRuns(eventsByRecording[handle.id] ?? []) >= RunCountModel.minimumRuns
     }
 
@@ -598,7 +671,8 @@ final class ProjectSession: Identifiable {
 
     @discardableResult
     func evaluateAndWait() async -> EvaluationRunner.State {
-        guard let recordingID = selectedRecordingID, !isRunning else { return runner.state }
+        // Training never competes with inference (PRD §7): paused during a live run.
+        guard let recordingID = selectedRecordingID, !isRunning, !isLiveRunning else { return runner.state }
         notice = nil
         // The worker's defaults decide the request; a lookup in flight is waited for.
         await defaultsTask?.value
@@ -766,6 +840,7 @@ final class ProjectSession: Identifiable {
 
     /// Replay… from a recording (model to pick) or a model (recording to pick).
     func showReplay(model: UUID? = nil, recording: UUID? = nil) {
+        guard !isLiveRunning else { return }
         frozen.replayDraft = .init(modelID: model ?? frozen.models.first?.modelID, recordingID: recording ?? selectedRecordingID ?? recordings.first?.id)
     }
 
@@ -822,6 +897,8 @@ final class ProjectSession: Identifiable {
         isClosing = true
         // Stops a recording (`stopped`, partial chunk flushed) and releases the board.
         runs?.tearDown()
+        // A check in progress is called off (its replay cancelled); stop still writes run.json.
+        if liveFeedback?.phase == .checking { frozen.runner.cancel() }
         await liveFeedback?.stop()
         await live?.close()
         // The inspection worker stops alongside the evaluation, inside the same budget.

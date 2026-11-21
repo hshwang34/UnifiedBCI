@@ -130,7 +130,7 @@ struct FrozenModelRows: View {
                 .padding(.vertical, 2)
                 .tag(row.id)
                 .accessibilityElement(children: .combine)
-                .contextMenu { Button(ReplayCopy.replayButton) { session.showReplay(model: row.id) } }
+                .contextMenu { Button(ReplayCopy.replayButton) { session.showReplay(model: row.id) }.disabled(session.isLiveRunning) }
             }
         }
     }
@@ -151,7 +151,8 @@ struct FrozenModelDetailView: View {
                         Text(model.name).font(Theme.Fonts.title).accessibilityAddTraits(.isHeader)
                         Spacer()
                         Button(ReplayCopy.replayButton) { session.showReplay(model: model.modelID) }
-                            .help(ReplayCopy.replayHelp)
+                            .disabled(session.isLiveRunning)
+                            .help(session.isLiveRunning ? LiveRunCopy.pausedDuringLive : ReplayCopy.replayHelp)
                     }
                     Text(FreezeSheetModel.recipeName(model.recipe)).font(.callout).foregroundStyle(Theme.textSecondary)
                     FactRows(rows: FrozenModelRowModel.facts(model))

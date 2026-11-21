@@ -44,6 +44,11 @@ final class FrozenModelsController {
     /// Stored replays, newest first.
     private(set) var replays: [LiveRunRecord] = []
     private(set) var loadError: String?
+    /// Live runs (kind `live`), newest first, and what each one's card reads (brief 006 PR 8).
+    private(set) var liveRuns: [LiveRunRecord] = []
+    private(set) var liveInputs: [UUID: LiveRunInputs] = [:]
+    /// Each live run's card, built off the main thread when its inputs load.
+    private(set) var liveCards: [UUID: LiveRunCardModel] = [:]
     var selectedModelID: UUID? {
         didSet { if selectedModelID != oldValue { selectedReplayID = replays(of: selectedModelID).first?.liveRunID } }
     }
@@ -112,6 +117,7 @@ final class FrozenModelsController {
             let runs = try await store.liveRuns().runs
             models = m
             replays = runs.filter { $0.kind == .replay }
+            liveRuns = runs.filter { $0.kind == .live }
             liveRunCounts = Dictionary(grouping: runs.filter { $0.kind == .live }, by: \.modelID).mapValues(\.count)
             loadError = nil
             if selectedModelID.map({ id in !m.contains { $0.modelID == id } }) ?? true { selectedModelID = m.first?.modelID }
@@ -180,6 +186,36 @@ final class FrozenModelsController {
             selectedReplayID = id
         }
         return state
+    }
+
+    /// Reads a live run's cue-locked windows, its recording's cues and sessions, and the
+    /// source result's held-out figures, once per run (again with `force`, after it ended).
+    func loadInputs(_ run: LiveRunRecord, force: Bool = false, classNames: [String: String] = [:]) async {
+        guard force || liveInputs[run.liveRunID] == nil else { return }
+        let store = store, model = models.first { $0.modelID == run.modelID }
+        let inputs = await Task.detached { () -> LiveRunInputs in
+            let preds = (try? await store.predictions(liveRun: run.liveRunID).records) ?? []
+            let events = (try? await store.events(for: run.recordingID)) ?? []
+            let labels = Set(model?.classLabels ?? [])
+            var truth: [String: String] = [:], aborted = Set<String>()
+            for e in events where run.runIDs.contains(e.runID) {
+                guard let t = e.trialID else { continue }
+                if labels.contains(e.label) { truth[t] = e.label }
+                if e.label == "trial_abort" { aborted.insert(t) }
+            }
+            let sessions = ((try? await store.recording(id: run.recordingID))?.manifest.segments ?? [])
+                .filter { run.runIDs.contains($0.runID) }.map(\.sessionID)
+            var offline: LiveRunInputs.Offline?
+            if let model, let stored = try? await store.result(id: model.sourceResultID), let r = try? EvaluationReport.decode(stored.evaluationJSON),
+               let h = r.models[r.comparison.reference]?.holdout {
+                offline = .init(balancedAccuracy: h.balancedAccuracy, accuracy: h.accuracy, interval: ResultDetailModel.range(h.accuracyCi95),
+                                trials: h.nTestTrials, createdAt: stored.meta.createdAt)
+            }
+            return LiveRunInputs(cueLocked: preds.filter { $0.windowKind == "cue_locked" }, truth: truth, aborted: aborted, sessions: sessions, offline: offline)
+        }.value
+        let card = await Task.detached { LiveRunCardModel(run: run, model: model, inputs: inputs, name: { classNames[$0] ?? ClassDisplay.name($0) }) }.value
+        liveInputs[run.liveRunID] = inputs
+        liveCards[run.liveRunID] = card
     }
 
     func shutdown() async {

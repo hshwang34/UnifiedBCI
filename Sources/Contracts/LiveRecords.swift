@@ -183,9 +183,18 @@ public struct LiveRunRecord: Codable, Sendable, Equatable, Identifiable {
         public var windowsCompared: Int
         public var windowsMatched: Int
         public var differingSequences: [Int]
-        public init(windowsCompared: Int, windowsMatched: Int, differingSequences: [Int]) {
+        /// Differing windows a logged cause explains (frames dropped from the live buffer split
+        /// the live segment, so its windows sit elsewhere than the recording's), and that cause.
+        /// Only the rest are a bug. Optional; older readers ignore them.
+        public var explainedSequences: [Int]?
+        public var explanation: String?
+        public init(windowsCompared: Int, windowsMatched: Int, differingSequences: [Int], explainedSequences: [Int]? = nil, explanation: String? = nil) {
             self.windowsCompared = windowsCompared; self.windowsMatched = windowsMatched; self.differingSequences = differingSequences
+            self.explainedSequences = explainedSequences; self.explanation = explanation
         }
+
+        /// Differing windows no logged cause explains.
+        public var unexplained: [Int] { differingSequences.filter { !Set(explainedSequences ?? []).contains($0) } }
     }
 
     public static let maxFileBytes = 4 * 1024 * 1024
@@ -196,8 +205,31 @@ public struct LiveRunRecord: Codable, Sendable, Equatable, Identifiable {
         guard hopSamples > 0, hopSamples <= 100_000 else { return "hop out of range" }
         guard abstainThreshold.isFinite, abstainThreshold >= 0.5, abstainThreshold < 1 else { return "abstention threshold out of range" }
         guard runIDs.count <= 1_000, staleLimitMillis.map({ (1...60_000).contains($0) }) ?? true else { return "runs or stale limit out of range" }
+        // Counts and times screens do arithmetic on: bounded, so a crafted file can't trap.
+        if let c = replayCheck {
+            guard (0...Self.maxCount).contains(c.windowsCompared), (0...c.windowsCompared).contains(c.windowsMatched),
+                  c.differingSequences.count <= 1_000, (c.explainedSequences?.count ?? 0) <= 1_000,
+                  (c.explanation?.count ?? 0) <= 500 else { return "replay check counts out of range" }
+        }
+        if let s = summary {
+            guard (0...Self.maxCount).contains(s.predictions), (0...Self.maxCount).contains(s.abstained),
+                  s.byValidity.count <= 64, s.byValidity.values.allSatisfy({ (0...Self.maxCount).contains($0) }) else { return "summary counts out of range" }
+        }
+        if let l = latency {
+            for p in [l.receiptToEmission, l.bufferWait, l.emissionToPresentation].compactMap({ $0 }) {
+                guard (0...Self.maxCount).contains(p.count), [p.p50, p.p95, p.max].allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= Self.maxMillis }),
+                      p.p50 <= p.p95, p.p95 <= p.max else {
+                    return "latency out of range"
+                }
+            }
+        }
         return nil
     }
+
+    /// Largest count a stored live run may claim (far above any real run: ~8 windows a second).
+    public static let maxCount = 100_000_000
+    /// Largest latency in milliseconds a stored live run may claim (a day).
+    public static let maxMillis = 86_400_000.0
 }
 
 /// `live/<uuid>/feedback.jsonl`, one line per change of what the participant saw: the bar
