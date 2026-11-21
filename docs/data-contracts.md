@@ -181,7 +181,7 @@ Added for brief 005 without a format bump: older readers never open `protocols/`
   and cue symbols, `timing`, `trialsPerClass` and `order`, the fields that decide what the
   participant sees and when; it is recomputed on read, and a mismatch makes the file
   unreadable. Each file is read with a size cap and validated (ids, two classes, labels
-  `[a-z0-9_]`, durations 1 ms–30 s, rest min ≤ max, 1–100 trials per class); a file that
+  `[a-z0-9_]` and not a protocol event name such as `rest` or `trial_abort`, durations 1 ms–30 s, rest min ≤ max, 1–100 trials per class); a file that
   fails is skipped and counted, never fatal.
 - `recordings/<uuid>/runs/<runID>.plan.json` (`RunPlan`) is written atomically before the
   run's first cue and never replaced. It names the protocol id, version and content hash,

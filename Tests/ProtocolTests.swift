@@ -133,6 +133,9 @@ final class ProtocolTests: XCTestCase {
             .text("name"), .classCount(3), .label("Left Hand"), .duplicateLabel("cue_right_hand"), .text("display name"),
             .duration("fixation"), .duration("cue"), .restRange, .trialsPerClass(101), .runsPerSession(0), .text("instructions"),
         ])
+        var reserved = ProtocolDraft.grazDefault
+        reserved.classes[1].label = "trial_abort"
+        XCTAssertEqual(ProtocolRecord.problems(reserved), [.reservedLabel("trial_abort")])
         XCTAssertEqual(ProtocolProblem.classCount(3).description, "this recipe needs exactly two classes, not 3")
         XCTAssertEqual(ProtocolProblem.duration("cue").description, "cue must be more than 0 s and at most 30 s")
         var ok = ProtocolDraft.grazDefault

@@ -72,6 +72,7 @@ public enum ProtocolProblem: Equatable, Sendable, CustomStringConvertible {
     case classCount(Int)
     case label(String)
     case duplicateLabel(String)
+    case reservedLabel(String)
     case text(String)
     case duration(String)
     case restRange
@@ -88,6 +89,7 @@ public enum ProtocolProblem: Equatable, Sendable, CustomStringConvertible {
         case .classCount(let n): return "this recipe needs exactly two classes, not \(n)"
         case .label(let l): return "label \"\(l)\" must be 1–\(ProtocolRecord.maxLabelLength) characters of a–z, 0–9 and _"
         case .duplicateLabel(let l): return "label \"\(l)\" is used twice"
+        case .reservedLabel(let l): return "label \"\(l)\" is the name of a protocol event"
         case .text(let what): return "\(what) is empty, too long or has control characters"
         case .duration(let what): return "\(what) must be more than 0 s and at most 30 s"
         case .restRange: return "shortest rest must not exceed longest rest"
@@ -107,6 +109,9 @@ public struct ProtocolRecord: Codable, Sendable, Equatable, Identifiable {
     public static let maxRunsPerSession = 20
     public static let maxLabelLength = 48
     public static let maxVersion = 10_000
+    /// Labels of the protocol's own events (brief 005); a class can't share one, or the
+    /// evaluation could read a `rest` or `trial_abort` event as a cue.
+    public static let reservedLabels: Set<String> = ["fixation", "cue_end", "rest", "trial_abort", "run_start", "run_end", "pause", "resume"]
     public static let maxInstructionsLength = 2000
     /// Largest `protocol.json` read at all; a valid one is a few KB.
     public static let maxFileBytes = 64 * 1024
@@ -179,6 +184,7 @@ public struct ProtocolRecord: Codable, Sendable, Equatable, Identifiable {
         for c in d.classes {
             if !isValidLabel(c.label) { out.append(.label(c.label)) }
             if !seen.insert(c.label).inserted { out.append(.duplicateLabel(c.label)) }
+            if reservedLabels.contains(c.label) { out.append(.reservedLabel(c.label)) }
             if !ChannelMapRecord.isSane(c.displayName) { out.append(.text("display name")) }
         }
         let t = d.timing
