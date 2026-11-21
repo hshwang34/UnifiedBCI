@@ -35,7 +35,17 @@ struct RecordingDetailView: View {
         ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.l) {
-                Text(model.title).font(Theme.Fonts.title).foregroundStyle(Theme.textPrimary)
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
+                    Text(model.title).font(Theme.Fonts.title).foregroundStyle(Theme.textPrimary)
+                    if let badge = model.badge {
+                        Text(badge)
+                            .font(.callout.weight(.semibold)).foregroundStyle(Theme.textSecondary)
+                            .padding(.horizontal, Theme.Space.s).padding(.vertical, Theme.Space.xxs)
+                            .background(Theme.surface2, in: Capsule())
+                            .overlay(Capsule().strokeBorder(Theme.hairline))
+                            .accessibilityLabel("Source: \(badge)")
+                    }
+                }
                 if let warning = model.warning {
                     StatusChip(kind: .warning, text: warning)
                 }

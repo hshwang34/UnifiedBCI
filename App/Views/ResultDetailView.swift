@@ -7,7 +7,8 @@ struct ResultDetailView: View {
     let stored: StoredResult
 
     var body: some View {
-        switch Result(catching: { try ResultDetailModel(stored: stored, allResults: session.results, modelName: session.modelName) }) {
+        switch Result(catching: { try ResultDetailModel(stored: stored, allResults: session.results, modelName: session.modelName,
+                                                                   isDemo: session.recordings.first { $0.id == stored.meta.recordingID }.map { RecordingDetailModel.isDemo($0.manifest) } ?? false) }) {
         case .failure(let error):
             ContentUnavailableView("Result unreadable", systemImage: "exclamationmark.triangle", description: Text("\(error)"))
         case .success(let m):
