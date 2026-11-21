@@ -70,15 +70,14 @@ struct SignalTraceCard: View {
         .buttonStyle(.bordered)
     }
 
-    /// The analysis-unavailable treatment used elsewhere: Retry when the worker has gone (the
-    /// next call starts a fresh one); a refusal shows its details, and moving the window asks again.
+    /// The analysis-unavailable treatment used elsewhere, with Retry for both kinds: when the
+    /// worker has gone the next call starts a fresh one; after a refusal it asks for the same
+    /// window again (otherwise only moving the window would, and at 0 s Earlier is disabled).
     private var problem: ErrorBanner? {
         switch session.traces.state {
-        case .unavailable(let r, let reason) where isShown(r):
+        case .unavailable(let r, let reason) where isShown(r), .failed(let r, let reason) where isShown(r):
             return ErrorBanner(title: TraceModel.unavailableTitle, message: TraceModel.unavailableMessage, details: reason,
                                retry: { [session, segment] in session.loadTrace(segment: segment) })
-        case .failed(let r, let reason) where isShown(r):
-            return ErrorBanner(title: TraceModel.unavailableTitle, message: TraceModel.unavailableMessage, details: reason, retry: nil)
         default: return nil
         }
     }
