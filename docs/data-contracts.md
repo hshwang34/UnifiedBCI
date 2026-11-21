@@ -159,6 +159,22 @@ Three clocks, never mixed:
   which were one sitting, and every EDF carries the same placeholder start date.
 - A `StreamSegment` is a contiguous run from one `start_stream` to a stop, disconnect, or
   failure (`endReason`). Reconnecting starts a new segment with its own sample indices.
+- `endReason` says how a segment ended, and is set exactly once:
+  - `stopped`: Stop recording, Disconnect, closing the project window, or quitting the app.
+    The partial last chunk is flushed first.
+  - `disconnect`: no samples for 3 s, or a BrainFlow read error. A `disconnect` gap follows
+    the last sample. When the board comes back within the 30 s retry window
+    (decision #32), the same recording continues in a new segment with the same
+    `sessionID` and `runID` and sample indices from 0. When it doesn't, the recording ends
+    here.
+  - `disk_full`: free space fell under 100 MB, or a write returned `ENOSPC`.
+  - `error`: any other write failure, or the writer fell 30 chunks behind. Samples that were
+    never committed are counted in `uncommittedSampleCount`.
+  - `process_terminated`: set after the fact by `ProjectStore.open` (see "The one rewrite"
+    above).
+  - `worker_failure`: reserved.
+- A segment without an `endReason` is either still being written (its writer lock is held)
+  or will be closed as `process_terminated` on the next open.
   Filters and any stateful preprocessing reset at segment start (`preprocessingStatePolicy =
   "reset_on_segment_start"`), and the worker applies the same reset when replaying: the
   band-pass runs once over the whole segment from zero state, and trials whose window
@@ -167,7 +183,16 @@ Three clocks, never mixed:
 
 ## Source and configuration
 
-- `Source.kind` is `"brainflow"`, `"synthetic"` or `"public_dataset"`. For a public
+- `Source.kind` is `"brainflow"` (a real board), `"synthetic"` (BrainFlow's synthetic board,
+  `warning: "Synthetic board — generated signal, not a device"`), `"playback"` or
+  `"public_dataset"`. A `playback` recording came through BrainFlow's playback-file board.
+  It names the played file and its SHA-256 in `sourceFiles`, and never claims a device or
+  a data path. The Demo source (decision #42) is a playback of the bundled
+  `S001R04-demo-cyton-daisy-125hz.csv`. Its sidecar (`<name>.json`, `kind:
+  derived_playback`) is used only when it names the file's hash. It adds the dataset,
+  license, attribution, `derivations` (resampled 160 → 125 Hz) and the warning, which stay
+  in the manifest and every export. On screen it is called "Demo". The sidecar's channel
+  labels, montage and reference pre-fill the channel map, which the operator still confirms. For a public
   dataset the provenance fields are filled: `dataset`, `doi`, `license`, `subject`, `runs`,
   a `warning` the UI shows on the first line of the source panel ("Public dataset, not
   recorded on OpenBCI Cyton+Daisy…"), `attribution` (citations with DOIs, shown in the
@@ -179,13 +204,16 @@ Three clocks, never mixed:
   `worker/tools/convert_eegmmidb.py` (dev-time, byte-deterministic, tested).
 - `Source.dataPath` distinguishes `radio_125` (dongle, 125 Hz, alternating packets) from
   `sd_250` (on-board SD card, 250 Hz). They are different recordings; neither is a
-  resample of the other. It is `nil` for synthetic and imported sources.
+  resample of the other. It is `nil` for synthetic, playback and imported sources.
 - `boardConfiguration.requested` is what the app sent; `boardConfiguration.readback` is
   what the board reported, empty when it offers no readback. Readback is never copied
   from `requested`. Keys are per channel, `chNN.<setting>` (`gain`, `input`, `bias`, `srb2`,
   `power`). `requested` also holds `chNN.command` and `chNN.acknowledged`: `yes` only for a
   Cyton "Success" reply, otherwise `no`, or `not applicable` for boards that aren't a device.
-  On a Cyton, `readback` holds each command's `chNN.reply`, plus `raw` (the `?` reply). A
+  On a Cyton, `readback` holds each command's `chNN.reply`, plus `raw` (the `?` reply). When
+  that reply parses as a register dump, `readback` also holds the per-channel `chNN.gain`,
+  `.input`, `.bias`, `.srb2` and `.power` (`CytonRegisterReadback`); otherwise it is `raw`
+  only, and nothing is guessed. A readback gain other than 24 disables Record. A
   recording's configuration covers every segment: a reconnect that finds different settings
   ends the recording instead of adding a segment.
 

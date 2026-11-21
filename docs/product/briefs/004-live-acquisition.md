@@ -1,6 +1,6 @@
 # 004 — Live acquisition: connect Cyton+Daisy and record durably
 
-**Status:** approved · **Owner:** PM · **PR:** — · **Updated:** 2026-11-20
+**Status:** shipped (code) — awaiting PM hardware checklist · **Owner:** PM · **PR:** #20, #21, #22, #23, #24, #25, #26, #27, #28, #29, #30 · **Updated:** 2026-11-20
 
 ## Problem
 Everything the app does today starts from a recording someone else made. The welcome
