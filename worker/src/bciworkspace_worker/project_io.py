@@ -10,7 +10,8 @@ worker never repairs or skips a bad chunk.
 A `.bciproj` may come from anyone, so `recording.json` is hostile input. `validate`
 applies the same rules as Swift's `RecordingHandle.validate` before anything is read:
 canonical chunk names (`chunks/NNNNNN.f64` for the entry's index), positive dimensions,
-every channel row inside every chunk, a positive sample rate. Chunk paths are built from
+every channel row (and the marker row, when there is one) inside every chunk, a positive
+sample rate, well-formed detected gaps. Chunk paths are built from
 the index and must resolve to a regular file inside `chunks/`; the size is checked
 against `stat` before a byte is read.
 """
@@ -41,6 +42,15 @@ class ProjectError(Exception):
 
 
 FORMAT_VERSION = 1
+# Gap evidence that means the samples around it are not one clean, evenly spaced sequence
+# (docs/data-contracts.md). `duplicate_counter` is included: on a step-1 board BrainFlow stores a
+# repeated packet as received (brief 004), so the window holds one sample twice and every later
+# sample sits one period late. Nothing was lost, but the window is not what the online path would
+# see on clean data, so it is excluded like a loss. receipt_interval and clock_anomaly are
+# provenance only; disconnect / process_terminated sit at a segment's end, past every window.
+DATA_GAP_EVIDENCE = frozenset({"sequence_skip", "stale_half", "duplicate_counter", "invalid_counter", "overflow_suspected"})
+# The protocol's event for an aborted trial (brief 005); its trialID names the trial.
+ABORT_LABEL = "trial_abort"
 
 
 @dataclass(frozen=True)
@@ -137,6 +147,17 @@ def validate(rec: Recording) -> None:
             raise IntegrityError(f"recording.json: segment index {seg['index']} is negative")
         if not isinstance(seg.get("runID"), str) or not isinstance(seg.get("sessionID"), (str, type(None))):
             raise IntegrityError(f"recording.json: segment {seg['index']} has no string runID")
+        gaps = seg.get("detectedGaps", [])
+        if not isinstance(gaps, list) or not all(isinstance(g, dict) and isinstance(g.get("evidence"), str) for g in gaps):
+            raise IntegrityError(f"recording.json: segment {seg['index']} detectedGaps is not a list of gaps")
+        for g in gaps:
+            if _int(g.get("afterSampleIndex"), f"segment {seg['index']} gap afterSampleIndex") < -1:
+                raise IntegrityError(f"recording.json: segment {seg['index']} has a gap before sample -1")
+    marker_row = m["timing"].get("markerRow") if isinstance(m["timing"], dict) else None
+    if marker_row is not None:
+        source_rows_and_marker = [*source_rows, _int(marker_row, "timing.markerRow")]
+    else:
+        source_rows_and_marker = source_rows
     seen: set[int] = set()
     for entry in chunks:
         index = _int(entry.get("index"), "chunk index")
@@ -155,9 +176,9 @@ def validate(rec: Recording) -> None:
             raise IntegrityError(f"chunk {index}: {rows}x{count} float64 overflows")
         if not isinstance(entry.get("sha256"), str):
             raise IntegrityError(f"chunk {index} has no SHA-256")
-        for row in source_rows:
+        for row in source_rows_and_marker:
             if not 0 <= row < rows:
-                raise IntegrityError(f"channel reads row {row}, but chunk {index} has {rows} rows")
+                raise IntegrityError(f"channel or marker reads row {row}, but chunk {index} has {rows} rows")
 
 
 def _chunk_path(rec: Recording, index: int) -> Path:
@@ -213,7 +234,7 @@ def load_segments(rec: Recording, labels: dict[str, int] | None, only: int | Non
     each segment contiguously from sample 0; anything else is an integrity error."""
     manifest = rec.manifest
     rows = [int(c["sourceRow"]) for c in manifest["channels"]]
-    events_by_segment = {} if labels is None else _events_by_segment(rec, labels)
+    events_by_segment, aborted = ({}, frozenset()) if labels is None else _events_by_segment(rec, labels)
     out: list[Segment] = []
     for seg in sorted(manifest["segments"], key=lambda s: int(s["index"])):
         index = int(seg["index"])
@@ -231,18 +252,23 @@ def load_segments(rec: Recording, labels: dict[str, int] | None, only: int | Non
         if not blocks:
             raise IntegrityError(f"segment {index} ({seg['runID']}) has no chunks")
         data = np.concatenate(blocks, axis=1)
+        gaps = tuple((int(g["afterSampleIndex"]), str(g["evidence"])) for g in seg.get("detectedGaps", [])
+                     if g["evidence"] in DATA_GAP_EVIDENCE)
         out.append(Segment(data=data, sfreq=rec.sfreq, events=events_by_segment.get(index, []),
-                           run_id=str(seg["runID"]), session_id=seg.get("sessionID")))
+                           run_id=str(seg["runID"]), session_id=seg.get("sessionID"), gaps=gaps, aborted_trials=aborted,
+                           segment_index=index))
     return out
 
 
-def _events_by_segment(rec: Recording, labels: dict[str, int]) -> dict[int, list[tuple[int, int, str]]]:
+def _events_by_segment(rec: Recording, labels: dict[str, int]) -> tuple[dict[int, list[tuple[int, int, str]]], frozenset[str]]:
+    """Cue events by segment, and the trial ids of `trial_abort` events (brief 005)."""
     path = rec.directory / "events.jsonl"
     try:
         lines = _read_regular_text(path).splitlines()
     except (OSError, ValueError) as exc:
         raise ProjectError(f"cannot read {path}: {exc}") from exc
     out: dict[int, list[tuple[int, int, str]]] = {}
+    aborted: set[str] = set()
     for n, line in enumerate(lines, 1):
         if not line.strip():
             continue
@@ -253,6 +279,9 @@ def _events_by_segment(rec: Recording, labels: dict[str, int]) -> dict[int, list
         if not isinstance(ev, dict):
             raise ProjectError(f"{path}:{n}: not an event object")
         label = ev.get("label")
+        if label == ABORT_LABEL and isinstance(ev.get("trialID"), str):
+            aborted.add(ev["trialID"])
+            continue
         if not isinstance(label, str) or label not in labels:
             continue
         assoc = ev.get("sampleAssociation")
@@ -265,7 +294,7 @@ def _events_by_segment(rec: Recording, labels: dict[str, int]) -> dict[int, list
         out.setdefault(segment, []).append((sample, labels[label], str(trial_id)))
     for events in out.values():
         events.sort(key=lambda e: e[0])
-    return out
+    return out, frozenset(aborted)
 
 
 def data_source(rec: Recording, segments: list[Segment]) -> dict[str, Any]:
@@ -275,7 +304,7 @@ def data_source(rec: Recording, segments: list[Segment]) -> dict[str, Any]:
     out: dict[str, Any] = {
         "kind": str(src.get("kind", "unknown")),
         "recording_id": rec.recording_id,
-        "n_runs": len(segments),
+        "n_runs": len({s.run_id for s in segments}),   # a run may span segments
         "n_trials": sum(len(s.events) for s in segments),
         "n_channels": len(rec.channel_ids),
         "sfreq": rec.sfreq,

@@ -182,7 +182,11 @@ Three clocks, never mixed:
   "reset_on_segment_start"`), and the worker applies the same reset when replaying: the
   band-pass runs once over the whole segment from zero state, and trials whose window
   starts inside the filter's warm-up are excluded and listed. Nothing is ever concatenated
-  across segments, and no values are interpolated into raw data.
+  across segments, and no values are interpolated into raw data. A run may span several
+  segments (a reconnect mid-run, decision #35): each segment is still filtered on its own and
+  trials still group by run for every split. Segments sharing a `runID` count as one run only
+  when they are consecutive by segment index and declare the same session; otherwise the
+  evaluation is refused as a duplicate run id. Trial ids must be unique within a recording.
 
 ## Protocols and run plans
 
@@ -323,7 +327,21 @@ client passes the worker's `result` bytes through without re-encoding):
 - `exclusions` — trials dropped and why; empty is a valid answer. Reasons:
   `window_starts_before_filter_warmup` (the window begins inside the band-pass warm-up,
   derived from the filter's slowest pole, so its features would carry a start transient
-  the online path never sees), `window_starts_before_segment`, `window_exceeds_segment`.
+  the online path never sees), `window_starts_before_segment`, `window_exceeds_segment`,
+  `trial_aborted` (a `trial_abort` event names the trial; decision #34), and
+  `window_spans_detected_gap` (a `sequence_skip`, `stale_half`, `duplicate_counter`,
+  `invalid_counter` or `overflow_suspected` gap lies inside the window or inside the filter
+  warm-up before it, so the band-passed window would carry the discontinuity's transient;
+  the entry adds `gap_after_sample` and `gap_evidence`). `duplicate_counter` counts because
+  BrainFlow stores a repeated packet as received: nothing is lost, but the window holds one
+  sample twice and the rest one period late. `receipt_interval` and `clock_anomaly` never
+  exclude. **Behaviour change (brief 005):** a recording made before brief 005 whose
+  manifest lists such gaps used to keep every trial; re-evaluating it now excludes the
+  trials those gaps touch, so its result differs (stored as `divergedFrom`). Recordings with
+  no such gaps, including the bundled example and the test fixture, evaluate byte for byte
+  as before.
+- `warnings` — present only when there is something to say. Today: a `trial_abort` event
+  naming a trial with no cue in the recording (`abort_names_unknown_trial`).
 - `models.<name>` — per-fold grouped CV balanced accuracy, and a `holdout` block with
   balanced accuracy, accuracy, confusion matrix, `n_test_trials`, `n_test_runs`, a 95 %
   Clopper-Pearson interval over held-out **trials**, `per_run` scores, and a run-level
