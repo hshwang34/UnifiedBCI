@@ -156,7 +156,20 @@ Three clocks, never mixed:
   A `brainflow_marker` association leaves it `nil`. The evaluation counts fallback cues
   (`warnings` kind `cue_by_nearest_timestamp`) and the result screen names them.
   `sourceTimeNanos` is for device-originated markers in the device's own clock.
-- Protocol events (brief 005) may carry `reason` (`trial_abort`, `pause`: `operator`,
+- Protocol events (brief 005): per trial `fixation`, the class label (the cue), `cue_end`,
+  `rest`, and `trial_abort` when aborted; per run `run_start`, `run_end`, `pause`, `resume`.
+  `origin` is `"protocol"` for what the runner scheduled and `"operator"` for an operator
+  action (abort, pause, resume); every event carries `sessionID`, `runID` and, for trial
+  events, `trialID` (`<runID>-t<nn>`, as in the run plan). `intendedAtMonotonicNanos` is the
+  scheduled time and `presentedAtMonotonicNanos` the presentation callback of the first
+  frame that drew it, converted from `mach_absolute_time` to `host_monotonic` by an offset
+  sampled in the same callback; they are never copied from each other, and a missing
+  callback leaves `presentedAt` null. Phase events carry a `sampleAssociation`
+  (`recordingID`, `segment`, `sampleIndex`, `method`): `brainflow_marker` when the marked
+  sample was found, `nearest_receipt_timestamp` when it wasn't (the event time is converted
+  to wall clock with the newest drain pair and the nearest BrainFlow timestamp is picked).
+  Both are software associations, neither corrected for display or transport delay. Run
+  and operator events have no association. They may also carry `reason` (`trial_abort`, `pause`: `operator`,
   `pause`, `disconnect`, `run_aborted`), `aborted` (`run_end` ended early) and
   `plannedLabel` (`trial_abort`: the trial's planned class, so a trial aborted before its
   cue appeared is still listed as excluded). All optional; older readers ignore them.
@@ -174,8 +187,12 @@ Three clocks, never mixed:
   the worker reports `unknown-session` evidence rather than claiming `same-session`. The
   bundled EEGMMIDB example is `null` — PhysioNet lists 14 runs per subject but never says
   which were one sitting, and every EDF carries the same placeholder start date.
-- A `StreamSegment` is a contiguous run from one `start_stream` to a stop, disconnect, or
-  failure (`endReason`). Reconnecting starts a new segment with its own sample indices.
+- A `StreamSegment` is one contiguous recorded span: samples committed without a break,
+  from Record (or a cued run's start) to a stop, disconnect, or failure (`endReason`). It
+  is no longer tied to one `start_stream`: with the cued protocol (brief 005) the stream
+  keeps going between runs, each run is a new segment with a new `runID`, and stopping
+  between runs closes the segment `stopped`. Reconnecting starts a new segment with its own
+  sample indices; a reconnect mid-run continues the same `runID` in the new segment.
 - `endReason` says how a segment ended, and is set exactly once:
   - `stopped`: Stop recording, Disconnect, closing the project window, or quitting the app.
     The partial last chunk is flushed first.
@@ -241,8 +258,22 @@ Added for brief 005 without a format bump: older readers never open `protocols/`
   against `Tests/Fixtures/protocol_schedule_golden.json`.
 - `TimingSemantics.markerRow` is BrainFlow's marker row for live recordings (0 except on the
   sample written after `insert_marker`), validated as a row of every chunk; `nil` for imports
-  and older recordings. Cue events associate through it with `method: "brainflow_marker"`,
-  or `nearest_receipt_timestamp` when the marker is not found.
+  and older recordings. The marker row is a stored chunk row like any other and is never
+  exported as a channel. Marker values (`ProtocolRunner.marker(for:in:)`):
+
+  | Value | Event |
+  |---|---|
+  | 1 | `fixation` |
+  | 4 | `cue_end` (the `rest` that starts with it shares its sample) |
+  | 5 | `rest` shown after a `trial_abort` |
+  | 10 + class index | the cue: 10 for `classes[0]`, 11 for `classes[1]` |
+
+  The cue range starts above every phase value, so a cue is never read as another phase;
+  the writer matches by value, not by order. Markers are inserted at the presentation
+  callback of the frame that first drew the phase. When no callback came, no marker is
+  inserted and the event associates by `nearest_receipt_timestamp` at its intended time.
+- An export carries the recording's run plans and exactly the protocol versions they name,
+  byte for byte (`docs/export-format.md`, "Run plans and protocols").
 
 ## Source and configuration
 
@@ -342,7 +373,8 @@ client passes the worker's `result` bytes through without re-encoding):
   `window_starts_before_filter_warmup` (the window begins inside the band-pass warm-up,
   derived from the filter's slowest pole, so its features would carry a start transient
   the online path never sees), `window_starts_before_segment`, `window_exceeds_segment`,
-  `trial_aborted` (a `trial_abort` event names the trial; decision #34), and
+  `trial_aborted` (a `trial_abort` event names the trial; decision #34), `no_sample_for_cue`
+  (a cue event without a sample association, so it can't be placed in the data), and
   `window_spans_detected_gap` (a `sequence_skip`, `stale_half`, `duplicate_counter`,
   `invalid_counter` or `overflow_suspected` gap lies inside the window or inside the filter
   warm-up before it, so the band-passed window would carry the discontinuity's transient;
