@@ -1,0 +1,187 @@
+import Foundation
+
+// Copy for the Freeze sheet, the parity view and the model error codes (brief 006). Built
+// from stored records only; views stay thin and tests read the strings directly.
+
+/// Plain words for the worker's model error codes.
+enum ModelErrorText {
+    static let modelCodes: Set<String> = ["invalid_model", "channel_mismatch"]
+
+    static func describe(code: String, message: String) -> String {
+        switch code {
+        case "invalid_model":
+            return message.contains("changed since it was frozen")
+                ? "This model's file changed since it was frozen, so it can't be trusted. Freeze the result again."
+                : "This model can't be used: its stored arrays failed the check (\(message))."
+        case "channel_mismatch":
+            return "This recording doesn't match the model: \(message.replacingOccurrences(of: "channels differ from the model: ", with: "")). "
+                + "Nothing is reordered or resampled."
+        default:
+            return message
+        }
+    }
+}
+
+extension Fmt {
+    /// "1 × 10⁻⁸", "3.2 × 10⁻¹²", "0": tolerances and deviations, locale-independent.
+    static func scientific(_ value: Double) -> String {
+        guard value.isFinite, value != 0 else { return value == 0 ? "0" : "\(value)" }
+        var exponent = Int(floor(log10(abs(value))))
+        var mantissa = fixed(value / pow(10, Double(exponent)), 1)
+        if mantissa.hasPrefix("10") || mantissa.hasPrefix("-10") { exponent += 1; mantissa = fixed(value / pow(10, Double(exponent)), 1) }
+        if mantissa.hasSuffix(".0") { mantissa.removeLast(2) }
+        let sup = String(exponent).map { c -> Character in
+            c == "-" ? "⁻" : Array("⁰¹²³⁴⁵⁶⁷⁸⁹")[Int(String(c)) ?? 0]
+        }
+        return "\(mantissa) × 10\(String(sup))"
+    }
+
+    static func seconds(_ value: Double) -> String { "\(fixed(value, 1)) s" }
+}
+
+/// The "Freeze for live use…" sheet (brief 006 Freeze criteria, decisions #38 and #40).
+struct FreezeSheetModel: Equatable {
+    struct Row: Equatable, Identifiable { let label: String; let value: String; var id: String { label } }
+
+    let title: String
+    let defaultName: String
+    let rows: [Row]
+    /// "Feedback can show for 1.5 s of each 4.0 s cue …", or why it can't.
+    let feedbackSpan: String
+    /// Decision #40: suggest a 2 s window when the evaluation used another length.
+    let windowSuggestion: String?
+    let evidence: String
+    let confidenceNote = "The bar shows model confidence: how strongly the classifier favours one of its two classes. "
+        + "It is not calibrated and is not a probability of intent."
+    let canFreeze: Bool
+
+    static let suggestedWindowSeconds = 2.0
+
+    init(result: StoredResult, report: EvaluationReport?, role: ModelRole, sessions: [String?], cueLengthSeconds: Double?) {
+        let p = result.pipeline
+        let c = p.configuration
+        let offset = c["window_offset_s"].flatMap(Double.init)
+        let length = c["window_length_s"].flatMap(Double.init)
+        let recipe = role == .reference ? Self.recipeName(p.recipe) : Self.recipeName(c["baseline"] ?? "")
+        let date = Self.dateText(result.meta.createdAt)
+        title = "Freeze for live use"
+        defaultName = "\(role == .reference ? "Model" : "Baseline") \(date)"
+        let runs = report?.splitManifest.trainingRuns ?? []
+        let knownSessions = Set(sessions.compactMap { $0 })
+        let sessionText = sessions.isEmpty || sessions.contains(where: { $0 == nil }) ? "session unknown"
+            : "session \(knownSessions.sorted().joined(separator: ", "))"
+        var rows = [
+            Row(label: "Model", value: "\(recipe), the fit on the training runs of the result from \(date)"),
+            Row(label: "Training runs", value: runs.isEmpty ? "not recorded" : "\(runs.joined(separator: ", ")) · \(sessionText)"),
+            Row(label: "Channels", value: "\(p.expectedChannelIDs.count), in this order: \(p.expectedChannelIDs.joined(separator: ", "))"),
+            Row(label: "Sample rate", value: Fmt.hertz(p.expectedSampleRateHz)),
+        ]
+        if let lo = c["bandpass_low_hz"].flatMap(Double.init), let hi = c["bandpass_high_hz"].flatMap(Double.init) {
+            rows.append(Row(label: "Band-pass", value: "\(Fmt.fixed(lo, 1))–\(Fmt.fixed(hi, 1)) Hz, causal, order \(c["bandpass_order"] ?? "?")"))
+        }
+        if let offset, let length {
+            rows.append(Row(label: "Window", value: "\(Fmt.seconds(length)) starting \(Fmt.seconds(offset)) after the cue"))
+        }
+        rows.append(Row(label: "Classes", value: [c["label_left"], c["label_right"]].compactMap { $0 }.joined(separator: " vs ")))
+        self.rows = rows
+        canFreeze = offset != nil && length != nil
+
+        feedbackSpan = Self.span(offset: offset, length: length, cue: cueLengthSeconds)
+        if let offset, let length, abs(length - Self.suggestedWindowSeconds) > 1e-9 {
+            let then = cueLengthSeconds.map { cue in
+                let s = cue - offset - Self.suggestedWindowSeconds
+                return s > 0 ? ": feedback would then show for \(Fmt.seconds(s)) of each cue" : ""
+            } ?? ""
+            windowSuggestion = "For live feedback, evaluate with a 2 s window\(then). This model's \(Fmt.seconds(length)) window leaves less of the cue for feedback."
+        } else {
+            windowSuggestion = nil
+        }
+        let key = role == .reference ? report?.comparison.reference : report?.comparison.baseline
+        if let h = key.flatMap({ report?.models[$0]?.holdout }) {
+            let ci = Fmt.interval(h.accuracyCi95).map { " · accuracy \(Fmt.fixed(h.accuracy)), 95 % CI \($0) (trial-level, n = \(h.nTestTrials))" } ?? ""
+            evidence = "This model's evidence is its held-out result: balanced accuracy \(Fmt.fixed(h.balancedAccuracy))\(ci). Freezing adds no new evidence."
+        } else {
+            evidence = "This model's evidence is the held-out result it was frozen from. Freezing adds no new evidence."
+        }
+    }
+
+    /// Decision #40: only windows wholly inside the imagery period show feedback.
+    static func span(offset: Double?, length: Double?, cue: Double?) -> String {
+        guard let offset, let length else { return "The evaluation didn't record its window, so the model can't be frozen." }
+        guard let cue else { return "Feedback shows only for windows wholly inside each cue; how long depends on the protocol's cue length." }
+        let s = cue - offset - length
+        guard s > 1e-9 else {
+            return "Feedback can't show: the \(Fmt.seconds(offset)) offset and the \(Fmt.seconds(length)) window fill the whole \(Fmt.seconds(cue)) cue."
+        }
+        return "Feedback can show for \(Fmt.seconds(s)) of each \(Fmt.seconds(cue)) cue (only windows wholly inside the imagery period)."
+    }
+
+    static func recipeName(_ id: String) -> String {
+        switch id {
+        case "csp_rlda_v1": return "CSP + shrinkage LDA"
+        case "logvar_rlda_v1": return "Log-variance + shrinkage LDA (baseline)"
+        default: return id
+        }
+    }
+
+    static func dateText(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd HH:mm 'UTC'"
+        return f.string(from: date)
+    }
+}
+
+/// The parity view of one stored replay (brief 006 Replay parity criteria).
+struct ParityViewModel: Equatable {
+    struct Line: Equatable, Identifiable {
+        let quantity: String
+        let text: String
+        let within: Bool
+        var id: String { quantity }
+    }
+
+    let passed: Bool
+    let headline: String
+    let symbol: String
+    let tolerances: [Line]
+    let windows: String
+    let boundary: String
+    let firstValid: String
+    let chunkings: String
+    let mismatches: [String]
+
+    init?(record: LiveRunRecord, sampleRateHz: Double) {
+        guard let p = record.parity else { return nil }
+        passed = p.passed
+        headline = p.passed ? "Streaming matches offline within tolerance" : "Streaming differs from offline"
+        symbol = p.passed ? "checkmark.seal" : "exclamationmark.triangle"
+        tolerances = p.deviations.map { d in
+            let name = Self.quantityName(d.quantity)
+            guard let observed = d.observed else { return Line(quantity: d.quantity, text: "\(name): nothing compared", within: true) }
+            let unit = d.quantity == "bandpassed_uv" ? " µV" : ""
+            return Line(quantity: d.quantity, text: "\(name): largest difference \(Fmt.scientific(observed))\(unit) · allowed \(Fmt.scientific(d.allowed))\(unit)",
+                        within: observed <= d.allowed)
+        }
+        let cue = p.cueLockedCompared.map { ", \($0) of them cue-locked trial windows" } ?? ""
+        windows = "\(p.windowsCompared) windows compared\(cue)"
+        boundary = p.boundaryWindows == 0 ? "No windows on the decision boundary"
+            : "\(p.boundaryWindows) window\(p.boundaryWindows == 1 ? "" : "s") on the decision boundary (listed, not counted as differences)"
+        firstValid = p.firstValidWindowStop.enumerated().map { i, stop in
+            stop < 0 ? "segment \(i + 1): no valid window"
+                : "segment \(i + 1): first valid window ends at \(Fmt.seconds(Double(stop) / max(sampleRateHz, 1)))"
+        }.joined(separator: " · ")
+        chunkings = "Re-chunked as " + p.chunkings.map { $0 == "random" ? "a seeded random mix" : "\($0)-sample" }.joined(separator: ", ") + " pieces"
+        mismatches = p.mismatches ?? []
+    }
+
+    static func quantityName(_ q: String) -> String {
+        switch q {
+        case "bandpassed_uv": return "Band-passed samples"
+        case "features": return "Features"
+        case "score": return "LDA score"
+        default: return q
+        }
+    }
+}

@@ -126,9 +126,16 @@ public struct LiveRunRecord: Codable, Sendable, Equatable, Identifiable {
         public var boundaryWindows: Int
         public var firstValidWindowStop: [Int]     // per segment, in segment order; -1 when none
         public var chunkings: [String]
-        public init(passed: Bool, windowsCompared: Int, deviations: [Deviation], boundaryWindows: Int, firstValidWindowStop: [Int], chunkings: [String]) {
+        /// Cue-locked (training-window) windows among those compared.
+        public var cueLockedCompared: Int?
+        /// Where streaming and offline disagree, one plain line each (at most `maxMismatches`).
+        public var mismatches: [String]?
+        public static let maxMismatches = 50
+        public init(passed: Bool, windowsCompared: Int, deviations: [Deviation], boundaryWindows: Int, firstValidWindowStop: [Int], chunkings: [String],
+                    cueLockedCompared: Int? = nil, mismatches: [String]? = nil) {
             self.passed = passed; self.windowsCompared = windowsCompared; self.deviations = deviations
             self.boundaryWindows = boundaryWindows; self.firstValidWindowStop = firstValidWindowStop; self.chunkings = chunkings
+            self.cueLockedCompared = cueLockedCompared; self.mismatches = mismatches
         }
     }
 
