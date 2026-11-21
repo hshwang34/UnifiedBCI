@@ -219,12 +219,8 @@ struct ProtocolDetailModel: Equatable {
         canCreateVersion = !mislinked
     }
 
-    /// "2026-11-20 14:05 UTC": the stored time, independent of the Mac's locale.
-    static func created(_ date: Date) -> String { createdFormat.format(date) }
-
-    private static let createdFormat = Date.VerbatimFormatStyle(
-        format: "\(year: .defaultDigits)-\(month: .twoDigits)-\(day: .twoDigits) \(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits) UTC",
-        locale: Locale(identifier: "en_US_POSIX"), timeZone: TimeZone(identifier: "UTC")!, calendar: Calendar(identifier: .gregorian))
+    /// "2026-11-20 15:05": the stored time in local time, independent of the Mac's locale.
+    static func created(_ date: Date, timeZone: TimeZone = .current) -> String { Fmt.dateTime(date, timeZone: timeZone) }
 }
 
 // MARK: - Editor

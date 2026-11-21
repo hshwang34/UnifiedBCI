@@ -84,14 +84,17 @@ struct QualityModel: Equatable {
         let rules = Dictionary(report.rules.map { ($0.id, $0.rule) }, uniquingKeysWith: { a, _ in a })
         let limits = Dictionary(report.rules.map { ($0.id, Self.numbers(in: $0.flagWhen)) }, uniquingKeysWith: { a, _ in a })
         legend = report.rules.map { LegendRow(id: $0.id, title: $0.title, rule: $0.rule, flagWhen: $0.flagWhen) }
-        // Numbered by position, as the progress events count segments ("segment k of n").
+        // Numbered by position, as the progress events count segments ("segment k of n"),
+        // and placed on the recording's saved time (segments back to back).
+        var start = 0.0
         sections = report.segments.enumerated().map { position, seg in
             let number = position + 1
             let rows = seg.channels.map { Self.row($0, titles: titles, rules: rules, limits: limits) }
             let flagged = rows.filter { !$0.flags.isEmpty }.count
+            defer { start += seg.durationS }
             return Section(
                 id: seg.index,
-                title: "Segment \(number) · \(seg.runId) · \(Self.num(seg.durationS)) s at \(Fmt.hertz(seg.sfreq))",
+                title: Self.segmentTitle(number: number, runID: seg.runId, start: start, duration: seg.durationS, rateHz: seg.sfreq),
                 summary: "Flags on \(flagged) of \(rows.count) channels in segment \(number)",
                 rows: rows, spectra: seg.channels.map(Self.spectrum), nyquistHz: seg.sfreq / 2)
         }
@@ -185,6 +188,19 @@ struct QualityModel: Equatable {
     // MARK: Formatting
 
     /// Whole numbers without decimals ("42"), otherwise `digits` ("8.5"); "—" for null.
+    /// "Segment 1 · S001R04 · 0:00–0:42 at 160 Hz": the run named only when it has a human
+    /// name (a live recording's run ids are UUIDs), and the span on the recording's saved time.
+    static func segmentTitle(number: Int, runID: String, start: Double, duration: Double, rateHz: Double) -> String {
+        let run = runID.isEmpty || UUID(uuidString: runID) != nil ? "" : " · \(runID)"
+        return "Segment \(number)\(run) · \(clock(start))–\(clock(start + duration)) at \(Fmt.hertz(rateHz))"
+    }
+
+    /// "0:08", "12:05", "1:02:03".
+    static func clock(_ seconds: Double) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
+    }
+
     static func num(_ v: Double?, _ digits: Int = 1) -> String {
         guard let v else { return "—" }
         return v == v.rounded() && digits <= 1 ? Fmt.fixed(v, 0) : Fmt.fixed(v, digits)

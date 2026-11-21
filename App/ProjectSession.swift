@@ -743,7 +743,7 @@ final class ProjectSession: Identifiable {
         }
     }
 
-    static func time(_ d: Date) -> String { d.formatted(date: .omitted, time: .shortened) }
+    static func time(_ d: Date) -> String { Fmt.time(d) }
 
     private func announce(_ text: String) {
         AccessibilityNotification.Announcement(text).post()
@@ -804,6 +804,8 @@ final class ProjectSession: Identifiable {
     /// The trace window's start (segment seconds) and Raw / Band-passed choice.
     var traceStartS: Double = 0
     var traceBandpassed = false
+    /// Debug snapshots (`-BCIQualityTrace`): scroll the Recording page to the signal view.
+    var snapshotShowsTrace = false
     @ObservationIgnored private var traceCache: (key: String, model: TraceModel)?
 
     /// Asks for the window at `traceStartS` in a segment (its worker index).
@@ -830,12 +832,14 @@ final class ProjectSession: Identifiable {
     /// recording) and the protocol's cue length (nil for imported data).
     func showFreeze(_ stored: StoredResult) {
         let report = try? EvaluationReport.decode(stored.evaluationJSON)
-        let segments = recordings.first { $0.id == stored.meta.recordingID }?.manifest.segments ?? []
+        let manifest = recordings.first { $0.id == stored.meta.recordingID }?.manifest
+        let segments = manifest?.segments ?? []
         let sessions = (report?.splitManifest.trainingRuns ?? []).map { run in segments.first { $0.runID == run }?.sessionID }
+        let labels = FreezeSheetModel.labels(manifest?.channels ?? [])
         let sheet = FreezeSheetModel(result: stored, report: report, role: .reference, sessions: sessions,
-                                     cueLengthSeconds: cueLength(stored.meta.recordingID))
+                                     cueLengthSeconds: cueLength(stored.meta.recordingID), channelLabels: labels)
         frozen.freezeDraft = .init(result: stored, report: report, sessions: sessions, cueLengthSeconds: cueLength(stored.meta.recordingID),
-                                   name: sheet.defaultName)
+                                   channelLabels: labels, name: sheet.defaultName)
     }
 
     @discardableResult

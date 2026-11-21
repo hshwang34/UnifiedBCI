@@ -150,7 +150,11 @@ final class QualityModelTests: XCTestCase {
     func testSummariesAreCountsOnly() throws {
         let tiny = try model("inspect_recording_tiny")
         XCTAssertEqual(tiny.sections.map(\.summary), ["Flags on 8 of 8 channels in segment 1", "Flags on 6 of 8 channels in segment 2", "Flags on 8 of 8 channels in segment 3"])
-        XCTAssertEqual(tiny.sections[0].title, "Segment 1 · S001R04 · 42 s at 160 Hz")
+        XCTAssertEqual(tiny.sections[0].title, "Segment 1 · S001R04 · 0:00–0:42 at 160 Hz")
+        XCTAssertTrue(tiny.sections[1].title.contains(" · 0:42–"), "segments sit back to back: \(tiny.sections[1].title)")
+        // A live recording's run id is a UUID: never shown, the span names the segment.
+        XCTAssertEqual(QualityModel.segmentTitle(number: 1, runID: UUID().uuidString, start: 0, duration: 8.1, rateHz: 125), "Segment 1 · 0:00–0:08 at 125 Hz")
+        XCTAssertEqual(QualityModel.clock(3723), "1:02:03")
         XCTAssertEqual(tiny.summary, tiny.sections.map(\.summary).joined(separator: "; "))
         XCTAssertEqual(try model("inspect_recording_faults").sections[0].summary, "Flags on 5 of 12 channels in segment 1")
     }

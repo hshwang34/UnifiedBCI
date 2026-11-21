@@ -203,8 +203,9 @@ final class LiveFeedbackViewTests: XCTestCase {
     }
 
     /// The 20 Hz state; `mirror` defaults to a fresh copy of the status's display.
-    private func state(_ s: LiveInferenceRunner.Status, mirror: FeedbackPolicy.Display?? = nil) -> LiveFeedbackStateModel {
-        LiveFeedbackStateModel(s, mirror: mirror ?? s.display, model: Self.model, protocolRecord: Self.protocolRecord,
+    private func state(_ s: LiveInferenceRunner.Status, mirror: FeedbackPolicy.Display?? = nil, mirrored: LiveInferenceRunner.Update? = nil,
+                       gap: LiveFeedbackStateModel.RunGap? = nil) -> LiveFeedbackStateModel {
+        LiveFeedbackStateModel(s, mirror: mirror ?? s.display, mirrored: mirrored, gap: gap, model: Self.model, protocolRecord: Self.protocolRecord,
                                directions: ["cue_left_hand": -1, "cue_right_hand": 1])
     }
 
@@ -228,6 +229,58 @@ final class LiveFeedbackViewTests: XCTestCase {
             XCTAssertEqual(state(s).tone, tone)
             XCTAssertEqual(state(s).detail, "why", "the raw detail stays visible to the operator")
         }
+    }
+
+    /// The screenshot pass caught "Model unsure" beside "model confidence 0.73" at a 0.60
+    /// threshold: the words came from the feed's newest update (20 Hz) and the numbers from the
+    /// 4 Hz status, a window apart. Both now come from the one update the feed mirrors.
+    func testState_wordsAndConfidenceDescribeTheSameWindow() {
+        let policy = FeedbackPolicy()
+        // The status is a window ahead: valid, confident, bar shown.
+        var s = LiveInferenceRunner.Status()
+        s.validity = .valid; s.display = .bar(side: "cue_left_hand", length: 0.46); s.score = -0.99; s.confidence = 0.73
+        // The feed's newest update is the abstaining window before it.
+        let unsure = LiveInferenceRunner.Update(sequence: 7, display: notConfident, emittedAt: 0, reason: "abstain",
+                                                validity: .valid, detail: nil, score: -0.2, confidence: 0.55)
+        let m = state(s, mirror: notConfident, mirrored: unsure)
+        XCTAssertEqual(m.state, "Model unsure")
+        XCTAssertNil(m.bar)
+        XCTAssertEqual(m.prediction, "Left hand · model confidence 0.55 · score -0.20")
+        // The other way round: the feed has the confident window, the status the older one.
+        var behind = LiveInferenceRunner.Status()
+        behind.validity = .valid; behind.display = notConfident; behind.score = -0.2; behind.confidence = 0.55
+        let sure = LiveInferenceRunner.Update(sequence: 8, display: .bar(side: "cue_left_hand", length: 0.46), emittedAt: 0,
+                                              validity: .valid, score: -0.99, confidence: 0.73)
+        let shown = state(behind, mirror: sure.display, mirrored: sure)
+        XCTAssertEqual(shown.state, "Showing feedback")
+        XCTAssertEqual(shown.prediction, "Left hand · model confidence 0.73 · score -0.99")
+        // The invariant, over a sweep: "Model unsure" only ever sits beside a confidence below
+        // the threshold, and a shown bar beside one at or above it.
+        for c in stride(from: 0.5, through: 0.99, by: 0.01) {
+            let action = policy.action(validity: .valid, confidence: c, label: "cue_right_hand")
+            let display: FeedbackPolicy.Display = action.kind == .class ? .bar(side: "cue_right_hand", length: FeedbackPolicy.barLength(confidence: c)) : notConfident
+            let update = LiveInferenceRunner.Update(sequence: 1, display: display, emittedAt: 0, validity: .valid, score: 1, confidence: c)
+            let m = state(s, mirror: display, mirrored: update)
+            XCTAssertTrue(m.prediction.contains("confidence \(Fmt.fixed(c))"), m.prediction)
+            XCTAssertEqual(m.state == "Model unsure", c < policy.threshold, "confidence \(c): \(m.state)")
+        }
+    }
+
+    /// After a run, and after the session's last one, the card names the gap instead of a
+    /// stale per-window state ("Valid · outside the feedback span").
+    func testState_betweenRunsAndAfterTheLastRun() {
+        var s = LiveInferenceRunner.Status()
+        s.validity = .valid; s.display = .hidden(words: nil); s.score = 1.46; s.confidence = 0.81
+        XCTAssertEqual(state(s).state, "Valid · outside the feedback span", "during a run's fixation or rest")
+        let done = state(s, gap: .sessionDone)
+        XCTAssertEqual(done.state, "All runs done")
+        XCTAssertNil(done.bar)
+        XCTAssertNil(done.detail)
+        XCTAssertEqual(done.prediction, LiveTestCopy.sessionDoneLine)
+        XCTAssertEqual(state(s, gap: .betweenRuns).state, "Between runs")
+        XCTAssertEqual(state(s, gap: .betweenRuns).prediction, LiveTestCopy.betweenRunsLine)
+        s.stopped = true
+        XCTAssertEqual(state(s, gap: .sessionDone).state, "Stopped", "Stopped wins")
     }
 
     func testPanel_abstainRateLatencyAndTrialOutcomes() {

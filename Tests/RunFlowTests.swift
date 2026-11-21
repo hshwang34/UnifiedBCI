@@ -82,6 +82,10 @@ final class RunFlowTests: XCTestCase {
         XCTAssertTrue(m.canBegin && m.canAbortRun)
         XCTAssertTrue(m.shortcuts.hasPrefix("Space begins · "))
         XCTAssertFalse(m.canAbortTrial || m.canPause || m.canResume)
+        // Ended: the next run is offered only while one is left; after the last, only Finish.
+        XCTAssertEqual(OperatorPanelModel.shortcuts(.ended(aborted: false), moreRuns: true), "Start the next run or finish the session.")
+        XCTAssertEqual(OperatorPanelModel.shortcuts(.ended(aborted: false), moreRuns: false), OperatorPanelModel.lastRunDone)
+        XCTAssertFalse(OperatorPanelModel.lastRunDone.contains("next run"))
 
         s.state = .running; s.trial = 16; s.phase = .cue; s.label = "cue_left_hand"
         s.startedAt = 1_000_000_000; s.plannedEnd = 241_000_000_000

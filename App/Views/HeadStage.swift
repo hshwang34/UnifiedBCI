@@ -181,9 +181,11 @@ enum HeadDrawing {
         for l in placed.reversed() {
             var g = gc
             g.opacity = l.dim ? 0.4 : 1
-            var lead = Path()
-            lead.move(to: l.lineStart); lead.addLine(to: l.lineEnd)
-            g.stroke(lead, with: .color(style.line.opacity(style.increasedContrast ? 0.8 : 0.55)), lineWidth: 1)
+            if l.hasLeader {
+                var lead = Path()
+                lead.move(to: l.lineStart); lead.addLine(to: l.lineEnd)
+                g.stroke(lead, with: .color(style.line.opacity(style.increasedContrast ? 0.8 : 0.55)), lineWidth: 1)
+            }
             g.fill(Path(roundedRect: l.frame, cornerRadius: 5), with: .color(l.strong ? style.accent : style.labelPlate))
             if style.increasedContrast && !l.strong {
                 g.stroke(Path(roundedRect: l.frame, cornerRadius: 5), with: .color(style.line.opacity(0.6)), lineWidth: 1)

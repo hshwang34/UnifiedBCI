@@ -35,6 +35,11 @@ final class FrozenModelScreenTests: XCTestCase {
         XCTAssertTrue(draft.sheet.evidence.hasPrefix("This model's evidence is its held-out result: balanced accuracy "), draft.sheet.evidence)
         XCTAssertNotNil(draft.sheet.windowSuggestion, "a 3.5 s window gets the 2 s suggestion (decision #40)")
         XCTAssertEqual(draft.name, draft.sheet.defaultName)
+        // The channels read as the recording's electrode labels, not its ids.
+        let manifest = try XCTUnwrap(session.recordings.first { $0.id == stored.meta.recordingID }?.manifest)
+        let channels = try XCTUnwrap(draft.sheet.rows.first { $0.label == "Channels" }?.value)
+        XCTAssertTrue(channels.hasSuffix(manifest.channels.filter { $0.kind == "eeg" }.map(\.label).joined(separator: ", ")), channels)
+        XCTAssertFalse(channels.contains("ch0"), channels)
         session.frozen.freezeDraft?.name = "  Tiny model  "
         let frozenModel = await session.freeze()
         let model = try XCTUnwrap(frozenModel)
@@ -52,6 +57,9 @@ final class FrozenModelScreenTests: XCTestCase {
         let row = try XCTUnwrap(session.frozen.rows(results: session.results).first)
         XCTAssertTrue(row.source.hasPrefix("CSP + shrinkage LDA · from the result of "), row.source)
         XCTAssertEqual(row.usage, "Not used in a live run yet")
+        XCTAssertEqual(FrozenModelRowModel.facts(model, channelLabels: FreezeSheetModel.labels(manifest.channels)).first?.value, channels)
+        XCTAssertEqual(FreezeSheetModel.channels(["ch00", "ch01"], labels: ["ch00": "C3", "ch01": " "]), "2, in this order: C3, ch01",
+                       "an undeclared label keeps the id")
         XCTAssertEqual(FrozenModelRowModel.facts(model).map(\.label),
                        ["Channels", "Sample rate", "Band-pass", "Window", "Filter warm-up", "Classes", "Training runs", "Frozen", "Arrays SHA-256"])
 
@@ -125,7 +133,9 @@ final class FrozenModelScreenTests: XCTestCase {
         XCTAssertEqual(view.abstentions, "At threshold 0.60: 2 of 6 valid windows abstained (model confidence below 0.60)")
         XCTAssertEqual(view.boundary, "1 window on the decision boundary (listed, not counted as differences)")
         XCTAssertEqual(view.firstValid, "segment 1: no valid window")
-        XCTAssertEqual(ReplayCopy.replayRow(record, recording: "R"), "2027-01-15 08:00 UTC · R · differs")
+        XCTAssertEqual(ReplayCopy.replayRow(record, recording: "R"), "\(Fmt.dateTime(record.startedAt)) · R · differs", "local time, like the lists")
+        XCTAssertEqual(FreezeSheetModel.dateText(record.startedAt, timeZone: TimeZone(identifier: "UTC")!), "2027-01-15 08:00")
+        XCTAssertFalse(FreezeSheetModel.dateText(record.startedAt).contains("UTC"))
 
         // A record claiming a pass while a deviation is over its tolerance shows "differs".
         var claimed = record

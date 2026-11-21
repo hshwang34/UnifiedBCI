@@ -324,7 +324,8 @@ final class MontageTests: XCTestCase {
         XCTAssertEqual(Orbit.Preset.left.orbit, Orbit(yaw: -90, pitch: 6))
         XCTAssertEqual(Orbit.Preset.right.orbit, Orbit(yaw: 90, pitch: 6))
         XCTAssertEqual(Orbit.Preset.front.orbit, Orbit(yaw: 0, pitch: 6))
-        XCTAssertEqual(Orbit.Preset.reset.orbit, Orbit(yaw: -38, pitch: 26))
+        // Raised from the study's 26° so the montage's rows don't crowd at the default view.
+        XCTAssertEqual(Orbit.Preset.reset.orbit, Orbit(yaw: -38, pitch: 52))
         XCTAssertEqual(Orbit.default, Orbit.Preset.reset.orbit)
         XCTAssertTrue(Orbit.Preset.allCases.allSatisfy { !$0.accessibilityLabel.isEmpty })
         XCTAssertEqual(Orbit.transitionDuration(reduceMotion: true), 0)
@@ -383,6 +384,57 @@ final class MontageTests: XCTestCase {
                 let cups = MontageLabels.frontCups(layout: l, camera: camera, size: size)
                 for label in placed {
                     XCTAssertFalse(cups.contains { $0.intersects(label.frame) }, "\(label.id) on a cup, \(preset) at \(width)")
+                }
+            }
+        }
+    }
+
+    /// The 10-10 layout seen from the Top preset in the montage view's framing: the
+    /// subject's left (odd numbers) on the viewer's left, each row ordered left to right,
+    /// FC in front of (above) C, CP behind (below) it.
+    func testTopPreset_projectsTheTenTenOrder() throws {
+        let size = CGSize(width: 700, height: 340)
+        let camera = HeadCamera(orbit: Orbit.Preset.top.orbit, target: MontageView.target, distance: MontageView.distance)
+        let at = { (l: String) in try XCTUnwrap(camera.project(HeadGeometry.surfacePoint(StandardPositions.byLabel[l]!), in: size)) }
+        for row in [["FC3", "FC1", "FC2", "FC4"], ["C5", "C3", "C1", "Cz", "C2", "C4", "C6"], ["CP3", "CP1", "CPz", "CP2", "CP4"]] {
+            let xs = try row.map { try at($0).x }
+            XCTAssertEqual(xs, xs.sorted(), "\(row) left to right")
+            XCTAssertEqual(Set(xs).count, xs.count)
+        }
+        for (front, middle, back) in [("FC3", "C3", "CP3"), ("FC1", "C1", "CP1"), ("FC2", "C2", "CP2"), ("FC4", "C4", "CP4")] {
+            XCTAssertLessThan(try at(front).y, try at(middle).y)
+            XCTAssertLessThan(try at(middle).y, try at(back).y)
+        }
+        XCTAssertLessThan(try at("C3").x, try at("Cz").x)
+    }
+
+    /// The bug the screenshot pass found: C1's label drawn beside CP3, C2's beside FC4. In the
+    /// Top and default views every label sits nearer its own electrode than any other front-facing one, close
+    /// to it, and in the same left-to-right order as the electrodes within each row.
+    func testLabels_topAndDefaultViewsReadAsTheirOwnElectrode() {
+        let l = layout(Self.exampleMontage, Self.exampleLabels)
+        let label = Dictionary(uniqueKeysWithValues: l.placed.map { ($0.channelID, $0.label) })
+        for width in [520.0, 700.0] {
+            let size = CGSize(width: width, height: MontageView.stageHeight)
+            for preset in [Orbit.Preset.top, .reset] {
+                let camera = HeadCamera(orbit: preset.orbit, target: MontageView.target, distance: MontageView.distance)
+                let placed = MontageLabels.place(layout: l, camera: camera, size: size, selected: nil)
+                XCTAssertEqual(LabelLayout.overlaps(placed), 0)
+                for p in placed {
+                    let mid = CGPoint(x: p.frame.midX, y: p.frame.midY)
+                    let own = hypot(mid.x - p.anchor.x, mid.y - p.anchor.y)
+                    XCTAssertLessThan(own, 40, "\(label[p.id]!) far from its electrode, \(preset) at \(width)")
+                    // Back-facing electrodes are faint behind the glass; front ones decide.
+                    for other in placed where other.id != p.id && !other.dim {
+                        XCTAssertLessThan(own, hypot(mid.x - other.anchor.x, mid.y - other.anchor.y),
+                                          "\(label[p.id]!) reads as \(label[other.id]!), \(preset) at \(width)")
+                    }
+                }
+                guard preset == .top else { continue }
+                let byLabel = Dictionary(uniqueKeysWithValues: placed.map { (label[$0.id]!, $0) })
+                for row in [["FC3", "FC1", "FC2", "FC4"], ["C5", "C3", "C1", "Cz", "C2", "C4", "C6"], ["CP3", "CP1", "CPz", "CP2", "CP4"]] {
+                    let xs = row.map { byLabel[$0]!.frame.midX }
+                    XCTAssertEqual(xs, xs.sorted(), "\(row) labels left to right at \(width)")
                 }
             }
         }

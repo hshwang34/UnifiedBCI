@@ -40,6 +40,7 @@ struct FreezeSheet: View {
             FactRows(rows: m.rows)
             StatusChip(kind: .info, text: m.evidence).fixedSize(horizontal: false, vertical: true)
             Label(m.feedbackSpan, systemImage: "timer").font(.callout).foregroundStyle(Theme.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
             if let s = m.windowSuggestion { StatusChip(kind: .warning, text: s).fixedSize(horizontal: false, vertical: true) }
             Text(m.confidenceNote).font(.callout).foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
             if let error = draft.error { StatusChip(kind: .danger, text: error).fixedSize(horizontal: false, vertical: true) }
@@ -155,7 +156,8 @@ struct FrozenModelDetailView: View {
                             .help(session.isLiveRunning ? LiveRunCopy.pausedDuringLive : ReplayCopy.replayHelp)
                     }
                     Text(FreezeSheetModel.recipeName(model.recipe)).font(.callout).foregroundStyle(Theme.textSecondary)
-                    FactRows(rows: FrozenModelRowModel.facts(model))
+                    FactRows(rows: FrozenModelRowModel.facts(model, channelLabels: FreezeSheetModel.labels(
+                        session.recordings.first { $0.id == model.sourceRecordingID }?.manifest.channels ?? [])))
                     Button("Show the source result") {
                         session.section = .results
                         session.selectedResultID = model.sourceResultID

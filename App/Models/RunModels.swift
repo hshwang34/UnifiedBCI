@@ -106,13 +106,16 @@ struct OperatorPanelModel: Equatable {
     static let abortRunHelp = "End this run now (⌘.). Completed trials stay evaluable."
     static let displayGone = "The participant display is gone. Reconnect it, or abort the run."
 
-    static func shortcuts(_ state: ProtocolRunner.RunState) -> String {
+    static let lastRunDone = "That was the session's last run. Finish Session stops the recording."
+
+    /// `moreRuns`: the session still has a run to start (after the last one only Finish is offered).
+    static func shortcuts(_ state: ProtocolRunner.RunState, moreRuns: Bool = true) -> String {
         let space: String
         switch state {
         case .instructions: space = "Space begins"
         case .running: space = "Space pauses"
         case .paused: space = "Space resumes"
-        case .ended, .failed: return "Start the next run or finish the session."
+        case .ended, .failed: return moreRuns ? "Start the next run or finish the session." : lastRunDone
         }
         return "\(space) · Esc aborts the trial · ⌘. aborts the run. The keys work while the participant window is in front."
     }

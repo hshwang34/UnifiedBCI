@@ -161,9 +161,12 @@ struct IntroView: View {
             HStack(spacing: Theme.Space.s) {
                 ForEach(Array(Self.verbs.enumerated()), id: \.offset) { i, verb in
                     VStack(spacing: Theme.Space.xs) {
+                        // One icon box for all four: symbols differ in height ("Import"'s tray
+                        // is tallest), and a bare image pushed its label below its siblings.
                         Image(systemName: verb.1)
                             .font(.system(size: 17))
                             .foregroundStyle(Theme.accentInk)
+                            .frame(width: 24, height: 22)
                             .accessibilityHidden(true)
                         Text(verb.0)
                             .font(.callout.weight(.medium))

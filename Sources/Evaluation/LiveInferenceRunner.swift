@@ -81,6 +81,12 @@ public actor LiveInferenceRunner {
         public var emittedAt: Int64? = nil
         /// Why the bar is hidden (`FeedbackPolicy.hiddenReason`), nil when shown.
         public var reason: String? = nil
+        /// The prediction behind `display`, so the operator's words, bar and numbers always
+        /// describe one window (the 4 Hz status can be a window ahead or behind).
+        public var validity: Validity? = nil
+        public var detail: String? = nil
+        public var score: Double? = nil
+        public var confidence: Double? = nil
     }
 
     /// Where a cue landed: on the stream (segment and sample since its start, as the fan-out
@@ -508,7 +514,8 @@ public actor LiveInferenceRunner {
         // how old what it would draw is; it draws and logs only changes.
         guard drivesDisplay else { return }
         shown = display
-        updateSink.yield(Update(sequence: seq, display: display, emittedAt: r.emittedAtMonotonicNanos, reason: FeedbackPolicy.hiddenReason(r)))
+        updateSink.yield(Update(sequence: seq, display: display, emittedAt: r.emittedAtMonotonicNanos, reason: FeedbackPolicy.hiddenReason(r),
+                                validity: r.validity, detail: r.validityDetail, score: r.score, confidence: r.confidence))
     }
 
     // MARK: Helpers

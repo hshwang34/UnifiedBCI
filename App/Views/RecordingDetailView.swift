@@ -23,6 +23,7 @@ struct RecordingDetailView: View {
 
     static let tableHeight: CGFloat = 360
     private static let tabsAnchor = "tabs"
+    private static let topAnchor = "top"
     /// Below this table width the Segments and Events tables drop their low-value columns
     /// (named under the table) rather than scroll sideways.
     static let narrowTable: CGFloat = 580
@@ -36,7 +37,7 @@ struct RecordingDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.l) {
                 HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
-                    Text(model.title).font(Theme.Fonts.title).foregroundStyle(Theme.textPrimary)
+                    Text(model.title).font(Theme.Fonts.title).foregroundStyle(Theme.textPrimary).id(Self.topAnchor)
                     if let badge = model.badge {
                         Text(badge)
                             .font(.callout.weight(.semibold)).foregroundStyle(Theme.textSecondary)
@@ -74,9 +75,12 @@ struct RecordingDetailView: View {
             .frame(width: geo.size.width, alignment: .leading)
         }
         // Debug `-BCIRecordingTab`: bring the tabs to the top for snapshots.
-        .onChange(of: [tab.rawValue, "\(flaggedChannels.count)"], initial: true) {
-            guard LaunchArguments.recordingTab != nil || (LaunchArguments.liveSnapshots && tab != .channels) else { return }
-            if LaunchArguments.qualityTrace, tab == .quality, !flaggedChannels.isEmpty {
+        .onChange(of: [tab.rawValue, "\(flaggedChannels.count)", "\(session.snapshotShowsTrace)"], initial: true) {
+            guard LaunchArguments.recordingTab != nil || LaunchArguments.liveSnapshots || LaunchArguments.snapshotting else { return }
+            if tab == .channels, LaunchArguments.recordingTab == nil {
+                // Back on Channels (the snapshot tour's last step): the page from the top again.
+                proxy.scrollTo(Self.topAnchor, anchor: .top)
+            } else if session.snapshotShowsTrace, tab == .quality {
                 proxy.scrollTo(SignalTraceCard.anchor, anchor: .top)
             } else {
                 proxy.scrollTo(Self.tabsAnchor, anchor: .top)
