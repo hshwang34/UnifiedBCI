@@ -12,9 +12,19 @@ final class CueWindowController {
     let scheduler: CueFrameScheduler
     private let panel: CuePanel
     private let view: CueView
+    private let displayID: UInt32?
+    private let displayName: String
+    private var geometry: CueDisplayGeometry?
+    private var observer: NSObjectProtocol?
+    /// Called when the participant display's frame, resolution or refresh changes, or it
+    /// goes away. A run pauses; `reframe()` fits the window again before Resume.
+    var onDisplayChange: (() -> Void)?
 
     init(scheduler: CueFrameScheduler, screen: NSScreen) {
         self.scheduler = scheduler
+        displayID = Self.displayID(screen)
+        displayName = screen.localizedName
+        geometry = CueDisplayGeometry(screen)
         panel = CuePanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         view = CueView(scheduler: scheduler)
         panel.identifier = Self.identifier
@@ -31,10 +41,41 @@ final class CueWindowController {
         panel.becomesKeyOnlyIfNeeded = true
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
         panel.animationBehavior = .none
+        observer = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+                                                          object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.screensChanged() }
+        }
+    }
+
+    /// The participant display as it is now; nil when it is gone.
+    var screen: NSScreen? {
+        NSScreen.screens.first { Self.displayID($0) == displayID } ?? NSScreen.screens.first { $0.localizedName == displayName }
+    }
+
+    /// One frame on the participant display now (falls back to 60 Hz when it reports none).
+    var framePeriodNanos: Int64 { 1_000_000_000 / Int64(max(1, screen?.maximumFramesPerSecond ?? 60)) }
+
+    private func screensChanged() {
+        let now = screen.map(CueDisplayGeometry.init)
+        guard now != geometry else { return }
+        geometry = now
+        onDisplayChange?()
+    }
+
+    /// Fits the window to the participant display again. False when that display is gone.
+    @discardableResult
+    func reframe() -> Bool {
+        guard let screen else { return false }
+        geometry = CueDisplayGeometry(screen)
+        panel.setFrame(screen.frame, display: true)
+        return true
     }
 
     /// Shows the window without activating the app or taking focus.
-    func show() { panel.orderFrontRegardless() }
+    func show() {
+        view.resetStallClock()      // a hidden window's paused callbacks are not a stall
+        panel.orderFrontRegardless()
+    }
 
     /// Steps aside (one display, between runs); `show` brings it back.
     func hide() { panel.orderOut(nil) }
@@ -43,6 +84,9 @@ final class CueWindowController {
 
     /// Stops the display link and drops frames not yet drawn (never reported).
     func close() {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observer = nil
+        onDisplayChange = nil
         view.stop()
         scheduler.clear()
         panel.orderOut(nil)
@@ -63,8 +107,26 @@ final class CueWindowController {
         NSScreen.screens.first { displayID($0) == display.id } ?? NSScreen.screens.first { $0.localizedName == display.name }
     }
 
-    private static func displayID(_ screen: NSScreen) -> UInt32? {
+    fileprivate static func displayID(_ screen: NSScreen) -> UInt32? {
         (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+    }
+}
+
+/// What a run depends on about its display: where it is, its pixels and its refresh.
+struct CueDisplayGeometry: Equatable {
+    let frame: CGRect
+    let pixelWidth: Int
+    let pixelHeight: Int
+    let refreshHz: Int
+
+    init(frame: CGRect, pixelWidth: Int, pixelHeight: Int, refreshHz: Int) {
+        self.frame = frame; self.pixelWidth = pixelWidth; self.pixelHeight = pixelHeight; self.refreshHz = refreshHz
+    }
+
+    @MainActor init(_ screen: NSScreen) {
+        let id = CueWindowController.displayID(screen) ?? 0
+        self.init(frame: screen.frame, pixelWidth: CGDisplayPixelsWide(id), pixelHeight: CGDisplayPixelsHigh(id),
+                  refreshHz: screen.maximumFramesPerSecond)
     }
 }
 
@@ -89,6 +151,7 @@ private final class CueView: NSView {
     private let arrow = CAShapeLayer()
     private let instructions = NSTextField(wrappingLabelWithString: "")
     private var link: CADisplayLink?
+    private var lastCallback: CFTimeInterval?
     private var frameShown: CueFrame = .blank
 
     init(scheduler: CueFrameScheduler) {
@@ -122,6 +185,8 @@ private final class CueView: NSView {
         self.link = link
     }
 
+    func resetStallClock() { lastCallback = nil }
+
     func stop() {
         link?.invalidate()
         link = nil
@@ -131,9 +196,13 @@ private final class CueView: NSView {
         let media = CACurrentMediaTime()
         let mono = HostMonotonicClock.nowNanos()
         let target = PresentationClock.monotonicNanos(mediaTime: link.targetTimestamp, sampledMonotonicNanos: mono, sampledMediaTime: media)
-        guard let next = scheduler.take(forRefreshAt: target) else { return }
+        let stall = lastCallback.map { PresentationClock.isStall(sinceLast: link.timestamp - $0, framePeriod: link.targetTimestamp - link.timestamp) } ?? false
+        lastCallback = link.timestamp
+        // An unknown refresh time still draws what is due now, but reports nothing: the
+        // runner stores that phase with no presented time.
+        guard let next = scheduler.take(forRefreshAt: target ?? mono) else { return }
         apply(next.frame)
-        next.sink.presented(next.token, atMonotonicNanos: target)
+        if let target { next.sink.presented(next.token, atMonotonicNanos: target, afterStall: stall) }
     }
 
     private func apply(_ frame: CueFrame) {

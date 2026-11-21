@@ -65,10 +65,30 @@ final class CueWindowTests: XCTestCase {
 
     func testDisplayLinkTimeConvertsByTheOffsetSampledInTheCallback() {
         // Sampled together: media 100.000 s ↔ monotonic 5_000_000_000 ns. Target 8.3 ms later.
-        XCTAssertEqual(PresentationClock.monotonicNanos(mediaTime: 100.0083, sampledMonotonicNanos: 5_000_000_000, sampledMediaTime: 100.0),
-                       5_008_300_000, accuracy: 2)
-        XCTAssertEqual(PresentationClock.monotonicNanos(mediaTime: .nan, sampledMonotonicNanos: 42, sampledMediaTime: 1), 42)
-        XCTAssertEqual(PresentationClock.monotonicNanos(mediaTime: 1e300, sampledMonotonicNanos: 42, sampledMediaTime: 1), 42)
+        let t = PresentationClock.monotonicNanos(mediaTime: 100.0083, sampledMonotonicNanos: 5_000_000_000, sampledMediaTime: 100.0)
+        XCTAssertEqual(t ?? 0, 5_008_300_000, accuracy: 2)
+        // An unknown refresh time is reported as missing, never as "now".
+        XCTAssertNil(PresentationClock.monotonicNanos(mediaTime: .nan, sampledMonotonicNanos: 42, sampledMediaTime: 1))
+        XCTAssertNil(PresentationClock.monotonicNanos(mediaTime: .infinity, sampledMonotonicNanos: 42, sampledMediaTime: 1))
+        XCTAssertNil(PresentationClock.monotonicNanos(mediaTime: 1e300, sampledMonotonicNanos: 42, sampledMediaTime: 1))
+        XCTAssertNil(PresentationClock.monotonicNanos(mediaTime: 3.5, sampledMonotonicNanos: 42, sampledMediaTime: 1), "2.5 s ahead is implausible")
+    }
+
+    func testStallIsMoreThanThreeFramePeriods() {
+        let period = 1.0 / 60
+        XCTAssertFalse(PresentationClock.isStall(sinceLast: period, framePeriod: period))
+        XCTAssertFalse(PresentationClock.isStall(sinceLast: 3 * period, framePeriod: period))
+        XCTAssertTrue(PresentationClock.isStall(sinceLast: 3.5 * period, framePeriod: period))
+        XCTAssertFalse(PresentationClock.isStall(sinceLast: .nan, framePeriod: period))
+        XCTAssertFalse(PresentationClock.isStall(sinceLast: 1, framePeriod: 0))
+    }
+
+    func testDisplayGeometryChangesAreDetected() {
+        let a = CueDisplayGeometry(frame: CGRect(x: 0, y: 0, width: 1920, height: 1080), pixelWidth: 1920, pixelHeight: 1080, refreshHz: 60)
+        XCTAssertEqual(a, CueDisplayGeometry(frame: a.frame, pixelWidth: 1920, pixelHeight: 1080, refreshHz: 60))
+        XCTAssertNotEqual(a, CueDisplayGeometry(frame: a.frame, pixelWidth: 1920, pixelHeight: 1080, refreshHz: 120), "refresh change")
+        XCTAssertNotEqual(a, CueDisplayGeometry(frame: a.frame, pixelWidth: 1280, pixelHeight: 720, refreshHz: 60), "resolution change")
+        XCTAssertNotEqual(a, CueDisplayGeometry(frame: a.frame.offsetBy(dx: 1920, dy: 0), pixelWidth: 1920, pixelHeight: 1080, refreshHz: 60), "moved")
     }
 
     // MARK: Display picker (decision #36)

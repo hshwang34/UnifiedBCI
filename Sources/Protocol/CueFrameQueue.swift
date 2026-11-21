@@ -39,11 +39,20 @@ public struct CueFrameQueue: Sendable {
 /// "Scheduling"). The two clocks may drift apart across sleep, which is why the offset is
 /// taken per callback and never cached.
 public enum PresentationClock {
-    public static func monotonicNanos(mediaTime: Double, sampledMonotonicNanos: Int64, sampledMediaTime: Double) -> Int64 {
+    /// Nil for a timestamp that isn't finite or lies more than a second from the sample:
+    /// that refresh's time is unknown, so its frame is reported as missing, never as "now".
+    public static func monotonicNanos(mediaTime: Double, sampledMonotonicNanos: Int64, sampledMediaTime: Double) -> Int64? {
         let delta = mediaTime - sampledMediaTime
-        // A hostile or broken timestamp must not trap the conversion.
-        guard delta.isFinite, abs(delta) < 3600 else { return sampledMonotonicNanos }
+        guard delta.isFinite, abs(delta) <= maxOffsetSeconds else { return nil }
         return sampledMonotonicNanos + Int64((delta * 1e9).rounded())
+    }
+
+    /// A display link's target is at most a few frames ahead; anything past a second is broken.
+    public static let maxOffsetSeconds = 1.0
+
+    /// Whether a callback followed a stall: more than three frame periods since the last one.
+    public static func isStall(sinceLast gap: Double, framePeriod: Double) -> Bool {
+        gap.isFinite && framePeriod.isFinite && framePeriod > 0 && gap > 3 * framePeriod
     }
 }
 
