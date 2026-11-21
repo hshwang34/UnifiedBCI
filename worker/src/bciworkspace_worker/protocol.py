@@ -41,7 +41,10 @@ Frozen models, replay and live inference (brief 006). A model is named by
 `model: {"arrays_path", "sha256", "which": "reference" | "baseline"}`: the pipeline's
 `fitted.npz`, loaded with `allow_pickle=False` and validated (`pipeline.validate_model_arrays`)
 on every use. Scores are the LDA decision value `s` (positive favours `lda_classes[1]`);
-`confidence` is max(sigma(s), 1 - sigma(s)). The worker never abstains or hides anything:
+`confidence` is max(sigma(s), 1 - sigma(s)) = sigma(|s|): the shrinkage-LDA posterior of the
+predicted class, always >= 0.5 and not calibrated (no calibration step is fitted, and the
+LDA's Gaussian equal-covariance assumption sets its scale). The UI calls it "model confidence",
+never a probability of intent. The worker never abstains or hides anything:
 abstention, staleness and feedback are the app's policy, so every prediction carries what
 the policy needs (validity + detail, score, confidence, class, window, eligibility).
 A prediction is `{segment, kind: "hop" | "cue_locked", window_start, window_stop (segment
@@ -60,7 +63,8 @@ detail, score, confidence, predicted_class, trial_id, feedback_eligible, gap}`.
   path in the app's staging directory: predictions never cross the pipe. Result: `passed`,
   `windows_compared`, `tolerances`, `max_deviation` per quantity, `boundary_windows`,
   `first_valid_window_stop` per segment, one parity report per chunking, `model`, `window`,
-  `predictions_file`, `n_predictions`. Progress: `loading`, `replay`; cancellable between passes.
+  `predictions_file`, `n_predictions`. Progress: `loading`, `replay`; cancellation is checked
+  every 256 pushes or windows, in the offline reference pass and in every streaming pass.
 - `live_open` — params `{model, channel_ids, sample_rate_hz, expected_channel_ids,
   expected_sample_rate_hz, window, warmup_samples?, hop_samples?}`; result `{session, model,
   window: {offset_samples, length_samples, hop_samples, warmup_samples}}`. At most
@@ -72,8 +76,12 @@ detail, score, confidence, predicted_class, trial_id, feedback_eligible, gap}`.
   otherwise `first_sample` must continue the segment exactly, so a lost push is a
   `bad_request`, never silently spliced. `gaps` `[{after_sample, evidence}]` are the chunk's
   detected gaps; `cues` `[{sample, trial_id, end_sample?}]` register cues as soon as their
-  sample is known (each list at most `MAX_PUSH_EVENTS`). A rejected push leaves the session
-  unchanged. Result `{session, segment, n_samples, predictions, worker_compute_nanos}`, one
+  sample is known (each list at most `MAX_PUSH_EVENTS`). Refused with `bad_request`: non-finite
+  samples (they would poison the filter state), a `segment` lower than the current one
+  (segments only increase), a cue `sample` before 0 or more than one window length +
+  `MAX_PUSH_SAMPLES` past the push's last sample, an `end_sample` before its cue or more than
+  `MAX_CUE_SPAN_SAMPLES` after it, and more than `MAX_OPEN_CUES` (64) cues open at once. A
+  rejected push leaves the session unchanged. Result `{session, segment, n_samples, predictions, worker_compute_nanos}`, one
   prediction per window due in the chunk (every validity included).
 - `live_close` — params `{session}`; result `{closed: true, predictions}` (cue-locked windows
   the segment ended before, as `window_exceeds_segment`).

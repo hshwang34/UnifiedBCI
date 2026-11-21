@@ -377,6 +377,11 @@ MAX_LIVE_SESSIONS = 2
 # for 16 channels, so in-band samples stay small.
 MAX_PUSH_SAMPLES = 512
 MAX_PUSH_EVENTS = 64
+MAX_OPEN_CUES = 64          # cues a session holds at once (eligibility spans + pending trial windows)
+# A cue may be announced ahead of the samples, by at most one window plus this margin.
+CUE_AHEAD_MARGIN_SAMPLES = MAX_PUSH_SAMPLES
+# An imagery span longer than this (in samples, ~65 s at 125 Hz) is not a cue.
+MAX_CUE_SPAN_SAMPLES = 8192
 
 
 def _bad(req: Request, message: str) -> ProtocolError:
@@ -548,6 +553,8 @@ def handle_live_push(req: Request, ctx: Context) -> dict[str, Any]:
     n = _int_param(req, p, "n_samples", minimum=1)
     if n > MAX_PUSH_SAMPLES:
         raise _bad(req, f"n_samples {n} exceeds the per-push limit of {MAX_PUSH_SAMPLES}")
+    if predictor.segment is not None and segment < predictor.segment:
+        raise _bad(req, f"segment {segment} is before the session's current segment {predictor.segment}")
     new_segment = segment != predictor.segment
     expected_first = 0 if new_segment else predictor.n_samples
     if first != expected_first:
@@ -567,6 +574,20 @@ def handle_live_push(req: Request, ctx: Context) -> dict[str, Any]:
         raise _bad(req, f"bad samples, gaps or cues: {exc}") from exc
     if len(raw) != expected_bytes:
         raise _bad(req, f"samples decode to {len(raw)} bytes, expected {expected_bytes}")
+    chunk = np.frombuffer(raw, dtype="<f8").reshape(predictor.n_channels, n)
+    if not np.all(np.isfinite(chunk)):
+        # NaN or inf would poison the band-pass state for the rest of the segment.
+        raise _bad(req, f"samples hold {int(np.sum(~np.isfinite(chunk)))} non-finite values")
+    latest = first + n - 1
+    ahead = predictor.spec.length + CUE_AHEAD_MARGIN_SAMPLES
+    for cue in cues:
+        if not 0 <= cue.sample <= latest + ahead:
+            raise _bad(req, f"cue {cue.trial_id!r} at sample {cue.sample} is outside 0..{latest + ahead}")
+        if cue.end_sample is not None and not cue.sample <= cue.end_sample <= cue.sample + MAX_CUE_SPAN_SAMPLES:
+            raise _bad(req, f"cue {cue.trial_id!r} ends at {cue.end_sample}, outside {cue.sample}..{cue.sample + MAX_CUE_SPAN_SAMPLES}")
+    held = 0 if new_segment else predictor.open_cues
+    if held + len(cues) > MAX_OPEN_CUES:
+        raise _bad(req, f"at most {MAX_OPEN_CUES} cues may be open in a session ({held} are)")
     for after, _ in gaps:
         if not first - 1 <= after < first + n:
             raise _bad(req, f"gap after sample {after} is not in this push ({first}..{first + n - 1})")
@@ -577,7 +598,7 @@ def handle_live_push(req: Request, ctx: Context) -> dict[str, Any]:
         predictor.start_segment(segment)
     for cue in cues:
         out += predictor.add_cue(cue)
-    out += predictor.push(np.frombuffer(raw, dtype="<f8").reshape(predictor.n_channels, n), gaps)
+    out += predictor.push(chunk, gaps)
     return {"session": sid, "segment": segment, "n_samples": predictor.n_samples,
             "predictions": [pred.to_json() for pred in out], "worker_compute_nanos": time.monotonic_ns() - t0}
 

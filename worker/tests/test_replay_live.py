@@ -269,3 +269,80 @@ def test_live_methods_through_the_server_and_hello(tiny):
     pushed = json.loads(lines[-1])
     assert pushed["ok"] and pushed["result"]["n_samples"] == 6
     assert "samples" not in pushed["result"]                                # nothing large comes back
+
+
+def test_live_push_refuses_non_finite_samples_and_backward_segments(tiny):
+    ctx = live_ctx()
+    sid = call("live_open", open_params(tiny), ctx)["session"]
+    ok = {"session": sid, "segment": 1, "first_sample": 0, "n_samples": 4, "samples": b64(np.zeros((8, 4)))}
+    call("live_push", ok, ctx)
+    for bad in (np.nan, np.inf, -np.inf):
+        chunk = np.zeros((8, 4))
+        chunk[2, 1] = bad
+        with pytest.raises(ProtocolError, match="non-finite") as err:
+            call("live_push", {**ok, "first_sample": 4, "samples": b64(chunk)}, ctx)
+        assert err.value.code == "bad_request"
+    with pytest.raises(ProtocolError, match="before the session's current segment"):
+        call("live_push", {**ok, "segment": 0}, ctx)
+    predictor = ctx.sessions[sid]
+    assert (predictor.segment, predictor.n_samples) == (1, 4)
+    assert np.all(np.isfinite(predictor._filter._zi))                        # state untouched
+    call("live_push", {**ok, "first_sample": 4}, ctx)
+
+
+def test_live_push_bounds_cue_samples_and_open_cues(tiny):
+    ctx = live_ctx()
+    opened = call("live_open", open_params(tiny), ctx)
+    sid, length = opened["session"], opened["window"]["length_samples"]
+    ok = {"session": sid, "segment": 0, "first_sample": 0, "n_samples": 4, "samples": b64(np.zeros((8, 4)))}
+    ahead = 3 + length + worker_main.CUE_AHEAD_MARGIN_SAMPLES
+
+    def refused(cues, match):
+        with pytest.raises(ProtocolError, match=match):
+            call("live_push", {**ok, "cues": cues}, ctx)
+
+    refused([{"sample": -1, "trial_id": "a"}], "outside 0")
+    refused([{"sample": ahead + 1, "trial_id": "a"}], "outside 0")
+    refused([{"sample": 10, "trial_id": "a", "end_sample": 9}], "ends at 9")
+    refused([{"sample": 10, "trial_id": "a", "end_sample": 10 + worker_main.MAX_CUE_SPAN_SAMPLES + 1}], "ends at")
+    assert ctx.sessions[sid].open_cues == 0 and ctx.sessions[sid].segment is None
+    call("live_push", {**ok, "cues": [{"sample": ahead, "trial_id": "edge", "end_sample": ahead + 500}]}, ctx)
+    pos = 4
+    for k in range(1, worker_main.MAX_OPEN_CUES):                           # fill to the cap
+        call("live_push", {**ok, "first_sample": pos, "cues": [{"sample": 600, "trial_id": f"t{k}", "end_sample": 1100}]}, ctx)
+        pos += 4
+    assert ctx.sessions[sid].open_cues == worker_main.MAX_OPEN_CUES
+    with pytest.raises(ProtocolError, match="at most 64 cues"):
+        call("live_push", {**ok, "first_sample": pos, "cues": [{"sample": 600, "trial_id": "one-too-many"}]}, ctx)
+    assert ctx.sessions[sid].n_samples == pos                               # refused push changed nothing
+    # Cues close once their imagery span and trial window are past, freeing room.
+    while pos < 1100 + length + 600:
+        call("live_push", {**ok, "first_sample": pos, "n_samples": 512, "samples": b64(np.zeros((8, 512)))}, ctx)
+        pos += 512
+    assert ctx.sessions[sid].open_cues == 0
+
+
+def test_replay_checks_for_cancellation_inside_the_reference_pass(tiny):
+    calls = []
+
+    class Stop(Exception):
+        pass
+
+    def check():
+        calls.append(1)
+        if len(calls) > 1:
+            raise Stop()
+
+    ctx = worker_main.Context(emit=lambda n, d: None, check_cancelled=check)
+    p = replay_params(TINY, recording_id(TINY), tiny, tiny["tmp"] / "c.jsonl", chunkings=[1])
+    with pytest.raises(Stop):
+        call("replay_recording", p, ctx)
+    assert len(calls) == 2                                                  # stopped in the reference pass's first segment
+
+    seen = []
+    rec = project_io.open_recording(TINY, recording_id(TINY))
+    seg = project_io.load_segments(rec, None)[0]
+    arrays, _ = project_io.load_model_arrays(tiny["model"]["arrays_path"])
+    spec = streaming.WindowSpec.make(rec.sfreq, (0.5, 2.0), sos=arrays["bandpass_sos"])
+    streaming.stream_segment(streaming.StreamingPredictor(arrays, 8, spec), seg.data, 1, check=lambda: seen.append(1))
+    assert len(seen) == -(-seg.data.shape[1] // streaming.CHECK_EVERY)        # every CHECK_EVERY pushes
