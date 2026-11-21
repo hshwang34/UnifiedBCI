@@ -29,8 +29,16 @@ public struct RecordingHandle: Sendable {
 
     /// Structural checks a decoder cannot make: every chunk's dimensions are positive, its
     /// sample range end and byte size fit an `Int`, its `fileName` is exactly the canonical name for its
-    /// index, indices are unique, and every channel's `sourceRow` is a row of every chunk.
+    /// index, indices are unique, every channel's `sourceRow` is a row of every chunk, and no
+    /// monotonic time is negative.
     static func validate(_ manifest: RecordingManifest) throws {
+        // Monotonic times are nanoseconds since boot: never negative. Readers subtract them.
+        for seg in manifest.segments where seg.startedAtMonotonicNanos < 0 || (seg.endedAtMonotonicNanos ?? 0) < 0 {
+            throw ProjectStoreError.invalidManifest("segment \(seg.index) has a negative monotonic time")
+        }
+        for entry in manifest.chunks where entry.drainedAtMonotonicNanos < 0 {
+            throw ProjectStoreError.invalidManifest("chunk \(entry.index) has a negative monotonic time")
+        }
         var seen = Set<Int>()
         for entry in manifest.chunks {
             guard entry.index >= 0, seen.insert(entry.index).inserted else {

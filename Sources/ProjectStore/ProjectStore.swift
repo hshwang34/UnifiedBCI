@@ -575,17 +575,19 @@ struct RecordingLock: Sendable {
         let parts = String(decoding: buf.prefix(n), as: UTF8.self).split(separator: " ")
         guard parts.count == 4, let segment = Int(parts[0]), segment >= 0,
               let reason = EndReason(rawValue: String(parts[1])), Self.noteReasons.contains(reason),
-              let count = Int(parts[2]), count >= 0, let endedAt = Int64(parts[3]) else { return nil }
+              let count = Int(parts[2]), count >= 0, let endedAt = Int64(parts[3]), endedAt >= 0 else { return nil }
         return Note(segment: segment, reason: reason, uncommitted: count, endedAtMonotonicNanos: endedAt)
     }
 
     /// Whether `note` can describe `segment`: same index, ended after it started, and no more
     /// uncommitted samples than could have arrived by then (2× nominal rate, plus one second).
     static func note(_ note: Note, fits segment: RecordingManifest.StreamSegment, nominalRateHz: Double) -> Bool {
-        guard note.segment == segment.index, note.endedAtMonotonicNanos >= segment.startedAtMonotonicNanos,
+        // Both values are untrusted (lock file, manifest): subtract without trapping.
+        let (elapsed, overflow) = note.endedAtMonotonicNanos.subtractingReportingOverflow(segment.startedAtMonotonicNanos)
+        guard note.segment == segment.index, segment.startedAtMonotonicNanos >= 0, !overflow, elapsed >= 0,
               nominalRateHz.isFinite, nominalRateHz > 0 else { return false }
-        let seconds = Double(note.endedAtMonotonicNanos - segment.startedAtMonotonicNanos) / 1e9
-        return Double(note.uncommitted) <= (seconds + 1) * nominalRateHz * 2
+        let bound = (Double(elapsed) / 1e9 + 1) * nominalRateHz * 2
+        return bound.isFinite && Double(note.uncommitted) <= bound
     }
 
     private func write(_ text: String) {

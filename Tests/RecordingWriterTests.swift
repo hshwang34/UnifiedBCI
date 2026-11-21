@@ -294,6 +294,8 @@ final class RecordingWriterTests: XCTestCase {
             ("1 disk_full 9999999 3000000000", .processTerminated, nil),    // more than 1 s × 2 × 125 Hz could bring
             ("1 disk_full 40 500000000", .processTerminated, nil),           // ended before it started
             ("disk_full 40", .processTerminated, nil),                       // old format
+            ("1 disk_full 40 -9223372036854775808", .processTerminated, nil), // negative end time
+            ("1 disk_full 40 9223372036854775807", .diskFull, 40),           // huge end: no trap, plausible bound
         ]
         for (i, c) in cases.enumerated() {
             let store = try ProjectStore.create(at: scratch.appendingPathComponent("note\(i).bciproj"), name: "n")
@@ -528,6 +530,37 @@ final class RecordingWriterTests: XCTestCase {
         let closed = await reopened.closedSegments
         XCTAssertEqual(closed, [])
         XCTAssertEqual(try Data(contentsOf: file), try ContractJSON.encoder().encode(crafted), "left exactly as found")
+    }
+
+    /// Crafted manifest and lock note whose monotonic times would overflow a subtraction:
+    /// refused or ignored, never a trap on open.
+    func testHostileMonotonicTimes_areRefusedNotTrapped() async throws {
+        let url = scratch.appendingPathComponent("hostile-times.bciproj")
+        let store = try ProjectStore.create(at: url, name: "h")
+        var m = manifest()
+        m.segments = [.init(index: 0, sessionID: nil, runID: "r", startedAtWall: Date(), startedAtMonotonicNanos: Int64.min,
+                            endedAtMonotonicNanos: nil, endReason: nil, detectedGaps: [])]
+        let (_, lock) = try await store.createLiveRecording(m, hook: nil, fault: nil)
+        lock.release(keepFile: true)
+        let dir = store.recordingDirectory(m.recordingID)
+        try Data("0 disk_full 1 9223372036854775807".utf8).write(to: dir.appendingPathComponent(".writer.lock"))
+        let file = dir.appendingPathComponent("recording.json")
+        let before = try Data(contentsOf: file)
+
+        XCTAssertThrowsError(try RecordingHandle(directory: dir)) { error in
+            XCTAssertTrue("\(error)".contains("negative monotonic time"), "\(error)")
+        }
+        let reopened = try ProjectStore.open(at: url)      // must not trap
+        let closed = await reopened.closedSegments
+        XCTAssertEqual(closed, [])
+        XCTAssertEqual(try Data(contentsOf: file), before, "left exactly as found")
+
+        // The note check itself, on a segment that slipped past validation.
+        let seg = RecordingManifest.StreamSegment(index: 0, sessionID: nil, runID: "r", startedAtWall: Date(), startedAtMonotonicNanos: Int64.min,
+                                                  endedAtMonotonicNanos: nil, endReason: nil, detectedGaps: [])
+        let note = RecordingLock.Note(segment: 0, reason: .diskFull, uncommitted: 1, endedAtMonotonicNanos: Int64.max)
+        XCTAssertFalse(RecordingLock.note(note, fits: seg, nominalRateHz: 125))
+        XCTAssertFalse(RecordingLock.note(note, fits: seg, nominalRateHz: .infinity))
     }
 
     private func runRecordingHelper(chunks: Int, crashAt: (CommitHook.Point, Int)?) throws -> URL {
