@@ -29,6 +29,10 @@ row 31 the marker row: 0. BrainFlow 5.23.0's playback board zeroes the file's ma
 and only carries markers inserted at play time, so the cue events go in the sidecar
 (`cues`, at their resampled sample index) instead.
 
+Loop seam: each restart is a discontinuity; the app records it as a gap and starts no join.
+The file is not trimmed to make the counters wrap cleanly: the last counter is 16 and the
+first 0, so the restart shows as a counter step other than 2 (and the timestamps go back).
+
 The output is byte-deterministic for a given input and locked environment: no clock, no
 randomness, fixed number formatting, sorted JSON. About 2.3 MB, so it is generated at
 build time into the app bundle rather than committed.
@@ -72,6 +76,7 @@ COUNTER_STEP = 2
 BASE_TIMESTAMP_S = 1_763_600_000  # fixed epoch (whole seconds); never now()
 PERIOD_MS = 8  # 1000 / 125, exact
 EEG_DECIMALS = 2
+LOOP_SEAM = "each restart is a discontinuity; the app records it as a gap and starts no join"
 
 # Cue labels -> nominal codes listed in the sidecar, for when markers are inserted at play
 # time by a later PR. 0 means "no marker" to BrainFlow, so codes start at 1.
@@ -82,6 +87,10 @@ def load_source(project: Path = EXAMPLE) -> tuple[project_io.Recording, Any]:
     rec = project_io.open_recording(project, RECORDING_ID)
     project_io.validate(rec)
     (segment,) = project_io.load_segments(rec, labels=CUE_CODES, only=SEGMENT)
+    units = {c["label"]: c.get("unit") for c in rec.manifest["channels"]}
+    wrong = {label: unit for label, unit in units.items() if unit != "uV"}
+    if wrong:
+        raise SystemExit(f"every source channel must be in uV; got {wrong}")
     if segment.sfreq != SOURCE_RATE:
         raise SystemExit(f"expected a {SOURCE_RATE} Hz source, got {segment.sfreq}")
     return rec, segment
@@ -144,7 +153,7 @@ def sidecar(rec: project_io.Recording, segment: Any, n_out: int, csv_sha256: str
                    "Not a raw recording and not from a device.",
         "generator": TOOL_VERSION,
         "file": {"name": CSV_NAME, "sha256": csv_sha256, "sampleCount": n_out,
-                 "loopable": True, "markerRow": "all 0; cue events are listed under cues"},
+                 "loopSeam": LOOP_SEAM, "markerRow": "all 0; cue events are listed under cues"},
         "layout": {"masterBoardID": BOARD_ID, "masterBoard": "Cyton+Daisy", "rows": ROWS,
                    "packageNumRow": COUNTER_ROW, "packageNumStep": COUNTER_STEP,
                    "eegRows": list(EEG_ROWS), "timestampRow": TIMESTAMP_ROW, "markerRow": MARKER_ROW,

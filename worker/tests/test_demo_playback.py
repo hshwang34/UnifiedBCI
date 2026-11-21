@@ -64,6 +64,13 @@ def test_counters_step_two_mod_256_without_gaps(built):
     assert np.array_equal(data[:, 0], counters), "integers only"
 
 
+def test_loop_seam_is_detectable_by_counters(tool, built):
+    _, _, data, meta = built
+    assert data[-1, 0] == 16 and data[0, 0] == 0
+    assert (data[0, 0] - data[-1, 0]) % 256 != 2, "a restart must not look like a clean step"
+    assert meta["file"]["loopSeam"] == tool.LOOP_SEAM and "loopable" not in meta["file"]
+
+
 def test_rate_is_125_with_exact_deterministic_timestamps(tool, built):
     csv, _, data, meta = built
     n = data.shape[0]
@@ -144,8 +151,14 @@ def test_brainflow_plays_the_file_back_unchanged(tool, built, tmp_path):
     try:
         board.config_board("old_timestamps")
         board.start_stream()
-        time.sleep(1.0)
-        got = board.get_board_data()
+        chunks, count = [], 0
+        deadline = time.monotonic() + 10
+        while count < 50 and time.monotonic() < deadline:
+            time.sleep(0.05)
+            chunk = board.get_board_data()
+            chunks.append(chunk)
+            count += chunk.shape[1]
+        got = np.concatenate(chunks, axis=1)
         board.stop_stream()
     finally:
         board.release_session()
