@@ -162,18 +162,7 @@ public actor ChunkWriter {
     }
 
     public func appendEvent(_ event: EventRecord) throws {
-        var line = try ContractJSON.lineEncoder().encode(event)
-        line.append(0x0A)
-        let url = directory.appendingPathComponent(ProjectStore.eventsFileName)
-        let fd = open(url.path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0o644)
-        guard fd >= 0 else { throw ProjectStoreError.io("open events.jsonl", errno) }
-        defer { close(fd) }
-        try line.withUnsafeBytes { buf in
-            guard Foundation.write(fd, buf.baseAddress!, buf.count) == buf.count else {
-                throw ProjectStoreError.io("append events.jsonl", errno)
-            }
-        }
-        try AtomicFile.fullSync(fd, "events.jsonl")
+        try AppendOnlyFile.appendLine(try ContractJSON.lineEncoder().encode(event), to: directory.appendingPathComponent(ProjectStore.eventsFileName))
     }
 
     private func writeManifest() throws {

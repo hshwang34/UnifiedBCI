@@ -26,7 +26,12 @@ MyExperiment.bciproj/
   results/<uuid>/
     evaluation.json            worker evaluation record (verbatim bytes from the worker)
     result.meta.json           ResultMeta: wall clock, durations, worker build, reproduction link
-    predictions.jsonl          PredictionRecord per line (replay and live; not written yet)
+  models/<uuid>/
+    model.json                 ModelRecord: a frozen model; its arrays stay in pipelines/ (brief 006)
+  live/<uuid>/
+    run.json                   LiveRunRecord: a live run or a stored replay (kind live | replay)
+    predictions.jsonl          PredictionRecord per line, append-only
+    feedback.jsonl             FeedbackRecord per line, append-only (live runs only)
 ```
 
 **Index: none. The directory scan is the truth.** A recording, pipeline or result exists
@@ -63,8 +68,11 @@ Every manifest rewrite (`project.json`, `recording.json`, `pipeline.json`) follo
 protocol: write the complete new content to a sibling temp file (`.tmp-<name>`), `fsync`
 it, `rename(2)` over the target, then `fsync` the directory. A crash leaves either the old
 file or the new file, never a torn one, and at most one temp file, which is deleted on
-open. Append-only files (`events.jsonl`, `predictions.jsonl`) are appended with one
-`write` per line and never rewritten.
+open. Append-only files (`events.jsonl`, `predictions.jsonl`, `feedback.jsonl`) are
+appended one line at a time with `O_APPEND` (short writes looped; a failed append is
+truncated back to the file's earlier size), fsynced per line, and never rewritten. A
+reader drops a last line cut off mid-write (no newline, not decodable) and says so; any
+other line that fails to decode is an error.
 
 ## Sample chunks (`chunks/NNNNNN.f64`)
 
@@ -338,6 +346,45 @@ the protocol pipe); `storeResult` renames the directory into place.
 computed by the worker. The seed is deliberately not part of it: a result is identified by
 recording + `configHash` + seed.
 
+## Frozen models and live runs
+
+Added for brief 006 without a format bump: older readers never open `models/` or `live/`,
+`results/` is untouched, and `predictions.jsonl` was never written before (so its new
+optional fields, the optional `emittedAtMonotonicNanos` and the `invalid_input` validity
+break no reader).
+
+- `models/<uuid>/model.json` (`ModelRecord`) freezes one fit of one evaluation (decision
+  #38: the evaluation's own fit on its training runs, so the model's evidence is its
+  result's held-out score). It is written once (temp directory → fsync → rename) and never
+  edited. It holds what the model expects (channel ids in order, rate, band-pass, window,
+  the filter warm-up the worker derived), class labels in LDA class order (a positive score
+  favours `classLabels[1]`), `role` (`reference`, or `baseline` for the `baseline__` arrays),
+  the training runs and their sessions (null where unknown), `configHash`, worker versions
+  and `fittedSHA256`. The arrays are not copied: they stay in the immutable
+  `pipelines/<sourcePipelineID>/fitted.npz`, whose path is built from the id and never read
+  from the record. Freezing requires the worker's `validate_model` summary of that file,
+  and the store hashes the bytes again and refuses if they differ; the worker re-checks the
+  hash on every use ("model file changed since it was frozen"). The summary must describe
+the frozen role and LDA classes exactly `[0, 1]` (the evaluation's `left`, `right`), and every
+training run must be in the source recording. One model per fit and role.
+- `live/<uuid>/run.json` (`LiveRunRecord`): `kind` `replay` is written once with its
+  predictions and parity report. `kind` `live` is written at start and rewritten once at the
+  end (`endedAt`, prediction summary, latency summary, live-vs-replay check), with the atomic
+  rewrite; a live run without `endedAt` ended with the app. Its logs are created empty and
+  fsynced with the directory at start. A log that would pass the 64 MB read cap stops
+  logging instead (`loggingStopped` names why), so it always stays readable. Both store the model, recording,
+  runs, hop and abstention threshold (decision #39); a live run also its stale limit.
+- `predictions.jsonl` gets `sequence` (from 0, per run), `validityDetail`,
+  `acquisitionReceiptMonotonicNanos`, `workerComputeNanos`, `confidence` (the uncalibrated
+  shrinkage-LDA posterior of the predicted class, "model confidence" on screen),
+  `windowKind` (`hop` | `cue_locked`), `trialID`, `feedbackEligible` and, in a replay,
+  `offline` (the reference path's validity and score for the same window). A replay has no
+  emission clock, so `emittedAtMonotonicNanos` is null there. In live logs
+  `feedbackPresentedAtMonotonicNanos` stays null: `feedback.jsonl` (`FeedbackRecord`) holds
+  what the participant saw (bar side and length as a fraction of the half-width, or hidden
+  and the words shown instead) and the presentation callback of the first frame showing it,
+  keyed by prediction `sequence`.
+
 ## Results and reproduction
 
 `results/<uuid>/` is written as `.tmp-<uuid>` and renamed, so it is complete or absent.
@@ -407,7 +454,8 @@ client passes the worker's `result` bytes through without re-encoding):
 ## Prediction and action
 
 One `PredictionRecord` per emission, live or replay. `validity` is one of `valid`,
-`insufficient_window`, `stale`, `disconnected`, `worker_unavailable`, `channel_mismatch`.
+`insufficient_window`, `stale`, `disconnected`, `worker_unavailable`, `channel_mismatch`,
+`invalid_input` (the worker refused the window's samples).
 `inputSampleRange` is `{start, count}` or `null` when no samples were used.
 `action` is `{kind: "class", label: "<class>"}` or `{kind: "abstain"}` — abstention is a
 policy outcome, not a third class, and carries no label.
