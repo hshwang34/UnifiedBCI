@@ -413,22 +413,37 @@ struct EvaluateInspectorModel {
     }
 
     let recordingTitle: String
+    /// Whether the recording has enough runs (brief 005), as a sentence.
+    let runs: String
+    let hasEnoughRuns: Bool
+    /// A protocol recording's classes; nil for any other recording.
+    let classes: String?
     let changes: [String]
     let misleading: [Bullet]
     let splitExplanation: [String]
 
     init(manifest m: RecordingManifest, events: [EventRecord], latest: EvaluationReport?,
-         defaults: EvaluationDefaults?, recipes: [EvaluationDefaults.Recipe] = [], modelName: (String) -> String) {
+         defaults: EvaluationDefaults?, recipes: [EvaluationDefaults.Recipe] = [], modelName: (String) -> String,
+         protocol p: ProtocolRecord? = nil, windowEndMs: Int? = nil) {
         recordingTitle = RecordingDetailModel.title(for: m)
+        let runCount = RunCountModel.runs(m)
+        let usable = RunCountModel.evaluableRuns(events)
+        runs = RunCountModel.message(runs: usable)
+        hasEnoughRuns = usable >= RunCountModel.minimumRuns
+        classes = p.map(RunCountModel.labels)
         let recipes = recipes.map(\.name)
         let what = recipes.isEmpty ? "the reference recipe and its baseline" : recipes.joined(separator: " and ")
         changes = [
-            "Runs \(what) on the \(m.segments.count) run\(m.segments.count == 1 ? "" : "s") of this recording, in the analysis worker.",
+            "Runs \(what) on the \(runCount) run\(runCount == 1 ? "" : "s") of this recording, in the analysis worker.",
             "The recording is not modified.",
             "The result is stored as a new record in this project; earlier results are kept.",
         ]
 
         var bullets: [Bullet] = []
+        // The protocol's cue must hold the evaluation window (brief 005 validation).
+        if let p, let windowEndMs, let warning = ProtocolCopy.windowWarning(cueMs: p.timing.cueMs, windowEndMs: windowEndMs) {
+            bullets.append(Bullet(symbol: "exclamationmark.triangle", text: warning))
+        }
         // Trials per class: cue events carry a trial id; rests do not.
         let trials = Dictionary(grouping: events.filter { $0.trialID != nil }, by: \.label).mapValues(\.count)
         if !trials.isEmpty {
