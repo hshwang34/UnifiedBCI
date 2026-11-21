@@ -209,12 +209,16 @@ public struct FeedbackRecord: Codable, Sendable, Equatable {
     /// Class label the bar grows toward; nil when hidden.
     public var side: String?
     public var length: Double?
-    /// The one line shown instead of the bar ("Not confident", "Signal delayed", …).
+    /// The one line shown instead of the bar ("Model unsure", "Signal delayed", …).
     public var words: String?
     public var presentedAtMonotonicNanos: Int64?
+    /// Why the bar was hidden: `no_cue`, `outside_span`, `abstain`, `stale`, `delayed` (too old
+    /// at presentation, or a display stall), `invalid`, `disconnected`, `worker`, `stopped`.
+    public var reason: String?
 
-    public init(predictionSequence: Int, shown: Bool, side: String?, length: Double?, words: String?, presentedAtMonotonicNanos: Int64?) {
+    public init(predictionSequence: Int, shown: Bool, side: String?, length: Double?, words: String?, presentedAtMonotonicNanos: Int64?,
+                reason: String? = nil) {
         self.predictionSequence = predictionSequence; self.shown = shown; self.side = side
-        self.length = length; self.words = words; self.presentedAtMonotonicNanos = presentedAtMonotonicNanos
+        self.length = length; self.words = words; self.presentedAtMonotonicNanos = presentedAtMonotonicNanos; self.reason = reason
     }
 }

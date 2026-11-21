@@ -373,7 +373,7 @@ final class LiveInferenceRunnerTests: XCTestCase {
                              confidence: c, windowKind: kind, trialID: trial, feedbackEligible: eligible)
         }
         XCTAssertEqual(policy.display(for: p(.valid)), .bar(side: "right", length: 0.6000000000000001))
-        XCTAssertEqual(policy.display(for: p(.valid, c: 0.59)), .hidden(words: "Not confident"))
+        XCTAssertEqual(policy.display(for: p(.valid, c: 0.59)), .hidden(words: "Model unsure"))
         XCTAssertEqual(policy.display(for: p(.valid, c: 0.6)).isShown, true, "at the threshold shows")
         XCTAssertEqual(policy.display(for: p(.valid, eligible: false)), .hidden(words: nil), "outside the feedback span: nothing")
         XCTAssertEqual(policy.display(for: p(.insufficientWindow)), .hidden(words: "Waiting for enough signal"))

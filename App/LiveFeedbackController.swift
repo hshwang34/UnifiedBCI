@@ -31,10 +31,10 @@ final class LiveFeedbackController {
     @ObservationIgnored private var tasks: [Task<Void, Never>] = []
 
     private init(model: ModelRecord, protocolRecord: ProtocolRecord, policy: FeedbackPolicy, liveRunID: UUID, recordingID: UUID,
-                 runner: LiveInferenceRunner) {
+                 runner: LiveInferenceRunner, directions: [String: Double]) {
         self.model = model; self.protocolRecord = protocolRecord; self.policy = policy
         self.liveRunID = liveRunID; self.recordingID = recordingID; self.runner = runner
-        feed = FeedbackFeed(directions: FeedbackFeed.directions(classes: protocolRecord.classes, modelLabels: model.classLabels))
+        feed = FeedbackFeed(directions: directions, staleLimitNanos: policy.staleLimitNanos)
     }
 
     /// Creates the live run (`live/<uuid>/`), starts the inference worker and subscribes it
@@ -42,6 +42,10 @@ final class LiveFeedbackController {
     /// throws before anything runs, with the refusal logged as the run's one record.
     static func start(model: ModelRecord, protocolRecord: ProtocolRecord, policy: FeedbackPolicy, store: ProjectStore, launch: WorkerLaunch?,
                       session: AcquisitionSession, board: BoardDescription, request: AcquisitionSession.RecordingRequest) async throws -> LiveFeedbackController {
+        // The bar's sides must match the cues: refused before anything is created.
+        guard let directions = FeedbackFeed.directions(classes: protocolRecord.classes, modelLabels: model.classLabels) else {
+            throw WorkerError(code: "invalid_protocol", message: LiveTestCopy.directionProblem)
+        }
         let recordingID = request.recordingID ?? UUID()
         let record = LiveRunRecord(kind: .live, modelID: model.modelID, recordingID: recordingID, runIDs: [], hopSamples: WorkerClient.hopSamples,
                                    abstainThreshold: policy.threshold, staleLimitMillis: policy.staleLimitMillis, startedAt: Date())
@@ -64,7 +68,7 @@ final class LiveFeedbackController {
             throw error
         }
         let c = LiveFeedbackController(model: model, protocolRecord: protocolRecord, policy: policy, liveRunID: record.liveRunID,
-                                       recordingID: recordingID, runner: runner)
+                                       recordingID: recordingID, runner: runner, directions: directions)
         c.wire()
         return c
     }
@@ -74,13 +78,18 @@ final class LiveFeedbackController {
         tasks = [
             Task.detached { for await u in runner.updates { feed.submit(u) } },
             // One consumer, so feedback lines are logged in the order the frames showed them.
-            Task.detached { for await r in feed.reports { await runner.presented(sequence: r.sequence, display: r.display, at: r.presentedAt) } },
+            Task.detached {
+                for await r in feed.reports {
+                    await runner.presented(sequence: r.sequence, display: r.display, at: r.presentedAt, reason: r.reason, measured: r.measured)
+                }
+            },
             Task { [weak self] in
                 while !Task.isCancelled {
                     guard let self else { return }
                     let s = runner.status
                     if s != self.status { self.status = s }
-                    try? await Task.sleep(for: .milliseconds(100))
+                    // 4 Hz is plenty for the operator and keeps view updates off a busy main thread.
+                    try? await Task.sleep(for: .milliseconds(250))
                 }
             },
         ]
@@ -138,8 +147,8 @@ struct LiveCueHost: ProtocolRunHost {
         onEvents(events)
         for e in events where classLabels.contains(e.label) {
             guard let trial = e.trialID else { continue }
-            await runner.addCue(trialID: trial, marker: marker, presentedAt: e.presentedAtMonotonicNanos ?? associateAt ?? HostMonotonicClock.nowNanos(),
-                                lengthSeconds: cueSeconds)
+            // No presentation callback: nil, never a guess (the runner flags the trial).
+            await runner.addCue(trialID: trial, marker: marker, presentedAt: e.presentedAtMonotonicNanos, lengthSeconds: cueSeconds)
         }
         return await inner.record(events, marker: marker, associateAt: associateAt)
     }

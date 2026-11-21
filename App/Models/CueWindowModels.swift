@@ -78,6 +78,8 @@ enum CueWindowModel {
     static let feedbackHeight = 0.034
     static let feedbackTick = 0.07       // the centre line's height
     static let feedbackMinimum = 0.006   // a just-confident bar is still visible
+    /// The same minimum as a fraction of the half-width (the operator's gauge uses it too).
+    static var feedbackMinimumFraction: Double { feedbackMinimum / feedbackHalfWidth }
     static let feedbackTrackAlpha = 0.16
     static let feedbackWordsSize = 0.032
     static let feedbackWordsAlpha = 0.78

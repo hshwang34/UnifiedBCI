@@ -108,12 +108,14 @@ struct FeedbackGauge: View {
         GeometryReader { g in
             let half = g.size.width / 2, h: CGFloat = 14
             let length = CGFloat(bar?.length ?? 0) * half
+            // The participant bar's minimum, at the same proportion.
+            let minimum = half * CGFloat(CueWindowModel.feedbackMinimumFraction)
             ZStack(alignment: .leading) {
                 Capsule().fill(Theme.textTertiary.opacity(0.18)).frame(height: h)
                 Capsule()
                     .fill(Theme.accentInk.gradient)
-                    .frame(width: max(bar == nil ? 0 : 4, length), height: h)
-                    .offset(x: (bar?.direction ?? 1) < 0 ? half - max(4, length) : half)
+                    .frame(width: max(bar == nil ? 0 : minimum, length), height: h)
+                    .offset(x: (bar?.direction ?? 1) < 0 ? half - max(minimum, length) : half)
                     .opacity(bar == nil ? 0 : 1)
                 Rectangle().fill(Theme.textPrimary).frame(width: 2, height: 30).offset(x: half - 1)
             }
