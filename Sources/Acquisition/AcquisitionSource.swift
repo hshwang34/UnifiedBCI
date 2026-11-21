@@ -12,6 +12,8 @@ public protocol AcquisitionBoard: Sendable {
     func readAll() async throws -> SampleChunk
     /// BrainFlow `config_board`: sends `command`, returns the board's reply ("" if none).
     func configure(_ command: String) async throws -> String
+    /// BrainFlow `insert_marker`: `value` (never 0) lands on the next sample written.
+    func insertMarker(_ value: Double) async throws
     func release() async throws
 }
 

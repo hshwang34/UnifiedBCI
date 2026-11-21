@@ -15,6 +15,7 @@ struct ResultDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Space.cardGap) {
                     ResultHero(model: m, session: session, stored: stored)
+                    ForEach(m.notes, id: \.self) { StatusChip(kind: .warning, text: $0) }
                     if let warning = m.warning {
                         StatusChip(kind: .warning, text: warning)
                     }
