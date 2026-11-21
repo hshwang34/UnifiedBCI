@@ -228,6 +228,9 @@ public actor LiveInferenceRunner {
         try? await writer?.append(record)
     }
 
+    /// Test seam: one frame, handled to completion (no stream, no timing).
+    func ingest(_ frame: AcquisitionSession.InferenceFrame) async { await handle(frame) }
+
     /// Test seam: SIGKILL the inference worker, as Activity Monitor would.
     func killWorkerForTesting() async { await client?.forceTerminate() }
 
@@ -245,14 +248,14 @@ public actor LiveInferenceRunner {
         }
         // A new stream segment, or frames lost from the newest-wins buffer: the worker starts
         // a new segment (filter reset, warm-up again), never joins across the hole.
+        // State changes first, logging after: a log line suspends the actor, and a cue added
+        // meanwhile must land in the new segment, not be counted as lost with the old one.
+        var lost: (cues: [String], reason: String, dropped: Int?)?
         if frame.segment != streamSegment || frame.firstSample != nextStreamSample {
             if streamSegment != nil {
-                let reason = frame.segment == streamSegment ? "cue_lost_frames_dropped" : "cue_lost_stream_restarted"
-                if frame.segment == streamSegment {
-                    await enterOnce(.insufficientWindow, detail: "frames_dropped:\(frame.firstSample - nextStreamSample)")
-                }
-                for cue in waiting { await lose(cue.trialID, reason) }
-                for cue in pendingCues { await lose(cue.trialID, reason) }
+                let dropped = frame.segment == streamSegment
+                lost = (waiting.map(\.trialID) + pendingCues.map(\.trialID), dropped ? "cue_lost_frames_dropped" : "cue_lost_stream_restarted",
+                        dropped ? frame.firstSample - nextStreamSample : nil)
                 waiting = []
                 pendingCues = []
             }
@@ -265,6 +268,10 @@ public actor LiveInferenceRunner {
         let first = workerNext
         workerNext += chunk.count
         lastFrameEnd = (first + chunk.count - 1, chunk.drainedAtMonotonicNanos)
+        if let lost {
+            if let n = lost.dropped { await enterOnce(.insufficientWindow, detail: "frames_dropped:\(n)") }
+            for trial in lost.cues { await lose(trial, lost.reason) }
+        }
         if condition == .stale || condition == .disconnected { condition = nil }
         await placeMarkedCues(chunk, first: first)
         guard condition != .workerUnavailable, let c = client, let s = session else {
