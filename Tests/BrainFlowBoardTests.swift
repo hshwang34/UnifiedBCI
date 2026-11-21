@@ -153,3 +153,151 @@ final class SequenceAccountingTests: XCTestCase {
         XCTAssertFalse(SequenceAccounting.overflowSuspected(available: 10, bufferSize: 0), "no stream, no verdict")
     }
 }
+
+/// Bridge tests on BrainFlow's playback-file board (-3) with Cyton+Daisy as master board:
+/// the only way to exercise Daisy framing (step-2 counters) without hardware (decision #26).
+final class PlaybackBoardTests: XCTestCase {
+    private let receivedSamples = 200
+
+    private func fixtureURL() throws -> URL {
+        try XCTUnwrap(Bundle(for: PlaybackBoardTests.self).url(forResource: "playback_cyton_daisy_faults", withExtension: "csv"),
+                      "playback fixture missing from the test bundle")
+    }
+
+    /// The fixture as written: one line per sample, tab-separated rows.
+    private func fixtureSamples() throws -> [[Double]] {
+        try String(contentsOf: fixtureURL(), encoding: .ascii).split(separator: "\n")
+            .map { $0.split(separator: "\t").map { Double($0)! } }
+    }
+
+    /// Playback is paced at 125 Hz; drain until `count` samples arrived or time runs out.
+    private func drain(_ board: BrainFlowBoard, until count: Int) async throws -> [SampleChunk] {
+        var chunks: [SampleChunk] = []
+        let deadline = ContinuousClock.now + .seconds(10)
+        while chunks.reduce(0, { $0 + $1.count }) < count, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+            chunks.append(try await board.readAll())
+        }
+        return chunks
+    }
+
+    func testPlaybackUsesTheMasterBoardsLayout() throws {
+        let board = try BrainFlowBoard.playback(file: fixtureURL())
+        XCTAssertEqual(board.boardID, KnownBoard.playbackFile)
+        XCTAssertEqual(board.description, try BrainFlowBoard.describe(boardID: KnownBoard.cytonDaisy))
+        XCTAssertEqual(board.description.sequenceStep, 2)
+        XCTAssertThrowsError(try BrainFlowBoard(boardID: KnownBoard.playbackFile), "playback needs a file and a master board")
+    }
+
+    func testEveryInjectedFaultIsFoundAndTheFileIsReturnedUnchanged() async throws {
+        let board = try BrainFlowBoard.playback(file: fixtureURL())
+        let d = board.description
+        try await board.startStream()
+        let chunks = try await drain(board, until: receivedSamples)
+        try await board.release()
+
+        var accounting = SequenceAccounting(board: d)
+        var findings: [SequenceAccounting.Finding] = []
+        var columns: [[Double]] = []
+        for chunk in chunks {
+            let base = columns.count
+            findings += accounting.ingest(counters: chunk.row(d.packageNumRow), timestamps: chunk.row(d.timestampRow))
+                .map { .init(afterSampleIndex: base + $0.afterSampleIndex, kind: $0.kind) }
+            columns += (0..<chunk.count).map { i in (0..<chunk.numRows).map { chunk.values[$0 * chunk.count + i] } }
+        }
+
+        // Nothing dropped, added or rewritten: every row, timestamps included (old_timestamps).
+        XCTAssertEqual(columns, try fixtureSamples())
+        XCTAssertEqual(findings, [
+            .init(afterSampleIndex: 59, kind: .gap(estimatedMissing: 2, ambiguous: true, parityViolation: false)),
+            .init(afterSampleIndex: 99, kind: .staleHalf),
+            .init(afterSampleIndex: 139, kind: .invalidCounter(value: 7.5)),
+            // The unreadable counter is skipped, so the next delta also spans sample 140:
+            // counter evidence cannot tell a lost sample from an unreadable one.
+            .init(afterSampleIndex: 140, kind: .gap(estimatedMissing: 1, ambiguous: true, parityViolation: false)),
+            // 252 -> 2 across the wrap: 254 and 0 lost. The clean wrap at sample 27 is not listed.
+            .init(afterSampleIndex: 153, kind: .gap(estimatedMissing: 2, ambiguous: true, parityViolation: false)),
+        ])
+    }
+
+    func testLoopingPlaybackShowsTheRestartAsAJump() async throws {
+        let board = try BrainFlowBoard.playback(file: fixtureURL(), loop: true)
+        let d = board.description
+        try await board.startStream()
+        let chunks = try await drain(board, until: receivedSamples + 10)
+        try await board.release()
+
+        var accounting = SequenceAccounting(board: d)
+        var total = 0
+        var atRestart: [SequenceAccounting.Kind] = []
+        for chunk in chunks {
+            for f in accounting.ingest(counters: chunk.row(d.packageNumRow), timestamps: chunk.row(d.timestampRow))
+            where total + f.afterSampleIndex == receivedSamples - 1 {
+                atRestart.append(f.kind)
+            }
+            total += chunk.count
+        }
+        XCTAssertGreaterThan(total, receivedSamples)
+        // Counter 92 -> 200 and the timestamps go back to the file's start.
+        XCTAssertEqual(atRestart.count, 2, "\(atRestart)")
+        XCTAssertEqual(atRestart.first, .gap(estimatedMissing: 53, ambiguous: true, parityViolation: false))
+        guard case .clockAnomaly? = atRestart.last else { return XCTFail("expected a clock anomaly, got \(atRestart)") }
+    }
+
+    func testConfigureAndInsertMarker() async throws {
+        let board = try BrainFlowBoard.playback(file: fixtureURL())
+        let d = board.description
+        // The playback board accepts its own commands and replies with nothing.
+        let reply = try await board.configure("old_timestamps")
+        XCTAssertEqual(reply, "")
+        try await board.startStream()
+        try await Task.sleep(for: .milliseconds(200))
+        try await board.insertMarker(3)
+        let chunks = try await drain(board, until: 60)
+        try await board.release()
+        let markers = chunks.flatMap { Array($0.row(d.markerRow)) }.filter { $0 != 0 }
+        XCTAssertEqual(markers, [3])
+    }
+
+    func testMissingPlaybackFileFailsToPrepare() async throws {
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent("no-such-\(UUID()).csv")
+        let board = try BrainFlowBoard.playback(file: missing)
+        do {
+            try await board.startStream()
+            XCTFail("a missing playback file must fail to prepare")
+        } catch let error as BrainFlowError {
+            XCTAssertEqual(error.operation, "prepare_session")
+        }
+        try await board.release()
+    }
+}
+
+final class SerialPortScannerTests: XCTestCase {
+    func testScanListsOnlyCalloutDevices() {
+        // No hardware assumed: the list may be empty, but whatever is there is a cu device.
+        for port in SerialPortScanner.scan() {
+            XCTAssertTrue(port.path.hasPrefix("/dev/cu."), port.path)
+        }
+    }
+
+    func testUSBSerialDevicesComeFirstThenByPath() {
+        let ports = [
+            SerialPort(path: "/dev/cu.debug-console"),
+            SerialPort(path: "/dev/cu.usbserial-DM00Q0QN", vendorName: "FTDI", productName: "FT231X USB UART", isUSB: true),
+            SerialPort(path: "/dev/cu.Bluetooth-Incoming-Port"),
+            SerialPort(path: "/dev/cu.usbmodem1101", isUSB: true),
+        ]
+        XCTAssertEqual(SerialPortScanner.ordered(ports).map(\.path), [
+            "/dev/cu.usbmodem1101", "/dev/cu.usbserial-DM00Q0QN",
+            "/dev/cu.Bluetooth-Incoming-Port", "/dev/cu.debug-console",
+        ])
+    }
+
+    func testInputParamFactories() {
+        XCTAssertEqual(BrainFlowInputParams.serial("/dev/cu.usbserial-X").serialPort, "/dev/cu.usbserial-X")
+        let p = BrainFlowInputParams.playback(file: "/tmp/a.csv", masterBoard: KnownBoard.cytonDaisy)
+        XCTAssertEqual(p.file, "/tmp/a.csv")
+        XCTAssertEqual(p.masterBoard, 2)
+        XCTAssertEqual(p.serialPort, "")
+    }
+}

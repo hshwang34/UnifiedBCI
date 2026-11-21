@@ -163,6 +163,9 @@ targets:
         buildPhase: resources
       - path: Tests/Fixtures/signal_window_low_rate.json
         buildPhase: resources
+      # BrainFlow playback-file CSV with injected counter faults (worker/tools/make_playback_fixture.py).
+      - path: Tests/Fixtures/playback_cyton_daisy_faults.csv
+        buildPhase: resources
     dependencies:
       - target: BCIWorkspace
       - target: BCIStoreCrashHelper
