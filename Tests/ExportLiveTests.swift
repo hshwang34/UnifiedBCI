@@ -252,6 +252,48 @@ final class ExportLiveTests: XCTestCase {
         XCTAssertEqual(summary.unreadableLiveRuns, 1)
     }
 
+    /// The logs are read from exactly the folder whose run.json was checked: a run whose folder
+    /// is spelled in lower case, or is a symbolic link to a folder outside, is never read.
+    func testLowercaseAndLinkedRunFolders_areNotRead() async throws {
+        let a = try await recording()
+        let (result, m) = try await frozen(on: a, arrays: "m")
+        let fm = FileManager.default
+        let live = store.directory.appendingPathComponent("live")
+        // A lower-case copy of a real run whose logs hold a secret.
+        let lowerRun = try await liveRun(model: m.modelID, recording: a)
+        let lowerDir = live.appendingPathComponent(lowerRun.liveRunID.uuidString.lowercased())
+        try fm.moveItem(at: live.appendingPathComponent(lowerRun.liveRunID.uuidString), to: scratch.appendingPathComponent("tmp-move"))
+        try fm.moveItem(at: scratch.appendingPathComponent("tmp-move"), to: lowerDir)
+        try Data("secret-lower\n".utf8).write(to: lowerDir.appendingPathComponent(ProjectStore.feedbackFileName))
+        // A run folder that is a link to a copy outside the project.
+        let linkedRun = try await liveRun(model: m.modelID, recording: a)
+        let outside = scratch.appendingPathComponent("outside-run")
+        try fm.moveItem(at: live.appendingPathComponent(linkedRun.liveRunID.uuidString), to: outside)
+        try Data("secret-link\n".utf8).write(to: outside.appendingPathComponent(ProjectStore.predictionsFileName))
+        try fm.createSymbolicLink(at: live.appendingPathComponent(linkedRun.liveRunID.uuidString), withDestinationURL: outside)
+        // A lower-case model folder.
+        let models = store.directory.appendingPathComponent("models")
+        let modelJSON = try Data(contentsOf: models.appendingPathComponent("\(m.modelID.uuidString)/model.json"))
+        var other = m
+        other.modelID = UUID()
+        let lowerModel = models.appendingPathComponent(other.modelID.uuidString.lowercased())
+        try fm.createDirectory(at: lowerModel, withIntermediateDirectories: false)
+        try ContractJSON.encoder().encode(other).write(to: lowerModel.appendingPathComponent("model.json"))
+        XCTAssertFalse(modelJSON.isEmpty)
+
+        let out = scratch.appendingPathComponent("export")
+        let summary = try await store.export(result: result.resultID, to: out)
+        let e = try evidence(out)
+        let files = try tree(out)
+        XCTAssertEqual(e.liveRuns, [])
+        XCTAssertEqual(e.unreadableLiveRuns, 2, "the lower-case folder and the linked one")
+        XCTAssertEqual(e.models.map(\.modelID), [m.modelID])
+        XCTAssertEqual(e.unreadableModels, 1, "a lower-case model folder is not read")
+        XCTAssertFalse(files.values.contains { String(decoding: $0, as: UTF8.self).contains("secret") })
+        XCTAssertFalse(files.keys.contains { $0.contains(other.modelID.uuidString) || $0.lowercased().contains(lowerRun.liveRunID.uuidString.lowercased()) })
+        XCTAssertEqual(summary.unreadableLiveRuns, 2)
+    }
+
     func testTruncatedLastLineIsCopiedAndFlagged() async throws {
         let a = try await recording()
         let (result, m) = try await frozen(on: a, arrays: "m")

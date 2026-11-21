@@ -166,8 +166,10 @@ Two models of one evaluation's fit share a file.
   frozen is listed in `unverifiedModels` and not copied; a run whose model is not exported
   (unverified, missing or unreadable) is listed in `unverifiedLiveRuns` and not copied.
 - `unreadableModels` / `unreadableLiveRuns` count UUID-named folders in the **whole
-  project** whose record or logs can't be read (a link, not a directory, over its cap, not
-  valid, or a `.jsonl` with a bad line before the last). They are counted project-wide
+  project** whose record or logs can't be read (a link, not a directory, a name not in the
+  store's upper-case spelling, over its cap, not valid, or a `.jsonl` with a bad line before
+  the last). A run's logs are read only from the folder whose `run.json` was checked, re-checked
+  as a real directory just before. They are counted project-wide
   because an unreadable folder can't be attributed to a result. Neither stops the export,
   and the app's export notice names every count that isn't zero.
 - A `.jsonl` whose last line was cut off mid-write (a crash) is copied as stored and flagged

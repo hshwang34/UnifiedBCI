@@ -70,7 +70,7 @@ extension ProjectStore {
         let runs = readExportChildren("live", file: Self.liveRunFileName, maxBytes: LiveRunRecord.maxFileBytes, as: LiveRunRecord.self) { $0.problem(directoryID: $1) }
         guard models.found > 0 || runs.found > 0 else { return nil }
         let recordingID = stored.meta.recordingID
-        let byID = Dictionary(models.valid.map { ($0.record.modelID, $0) }, uniquingKeysWith: { a, _ in a })
+        let byID = Dictionary(models.valid.map { ($0.record.modelID, ($0.record, $0.bytes)) }, uniquingKeysWith: { a, _ in a })
         let frozenHere = Set(models.valid.filter { $0.record.sourceResultID == stored.meta.resultID }.map(\.record.modelID))
         let selectedRuns = runs.valid.filter { $0.record.recordingID == recordingID || frozenHere.contains($0.record.modelID) }
         let wanted = frozenHere.union(selectedRuns.map(\.record.modelID))
@@ -92,9 +92,11 @@ extension ProjectStore {
         var liveRuns: [ExportedLiveEvidence.LiveRunFiles] = []
         var unverifiedRuns: [UUID] = []
         var unreadableRuns = runs.found - runs.valid.count
-        for (run, runBytes) in selectedRuns.sorted(by: { $0.record.liveRunID.uuidString < $1.record.liveRunID.uuidString }) {
+        for (run, runBytes, dir) in selectedRuns.sorted(by: { $0.record.liveRunID.uuidString < $1.record.liveRunID.uuidString }) {
             guard exported[run.modelID] != nil else { unverifiedRuns.append(run.liveRunID); continue }
-            let dir = liveRunDirectory(run.liveRunID)
+            // The logs are read from the exact folder whose run.json was checked, and only if it
+            // is still a real directory inside a real `live/` (not swapped for a link since).
+            guard Self.isRealDirectory(dir.deletingLastPathComponent()), Self.isRealDirectory(dir) else { unreadableRuns += 1; continue }
             guard case .read(let predictions) = Self.readLog(dir, Self.predictionsFileName, as: PredictionRecord.self) else { unreadableRuns += 1; continue }
             let feedback = Self.readLog(dir, Self.feedbackFileName, as: FeedbackRecord.self)
             if case .unreadable = feedback { unreadableRuns += 1; continue }
@@ -133,19 +135,22 @@ extension ProjectStore {
     /// so it is reported rather than followed. Only UUID-named entries count (temp folders and
     /// stray files are not children); a linked child is counted and never read.
     private func readExportChildren<T: Decodable>(_ child: String, file: String, maxBytes: Int, as: T.Type,
-                                                  problem: (T, UUID) -> String?) -> (valid: [(record: T, bytes: Data)], found: Int) {
+                                                  problem: (T, UUID) -> String?) -> (valid: [(record: T, bytes: Data, dir: URL)], found: Int) {
         let parent = directory.appendingPathComponent(child, isDirectory: true)
         guard BoundedRead.exists(parent) else { return ([], 0) }
         guard Self.isRealDirectory(parent), let names = try? FileManager.default.contentsOfDirectory(atPath: parent.path) else { return ([], 1) }
-        var valid: [(record: T, bytes: Data)] = []
+        var valid: [(record: T, bytes: Data, dir: URL)] = []
         var found = 0
         for name in names.sorted() {
             guard let id = UUID(uuidString: name) else { continue }   // temp folders and stray files are not entries
             found += 1
-            guard Self.isRealDirectory(parent.appendingPathComponent(name)),
-                  let data = BoundedRead.data(at: parent.appendingPathComponent(name).appendingPathComponent(file), maxBytes: maxBytes),
+            // Only the canonical (upper-case) spelling the store writes: any other spelling is
+            // counted as unreadable, so every later read uses exactly this checked folder.
+            let dir = parent.appendingPathComponent(name, isDirectory: true)
+            guard name == id.uuidString, Self.isRealDirectory(dir),
+                  let data = BoundedRead.data(at: dir.appendingPathComponent(file), maxBytes: maxBytes),
                   let record = try? ContractJSON.decoder().decode(T.self, from: data), problem(record, id) == nil else { continue }
-            valid.append((record, data))
+            valid.append((record, data, dir))
         }
         return (valid, found)
     }
