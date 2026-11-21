@@ -19,18 +19,20 @@ against `stat` before a byte is read.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import os
 import stat
 import uuid
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from .pipeline import Segment
+from .pipeline import ModelError, Segment, validate_model_arrays
 
 
 class IntegrityError(Exception):
@@ -379,4 +381,79 @@ def data_source(rec: Recording, segments: list[Segment]) -> dict[str, Any]:
     for key in ("dataset", "doi", "license", "subject", "runs", "warning"):
         if src.get(key) is not None:
             out[key] = src[key]
+    return out
+
+
+# A fitted-arrays file is a few KB to a few hundred KB (256 channels at most); anything far
+# larger is not one, and is refused before it is read.
+MAX_MODEL_FILE_BYTES = 4 * 1024 * 1024
+MAX_MODEL_MEMBERS = 32
+
+
+def load_model_arrays(path: str | Path, sha256: str | None = None, which: str = "reference",
+                      n_channels: int | None = None) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    """The validated arrays of one model in a fitted-arrays `.npz` (`validate_model_arrays`)
+    and its summary, plus the file's SHA-256 in the summary. The file is hostile input: it
+    must be a regular file of bounded size, a zip of `<key>.npy` members whose declared
+    sizes stay bounded, loaded with `allow_pickle=False`. When `sha256` is given the bytes
+    must match it, or the model is refused as changed since it was frozen."""
+    path = Path(path)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError as exc:
+        raise ModelError(f"cannot open model file {path.name}: {exc.strerror or exc}") from exc
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise ModelError(f"model file {path.name} is not a regular file")
+        if st.st_size > MAX_MODEL_FILE_BYTES:
+            raise ModelError(f"model file {path.name} is {st.st_size} bytes; at most {MAX_MODEL_FILE_BYTES} are allowed")
+        raw = f.read(MAX_MODEL_FILE_BYTES + 1)
+    digest = hashlib.sha256(raw).hexdigest()
+    if sha256 is not None and digest != str(sha256).lower():
+        raise ModelError("model file changed since it was frozen (SHA-256 does not match)")
+    if not raw.startswith(b"PK\x03\x04"):
+        raise ModelError(f"model file {path.name} is not an .npz archive")
+    arrays: dict[str, np.ndarray] = {}
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            infos = zf.infolist()
+            if len(infos) > MAX_MODEL_MEMBERS or sum(i.file_size for i in infos) > MAX_MODEL_FILE_BYTES:
+                raise ModelError(f"model file {path.name} unpacks to more than {MAX_MODEL_FILE_BYTES} bytes")
+            if not all(i.filename.endswith(".npy") and "/" not in i.filename for i in infos):
+                raise ModelError(f"model file {path.name} holds members that are not arrays")
+        with np.load(io.BytesIO(raw), allow_pickle=False) as npz:
+            for key in npz.files:
+                arrays[key] = npz[key]
+    except ModelError:
+        raise
+    except (ValueError, OSError, EOFError, zipfile.BadZipFile, KeyError) as exc:
+        # allow_pickle=False turns an object array into a ValueError here: pickles never load.
+        raise ModelError(f"model file {path.name} cannot be read as plain arrays: {exc}") from exc
+    clean, summary = validate_model_arrays(arrays, which, n_channels)
+    summary["sha256"] = digest
+    return clean, summary
+
+
+def cue_end_samples(rec: Recording) -> dict[str, tuple[int, int]]:
+    """`cue_end` events (brief 005) by trial id, as (segment, sample index). A cue end
+    without a usable sample association is left out: its trial then has no imagery span."""
+    out: dict[str, tuple[int, int]] = {}
+    try:
+        text = _read_regular_text(rec.directory / "events.jsonl")
+    except (OSError, ValueError):
+        return out
+    for line in text.splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict) or ev.get("label") != "cue_end" or not isinstance(ev.get("trialID"), str):
+            continue
+        assoc = ev.get("sampleAssociation")
+        if not isinstance(assoc, dict) or str(assoc.get("recordingID")).lower() != rec.recording_id:
+            continue
+        segment, sample = assoc.get("segment"), assoc.get("sampleIndex")
+        if all(isinstance(v, int) and not isinstance(v, bool) for v in (segment, sample)):
+            out.setdefault(ev["trialID"], (segment, sample))
     return out

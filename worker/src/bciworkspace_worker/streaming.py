@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import cycle
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 import numpy as np
 
@@ -43,6 +43,7 @@ TOLERANCES: dict[str, float] = {
 }
 DEFAULT_HOP_SAMPLES = 16                    # 128 ms at 125 Hz
 DEFAULT_ABSTAIN_THRESHOLD = 0.6             # decision #39
+CHECK_EVERY = 256                           # replay checks for cancellation every this many pushes / windows
 
 VALID = "valid"
 INSUFFICIENT = "insufficient_window"
@@ -116,7 +117,8 @@ def decide(score: float | None, confidence: float | None, predicted_class: int |
 
 
 def _score_window(arrays: dict[str, np.ndarray], window: np.ndarray, pred: Prediction) -> None:
-    features = pipeline.features_from_arrays(arrays, window[None])
+    with np.errstate(divide="ignore", invalid="ignore"):         # a flat window is reported, not warned
+        features = pipeline.features_from_arrays(arrays, window[None])
     if not np.all(np.isfinite(features)):
         pred.validity, pred.detail = INVALID_INPUT, "non_finite_features"
         return
@@ -227,7 +229,16 @@ class StreamingPredictor:
         keep = min(filtered.shape[1], self.spec.length)
         self._ring[:, np.arange(n1 - keep, n1) % self.spec.length] = filtered[:, filtered.shape[1] - keep:]
         self._n = n1
+        # A cue past its imagery end can't make a later window eligible; its cue-locked window,
+        # if still due, is in `_pending`. So only open cues are kept.
+        self._cues = [c for c in self._cues if c.end_sample is not None and c.end_sample > n1]
         return out
+
+    @property
+    def open_cues(self) -> int:
+        """Cues still able to affect a window: eligibility spans not yet over plus pending
+        cue-locked windows. The live session bounds this."""
+        return len({c.trial_id for c in self._cues} | {t for v in self._pending.values() for t in v})
 
     def _window(self, filtered: np.ndarray, n0: int, start: int, stop: int) -> np.ndarray:
         """Samples [start, stop): those before `n0` from the ring, the rest from this chunk.
@@ -246,10 +257,11 @@ class StreamingPredictor:
 
 def reference_segment(arrays: dict[str, np.ndarray], spec: WindowSpec, data: np.ndarray,
                       gaps: Iterable[tuple[int, str]] = (), cues: Sequence[Cue] = (),
-                      segment: int | None = None) -> tuple[list[Prediction], np.ndarray]:
+                      segment: int | None = None, check: Callable[[], None] | None = None) -> tuple[list[Prediction], np.ndarray]:
     """Offline reference: `filter_segment` once over the whole segment, then the same
     windows the streaming path emits (hop grid and cue-locked), in the same order.
-    Returns the predictions and the band-passed segment."""
+    Returns the predictions and the band-passed segment. `check` (cancellation) is called
+    every `CHECK_EVERY` windows."""
     data = np.asarray(data, dtype=np.float64)
     filtered = pipeline.filter_segment(np.asarray(arrays["bandpass_sos"], dtype=np.float64), data)
     n = filtered.shape[1]
@@ -258,7 +270,9 @@ def reference_segment(arrays: dict[str, np.ndarray], spec: WindowSpec, data: np.
     for cue in cues:
         cue_stops.setdefault(cue.sample + spec.offset + spec.length, []).append(cue.trial_id)
     out: list[Prediction] = []
-    for stop in sorted({*range(spec.hop, n + 1, spec.hop), *(s for s in cue_stops if s <= n)}):
+    for k, stop in enumerate(sorted({*range(spec.hop, n + 1, spec.hop), *(s for s in cue_stops if s <= n)})):
+        if check and k % CHECK_EVERY == 0:
+            check()
         start = stop - spec.length
         window = filtered[:, start:stop] if start >= 0 else None
         if stop % spec.hop == 0:
@@ -283,11 +297,12 @@ def chunk_sizes(sizes: int | Sequence[int]) -> Iterable[int]:
 
 def stream_segment(predictor: StreamingPredictor, data: np.ndarray, sizes: int | Sequence[int],
                    gaps: Iterable[tuple[int, str]] = (), cues: Sequence[Cue] = (),
-                   segment: int | None = None) -> tuple[list[Prediction], np.ndarray]:
+                   segment: int | None = None, check: Callable[[], None] | None = None) -> tuple[list[Prediction], np.ndarray]:
     """Replays one recorded segment through `predictor` in chunks of `sizes`, registering
     each cue with the chunk that holds its sample (as the live path learns of it), and
     handing each gap to the chunk holding its affected sample. Returns the predictions and
-    the concatenated band-passed output."""
+    the concatenated band-passed output. `check` (cancellation) is called every
+    `CHECK_EVERY` pushes."""
     data = np.asarray(data, dtype=np.float64)
     gaps = sorted(_data_gaps(gaps))
     pending_cues = sorted(cues, key=lambda c: c.sample)
@@ -295,9 +310,11 @@ def stream_segment(predictor: StreamingPredictor, data: np.ndarray, sizes: int |
     out: list[Prediction] = []
     filtered: list[np.ndarray] = []
     n, pos, gi, ci = data.shape[1], 0, 0, 0
-    for size in chunk_sizes(sizes):
+    for k, size in enumerate(chunk_sizes(sizes)):
         if pos >= n:
             break
+        if check and k % CHECK_EVERY == 0:
+            check()
         stop = min(n, pos + size)
         while ci < len(pending_cues) and pending_cues[ci].sample < stop:
             out += predictor.add_cue(pending_cues[ci])
@@ -369,3 +386,62 @@ def parity_report(streamed: Sequence[Prediction], reference: Sequence[Prediction
         "missing_windows": [list(k) for k in missing],
         "extra_windows": [list(k) for k in extra],
     }
+
+
+DEFAULT_CHUNKINGS: tuple[int | str, ...] = (1, 7, 13, 125, "random")
+
+
+def resolve_chunking(chunking: int | str, seed: int) -> list[int]:
+    """Chunk sizes for one replay pass; "random" is a seeded mix of 1..64 samples."""
+    if chunking == "random":
+        return np.random.default_rng(seed).integers(1, 65, size=257).tolist()
+    if isinstance(chunking, bool) or not isinstance(chunking, int) or chunking <= 0:
+        raise ValueError(f"chunking {chunking!r} is not a positive sample count or 'random'")
+    return [chunking]
+
+
+def replay(arrays: dict[str, np.ndarray], spec: WindowSpec, segments: Sequence[tuple[int | None, np.ndarray,
+           Sequence[tuple[int, str]], Sequence[Cue]]], chunkings: Sequence[int | str] = DEFAULT_CHUNKINGS,
+           seed: int = 0, threshold: float = DEFAULT_ABSTAIN_THRESHOLD,
+           check: Any = None) -> tuple[dict[str, Any], list[Prediction], list[Prediction]]:
+    """Runs recorded segments `(index, data, gaps, cues)` through the offline reference once
+    and the streaming path once per chunking. Returns the combined report (one parity report
+    per chunking, `passed` only if all pass), the first chunking's streamed predictions and
+    the reference predictions. `check` (cancellation) is called every `CHECK_EVERY` pushes
+    or windows, in the reference pass as in every streaming pass."""
+    if not chunkings:
+        raise ValueError("need at least one chunking")
+    reference: list[Prediction] = []
+    ref_filtered: list[np.ndarray] = []
+    for index, data, gaps, cues in segments:
+        preds, filtered = reference_segment(arrays, spec, data, gaps, cues, index, check)
+        reference += preds
+        ref_filtered.append(filtered)
+    passes = []
+    first: list[Prediction] = []
+    for chunking in chunkings:
+        sizes = resolve_chunking(chunking, seed)
+        predictor = StreamingPredictor(arrays, segments[0][1].shape[0], spec)
+        streamed: list[Prediction] = []
+        dev = 0.0
+        for (index, data, gaps, cues), want in zip(segments, ref_filtered):
+            preds, filtered = stream_segment(predictor, data, sizes, gaps, cues, index, check)
+            streamed += preds
+            dev = max(dev, float(np.max(np.abs(filtered - want))) if want.size else 0.0)
+        passes.append({"chunking": chunking, "report": parity_report(streamed, reference, dev, threshold)})
+        if not first:
+            first = streamed
+    reports = [p["report"] for p in passes]
+    summary = {
+        "passed": all(r["passed"] for r in reports),
+        "windows_compared": reports[0]["windows_compared"],
+        "tolerances": dict(TOLERANCES),
+        "abstain_threshold": threshold,
+        "max_deviation": {q: {"observed_max": max(r["max_deviation"][q]["observed_max"] for r in reports), "tolerance": TOLERANCES[q],
+                              "within": all(r["max_deviation"][q]["within"] for r in reports)}
+                          for q in ("bandpassed_uv", "features", "score")},
+        "boundary_windows": reports[0]["boundary_windows"],
+        "first_valid_window_stop": reports[0]["first_valid_window_stop"],
+        "chunkings": passes,
+    }
+    return summary, first, reference

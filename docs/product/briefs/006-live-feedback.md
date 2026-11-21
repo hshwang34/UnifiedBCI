@@ -186,6 +186,10 @@ Tests
   joins `predict_from_arrays` (same einsum/log-power/LDA arrays, returns the decision value);
   the offline reference cuts the same windows from `filter_segment` output. Tolerance constants
   live in one place and are echoed into every parity report.
+- **Confidence is not calibrated**: the worker's `confidence` is the shrinkage-LDA posterior
+  of the predicted class, σ(|s|) for decision value s, so it is always ≥ 0.5. No calibration
+  step is fitted, and its scale comes from the LDA's equal-covariance Gaussian model. The UI
+  calls it "model confidence", never a probability of intent (worker `protocol.py` docstring).
 - **Model validation** (`pipeline.validate_model_arrays`): explicit key list per `feature_kind`;
   the baseline's `baseline__*` arrays can be frozen too, as a separate model.
 - **Protocol** (still v1, additive; `hello` lists the methods): `replay_recording` (references
