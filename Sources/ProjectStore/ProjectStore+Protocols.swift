@@ -172,22 +172,41 @@ extension ProjectStore {
     }
 
     func runPlans(recording id: UUID, protocols known: [ProtocolRecord]) throws -> RunPlanList {
+        let files = try runPlanFiles(recording: id)
+        let valid = files.valid.map(\.plan)
+        let (plans, mismatched) = (valid.filter { Self.matches($0, known) }, valid.filter { !Self.matches($0, known) })
+        return RunPlanList(plans: plans, unreadable: files.unreadable, protocolMismatch: mismatched.map(\.runID).sorted())
+    }
+
+    /// Every run plan file of the recording that reads (size-capped) and passes
+    /// `RunPlan.problem`, with the exact bytes it was decoded from, by run index; and how many
+    /// failed. Protocol references are not checked here.
+    func runPlanFiles(recording id: UUID) throws -> (valid: [(plan: RunPlan, bytes: Data)], unreadable: Int) {
         let recording = recordingDirectory(id)
         let runs = recording.appendingPathComponent(Self.runsDirectoryName, isDirectory: true)
-        guard Self.isRealDirectory(recording), Self.isRealDirectory(runs) else { return RunPlanList(plans: [], unreadable: 0, protocolMismatch: []) }
+        guard Self.isRealDirectory(recording), Self.isRealDirectory(runs) else { return ([], 0) }
         let names = try FileManager.default.contentsOfDirectory(atPath: runs.path).filter {
             $0.hasSuffix(Self.runPlanSuffix) && !$0.hasPrefix(AtomicFile.tempPrefix)
         }
-        let valid = names.compactMap { name -> RunPlan? in
+        let valid = names.compactMap { name -> (plan: RunPlan, bytes: Data)? in
             let runID = String(name.dropLast(Self.runPlanSuffix.count))
             guard let data = BoundedRead.data(at: runs.appendingPathComponent(name), maxBytes: RunPlan.maxFileBytes),
                   let plan = try? ContractJSON.decoder().decode(RunPlan.self, from: data),
                   plan.problem(recordingID: id, fileRunID: runID) == nil else { return nil }
-            return plan
+            return (plan, data)
         }
-        let (plans, mismatched) = (valid.filter { Self.matches($0, known) }, valid.filter { !Self.matches($0, known) })
-        return RunPlanList(plans: plans.sorted { ($0.runIndex, $0.runID) < ($1.runIndex, $1.runID) },
-                           unreadable: names.count - valid.count, protocolMismatch: mismatched.map(\.runID).sorted())
+        return (valid.sorted { ($0.plan.runIndex, $0.plan.runID) < ($1.plan.runIndex, $1.plan.runID) }, names.count - valid.count)
+    }
+
+    /// One stored protocol version read by id, with its exact bytes, or nil when it is
+    /// missing, not a real child directory, over the size cap, or fails validation.
+    func protocolFile(_ id: UUID) -> (record: ProtocolRecord, bytes: Data)? {
+        let dir = directory.appendingPathComponent("protocols", isDirectory: true).appendingPathComponent(id.uuidString, isDirectory: true)
+        guard Self.isRealDirectory(dir.deletingLastPathComponent()), Self.isRealDirectory(dir),
+              let data = BoundedRead.data(at: dir.appendingPathComponent(Self.protocolFileName), maxBytes: ProtocolRecord.maxFileBytes),
+              let record = try? ContractJSON.decoder().decode(ProtocolRecord.self, from: data),
+              record.problem(directoryID: id) == nil else { return nil }
+        return (record, data)
     }
 
     static func matches(_ plan: RunPlan, _ known: [ProtocolRecord]) -> Bool {
