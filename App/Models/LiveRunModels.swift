@@ -196,12 +196,15 @@ struct LiveRunCardModel {
         if let model { rows.append(.init(label: "Window length", value: "\(Fmt.seconds(model.window.lengthSeconds)) (the signal every prediction waits for)")) }
         latency = rows
         if let c = run.replayCheck {
-            if c.windowsCompared > 0, c.windowsMatched == c.windowsCompared {
-                (replayLine, replayOK) = ("Live matched replay: \(c.windowsMatched) of \(c.windowsCompared) windows within tolerance.", true)
+            // Stored counts are clamped, never trusted for arithmetic (a .bciproj may come from anyone).
+            let compared = min(max(c.windowsCompared, 0), LiveRunRecord.maxCount)
+            let matched = min(max(c.windowsMatched, 0), compared)
+            if compared > 0, matched == compared {
+                (replayLine, replayOK) = ("Live matched replay: \(matched) of \(compared) windows within tolerance.", true)
             } else {
                 let list = c.differingSequences.prefix(8).map(String.init).joined(separator: ", ")
                 let more = c.differingSequences.count > 8 ? "…" : ""
-                replayLine = "Live and replay differ in \(c.windowsCompared - c.windowsMatched) of \(c.windowsCompared) windows (predictions \(list)\(more)). That is a bug to report, not a result."
+                replayLine = "Live and replay differ in \(compared - matched) of \(compared) windows (predictions \(list)\(more)). That is a bug to report, not a result."
                 replayOK = false
             }
         } else {

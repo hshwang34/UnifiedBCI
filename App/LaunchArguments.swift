@@ -555,7 +555,7 @@ enum LaunchArguments {
             await snap("live-card-full", .seconds(1.5))
             session.section = .results
             session.selectedResultID = model.sourceResultID
-            window.setFrame(NSRect(x: frame.minX, y: frame.maxY - 2900, width: frame.width, height: 2900), display: true)
+            window.setFrame(NSRect(x: frame.minX, y: frame.maxY - 1800, width: frame.width, height: 1800), display: true)
             await snap("live-result", .seconds(2.5))
             window.setFrame(frame, display: true)
         }

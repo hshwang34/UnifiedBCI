@@ -206,6 +206,44 @@ final class LiveRunTests: XCTestCase {
         XCTAssertEqual(empty.comparison, "The frozen model's held-out result couldn't be read.")
     }
 
+    // MARK: Hostile records
+
+    func testCraftedRunJSON_isRefusedByTheReader_andTheCardNeverTraps() async throws {
+        let base: LiveRunRecord = run()
+        XCTAssertNil(base.problem(directoryID: base.liveRunID))
+        for check in [LiveRunRecord.ReplayCheck(windowsCompared: 3, windowsMatched: 4, differingSequences: []),
+                      .init(windowsCompared: -1, windowsMatched: 0, differingSequences: []),
+                      .init(windowsCompared: Int.max, windowsMatched: 0, differingSequences: []),
+                      .init(windowsCompared: 10, windowsMatched: Int.min, differingSequences: [])] {
+            var r = base
+            r.replayCheck = check
+            XCTAssertEqual(r.problem(directoryID: r.liveRunID), "replay check counts out of range", "\(check)")
+            // Even if one got past the reader, the card clamps instead of trapping.
+            _ = LiveRunCardModel(run: r, model: Self.model, inputs: inputs(), name: { $0 })
+        }
+        var r = base
+        r.latency = .init(receiptToEmission: .init(count: 1, p50: 1e300, p95: 1, max: 1), bufferWait: nil, emissionToPresentation: nil)
+        XCTAssertEqual(r.problem(directoryID: r.liveRunID), "latency out of range")
+        XCTAssertEqual(LiveRunCardModel(run: r, model: Self.model, inputs: inputs(), name: { $0 }).latency.first?.value.hasPrefix("p50 – ·"), true)
+        r = base
+        r.summary = .init(predictions: -5, byValidity: [:], abstained: 0)
+        XCTAssertEqual(r.problem(directoryID: r.liveRunID), "summary counts out of range")
+        XCTAssertEqual(LiveFeedbackPanelModel.ms(.infinity), "–")
+        XCTAssertEqual(LiveFeedbackPanelModel.ms(-1e12), "–")
+        // A crafted run.json on disk is skipped by the store, not shown.
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("bci-hostile-\(UUID().uuidString).bciproj", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try ProjectStore.create(at: dir, name: "hostile")
+        var bad = base
+        bad.replayCheck = .init(windowsCompared: 2, windowsMatched: Int.max, differingSequences: [])
+        let runDir = dir.appendingPathComponent("live/\(bad.liveRunID.uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: runDir, withIntermediateDirectories: true)
+        try ContractJSON.encoder().encode(bad).write(to: runDir.appendingPathComponent("run.json"))
+        let read = try await store.liveRuns()
+        XCTAssertEqual(read.runs.count, 0)
+        XCTAssertEqual(read.unreadable, 1)
+    }
+
     // MARK: Setup
 
     func testSetup_thresholdAndMismatchRules() {

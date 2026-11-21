@@ -133,5 +133,9 @@ struct LiveFeedbackPanelModel: Equatable {
                 + "\(counts.abstained) abstained, \(counts.invalid) invalid"
     }
 
-    static func ms(_ v: Double) -> String { v < 10 ? "\(Fmt.fixed(v, 1)) ms" : "\(Int(v.rounded())) ms" }
+    /// Milliseconds for display; a value that isn't a finite, plausible time reads "–" (never traps).
+    static func ms(_ v: Double) -> String {
+        guard v.isFinite, abs(v) <= LiveRunRecord.maxMillis else { return "–" }
+        return abs(v) < 10 ? "\(Fmt.fixed(v, 1)) ms" : "\(Int(v.rounded())) ms"
+    }
 }

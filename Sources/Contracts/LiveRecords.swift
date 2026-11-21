@@ -196,8 +196,29 @@ public struct LiveRunRecord: Codable, Sendable, Equatable, Identifiable {
         guard hopSamples > 0, hopSamples <= 100_000 else { return "hop out of range" }
         guard abstainThreshold.isFinite, abstainThreshold >= 0.5, abstainThreshold < 1 else { return "abstention threshold out of range" }
         guard runIDs.count <= 1_000, staleLimitMillis.map({ (1...60_000).contains($0) }) ?? true else { return "runs or stale limit out of range" }
+        // Counts and times screens do arithmetic on: bounded, so a crafted file can't trap.
+        if let c = replayCheck {
+            guard (0...Self.maxCount).contains(c.windowsCompared), (0...c.windowsCompared).contains(c.windowsMatched),
+                  c.differingSequences.count <= 1_000 else { return "replay check counts out of range" }
+        }
+        if let s = summary {
+            guard (0...Self.maxCount).contains(s.predictions), (0...Self.maxCount).contains(s.abstained),
+                  s.byValidity.count <= 64, s.byValidity.values.allSatisfy({ (0...Self.maxCount).contains($0) }) else { return "summary counts out of range" }
+        }
+        if let l = latency {
+            for p in [l.receiptToEmission, l.bufferWait, l.emissionToPresentation].compactMap({ $0 }) {
+                guard (0...Self.maxCount).contains(p.count), [p.p50, p.p95, p.max].allSatisfy({ $0.isFinite && abs($0) <= Self.maxMillis }) else {
+                    return "latency out of range"
+                }
+            }
+        }
         return nil
     }
+
+    /// Largest count a stored live run may claim (far above any real run: ~8 windows a second).
+    public static let maxCount = 100_000_000
+    /// Largest latency in milliseconds a stored live run may claim (a day).
+    public static let maxMillis = 86_400_000.0
 }
 
 /// `live/<uuid>/feedback.jsonl`, one line per change of what the participant saw: the bar

@@ -115,6 +115,7 @@ struct LiveTestSetupView: View {
                     }
                 }
                 .formStyle(.grouped)
+                .scrollContentBackground(.hidden)
                 .scrollDisabled(true)
                 .frame(minHeight: 420)
                 if let error = session.startRunSheetError { StatusChip(kind: .danger, text: error) }
@@ -166,6 +167,7 @@ struct LiveRunCard: View {
                     Text(m.title).font(Theme.Fonts.heroLabel).foregroundStyle(Theme.textPrimary).accessibilityAddTraits(.isHeader)
                     Spacer()
                     StatusChip(kind: m.evidence == "cross-session" ? .info : .warning, text: EvidenceText.short(m.evidence))
+                        .fixedSize()
                 }
                 Text(model.map { "\($0.name) · threshold \(Fmt.fixed(run.abstainThreshold))" } ?? "Model unavailable")
                     .font(.callout).foregroundStyle(Theme.textSecondary)
