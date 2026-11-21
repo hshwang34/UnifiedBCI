@@ -386,10 +386,12 @@ def open_protocol_stream() -> TextIO:
 class Server:
     """One worker session: a reader thread for requests, the calling thread for work."""
 
-    def __init__(self, stdin: Iterable[str], write: Callable[[str], None], watch_parent: bool = False):
+    def __init__(self, stdin: Iterable[str], write: Callable[[str], None], parent_pid: int | None = None):
         self._stdin = stdin
         self._write_fn = write
-        self._watch_parent = watch_parent
+        # The parent's pid as captured at process start, before anyone could have seen
+        # `ready`; None disables the watchdog (in-process tests).
+        self._parent_pid = parent_pid
         self._lock = threading.Lock()
         self._queue: queue.Queue[Request | None] = queue.Queue()
         # Request id -> cancel flag, for every request that is queued or running. Touched by
@@ -489,12 +491,14 @@ class Server:
             finally:
                 self._queue.put(None)
 
-    def _watch_parent_loop(self) -> None:
-        parent = os.getppid()
+    def _watch_parent_loop(self, parent: int) -> None:
+        # Compares against the pid captured at startup, never one read here: this thread
+        # may first run after the parent has already died and we were reparented to launchd,
+        # and a pid read then would never change again (the old orphan bug).
         while True:
-            time.sleep(0.5)
             if os.getppid() != parent:
                 os._exit(0)
+            time.sleep(0.5)
 
     # -- work ------------------------------------------------------------------
 
@@ -524,10 +528,11 @@ class Server:
             self._forget(req.id)
 
     def serve(self) -> int:
+        if self._parent_pid is not None:
+            threading.Thread(target=self._watch_parent_loop, args=(self._parent_pid,),
+                             name="worker-parent-watchdog", daemon=True).start()
         self.write(event("ready", hello()))
         threading.Thread(target=self._read_loop, name="worker-reader", daemon=True).start()
-        if self._watch_parent:
-            threading.Thread(target=self._watch_parent_loop, name="worker-parent-watchdog", daemon=True).start()
         while True:
             req = self._queue.get()
             if req is None:
@@ -536,7 +541,7 @@ class Server:
 
 
 def serve(stdin: Iterable[str] | None = None, write: Callable[[str], None] | None = None,
-          watch_parent: bool = False) -> int:
+          parent_pid: int | None = None) -> int:
     """Run one session. Tests pass an iterable of lines and a sink; the real entry
     point passes the process stdin and the private protocol stream."""
     if write is None:
@@ -548,11 +553,16 @@ def serve(stdin: Iterable[str] | None = None, write: Callable[[str], None] | Non
 
     if stdin is None:
         stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace")
-    return Server(stdin, write, watch_parent=watch_parent).serve()
+    return Server(stdin, write, parent_pid=parent_pid).serve()
 
 
-def main() -> None:
-    status = serve(watch_parent=True)
+def main(parent: int | None = None) -> None:
+    """`parent` is the pid `__main__` read before the heavy imports. The app is never
+    launchd, so a parent of 1 means it already died while the interpreter was starting."""
+    parent = os.getppid() if parent is None else parent
+    if parent == 1:
+        os._exit(0)
+    status = serve(parent_pid=parent)
     # The reader thread may still be blocked in stdin.readline(); a normal interpreter
     # shutdown would wait on it and complain about locks. Flush and leave.
     sys.stderr.flush()

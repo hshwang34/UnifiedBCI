@@ -235,7 +235,7 @@ public actor BrainFlowBoard {
         guard boardID == KnownBoard.playbackFile else { return }
         do {
             #if DEBUG
-            if let setupFault { throw setupFault }
+            if let fault = setupFault { setupFault = nil; throw fault }
             #endif
             // BrainFlow's default rewrites every timestamp to "now"; a replay must not.
             _ = try configure("old_timestamps")
@@ -256,8 +256,9 @@ public actor BrainFlowBoard {
     }
 
     #if DEBUG
-    /// Test hook: the next playback setup fails after `prepare_session` succeeded
-    /// (BrainFlow's playback board accepts any command, so this can't be provoked).
+    /// Test hook: the next playback setup (one only; the hook clears when it fires) fails
+    /// after `prepare_session` succeeded (BrainFlow's playback board accepts any command,
+    /// so this can't be provoked).
     private var setupFault: BrainFlowError?
     func injectSetupFault(_ fault: BrainFlowError?) { setupFault = fault }
     #endif
@@ -335,8 +336,10 @@ public actor BrainFlowBoard {
                            availableBeforeDrain: available, overflowSuspected: overflow)
     }
 
+    /// Everything available, counted once: the chunk's `count` equals its
+    /// `availableBeforeDrain` even while samples keep arriving.
     public func readAll() throws -> SampleChunk {
-        try read(count: availableSampleCount())
+        try read(count: .max)
     }
 
     // MARK: Helpers
