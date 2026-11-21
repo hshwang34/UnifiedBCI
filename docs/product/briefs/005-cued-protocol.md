@@ -1,6 +1,6 @@
 # 005 — Cued motor-imagery protocol
 
-**Status:** shipped (code) — awaiting PM hardware checklist · **Owner:** PM · **PR:** #33, #34, #35, #36, #37, #38, #39, #40 · **Updated:** 2026-11-20
+**Status:** shipped (code) — awaiting PM hardware checklist · **Owner:** PM · **PR:** #33, #34, #35, #36, #37, #38, #39, #41 · **Updated:** 2026-11-20
 
 ## Problem
 After brief 004 a user can record a stream, but a stream without labelled trials can't be
