@@ -106,6 +106,8 @@ public struct LiveRunRecord: Codable, Sendable, Equatable, Identifiable {
     public var summary: Summary?
     public var latency: LatencySummary?
     public var replayCheck: ReplayCheck?
+    /// Why logging stopped before the run ended (a log reached its size limit), or nil.
+    public var loggingStopped: String?
     public var id: UUID { liveRunID }
 
     public init(liveRunID: UUID = UUID(), kind: Kind, modelID: UUID, recordingID: UUID, runIDs: [String], hopSamples: Int,

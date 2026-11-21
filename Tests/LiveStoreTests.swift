@@ -37,7 +37,7 @@ final class LiveStoreTests: XCTestCase {
         return id
     }
 
-    private func result(recording: UUID, configuration: [String: String]? = nil) async throws -> ResultMeta {
+    private func result(recording: UUID, configuration: [String: String]? = nil, trainingRuns: String = #""r1""#) async throws -> ResultMeta {
         let staging = try await store.stagingDirectory()
         let npz = staging.appendingPathComponent(ProjectStore.fittedFileName)
         try npzBytes.write(to: npz)
@@ -45,7 +45,7 @@ final class LiveStoreTests: XCTestCase {
                                        "bandpass_order": "4", "label_left": "cue_left", "label_right": "cue_right", "baseline": "logvar_rlda_v1"]
         let pipeline = PipelineRecord(pipelineID: UUID(), recipe: "csp_rlda_v1", configuration: config, expectedChannelIDs: ["ch00", "ch01"],
                                       expectedSampleRateHz: 125, preprocessingStatePolicy: "reset_on_segment_start", trainingRecordingIDs: [recording],
-                                      splitManifest: #"{"training_runs":["r1","r9"],"holdout_runs":["r2"]}"#, dependencyVersions: [:], seed: 0,
+                                      splitManifest: #"{"training_runs":["# + trainingRuns + #"],"holdout_runs":["r2"]}"#, dependencyVersions: [:], seed: 0,
                                       fittedParametersFile: nil, configHash: "cfg")
         let evaluation = Data("{}".utf8)
         let meta = ResultMeta(resultID: UUID(), pipelineID: pipeline.pipelineID, recordingID: recording, createdAt: Date(), seed: 0, configHash: "cfg",
@@ -55,8 +55,8 @@ final class LiveStoreTests: XCTestCase {
         return meta
     }
 
-    private func validation(classes: [Int] = [0, 1], sha: String? = nil) -> ModelValidation {
-        ModelValidation(model: "reference", featureKind: "csp_log_power", nChannels: 2, nFeatures: 4, filterWarmupSamples: 93,
+    private func validation(classes: [Int] = [0, 1], sha: String? = nil, model: String = "reference") -> ModelValidation {
+        ModelValidation(model: model, featureKind: "csp_log_power", nChannels: 2, nFeatures: 4, filterWarmupSamples: 93,
                         ldaClasses: classes, sha256: sha ?? AtomicFile.sha256Hex(npzBytes))
     }
 
@@ -81,8 +81,8 @@ final class LiveStoreTests: XCTestCase {
         XCTAssertEqual(model.bandpass, .init(lowHz: 8, highHz: 30, order: 4))
         XCTAssertEqual(model.warmupSamples, 93)
         XCTAssertEqual(model.classLabels, ["cue_left", "cue_right"])
-        XCTAssertEqual(model.trainingRunIDs, ["r1", "r9"])
-        XCTAssertEqual(model.trainingSessionIDs, ["S1", nil], "a run the recording doesn't hold has no known session")
+        XCTAssertEqual(model.trainingRunIDs, ["r1"])
+        XCTAssertEqual(model.trainingSessionIDs, ["S1"])
         XCTAssertEqual(model.fittedSHA256, AtomicFile.sha256Hex(npzBytes))
         XCTAssertEqual(model.workerVersions, ["worker": "1"])
         let listed = try await store.models()
@@ -98,10 +98,10 @@ final class LiveStoreTests: XCTestCase {
     func testFreeze_baselineUsesItsOwnRecipeAndLDAClassOrder() async throws {
         let meta = try await result(recording: try await recording(session: nil))
         let model = try await store.freeze(pipeline: meta.pipelineID, result: meta.resultID, role: .baseline, name: "Baseline",
-                                           validation: validation(classes: [1, 0]))
+                                           validation: validation(model: "baseline"))
         XCTAssertEqual(model.recipe, "logvar_rlda_v1")
-        XCTAssertEqual(model.classLabels, ["cue_right", "cue_left"], "labels follow the LDA's class order")
-        XCTAssertEqual(model.trainingSessionIDs, [nil, nil])
+        XCTAssertEqual(model.classLabels, ["cue_left", "cue_right"])
+        XCTAssertEqual(model.trainingSessionIDs, [nil])
     }
 
     func testFreeze_refusesChangedArraysWrongResultDuplicatesAndBadConfiguration() async throws {
@@ -114,6 +114,13 @@ final class LiveStoreTests: XCTestCase {
                                                                            name: "M", validation: self.validation()))
         await assertRefused("classes", try await self.store.freeze(pipeline: meta.pipelineID, result: meta.resultID, role: .reference,
                                                                    name: "M", validation: self.validation(classes: [0, 2])))
+        await assertRefused("not the evaluation's [0, 1]", try await self.store.freeze(pipeline: meta.pipelineID, result: meta.resultID, role: .reference,
+                                                                                    name: "M", validation: self.validation(classes: [1, 0])))
+        await assertRefused("not the reference", try await self.store.freeze(pipeline: meta.pipelineID, result: meta.resultID, role: .reference,
+                                                                             name: "M", validation: self.validation(model: "baseline")))
+        let missing = try await result(recording: rec, trainingRuns: #""r1","r9""#)
+        await assertRefused("r9 is not in the source recording", try await self.store.freeze(pipeline: missing.pipelineID, result: missing.resultID,
+                                                                                             role: .reference, name: "M", validation: self.validation()))
         await assertRefused("name", try await self.store.freeze(pipeline: meta.pipelineID, result: meta.resultID, role: .reference,
                                                                 name: " \u{202E} ", validation: self.validation()))
         _ = try await store.freeze(pipeline: meta.pipelineID, result: meta.resultID, role: .reference, name: "M", validation: validation())
@@ -226,6 +233,41 @@ final class LiveStoreTests: XCTestCase {
             _ = try await store.createLiveRun(replay)
             XCTFail("a replay is not a live run")
         } catch {}
+    }
+
+    func testAppend_failedWriteLeavesNoPartialLine_andTheSizeLimitStopsLoggingReadably() async throws {
+        let run = LiveRunRecord(kind: .live, modelID: UUID(), recordingID: UUID(), runIDs: [], hopSamples: 16, abstainThreshold: 0.6,
+                                staleLimitMillis: 250, startedAt: Date())
+        let writer = try await store.createLiveRun(run, logLimit: 900)
+        let dirNames = try FileManager.default.contentsOfDirectory(atPath: writer.directory.path).sorted()
+        XCTAssertEqual(dirNames, ["feedback.jsonl", "predictions.jsonl", "run.json"], "logs exist from the start")
+        try await writer.append(prediction(0))
+        let url = writer.directory.appendingPathComponent(ProjectStore.predictionsFileName)
+        let before = try Data(contentsOf: url)
+        let line = try ContractJSON.lineEncoder().encode(prediction(16))
+        do {
+            try AppendOnlyFile.appendLine(line, to: url, fault: .init(afterBytes: 20, errno: ENOSPC))
+            XCTFail("the injected short write fails")
+        } catch {}
+        XCTAssertEqual(try Data(contentsOf: url), before, "truncated back: no partial line mid-file")
+
+        var refused: Error?
+        for i in 1..<10 where refused == nil {
+            do { try await writer.append(prediction(i * 16)) } catch { refused = error }
+        }
+        XCTAssertTrue("\(try XCTUnwrap(refused))".contains("size limit"))
+        let stopped = await writer.loggingStopped
+        XCTAssertNotNil(stopped)
+        do {
+            try await writer.append(FeedbackRecord(predictionSequence: 0, shown: false, side: nil, length: nil, words: "x", presentedAtMonotonicNanos: nil))
+            XCTFail("nothing is logged once logging stopped")
+        } catch {}
+        try await writer.finish(endedAt: Date(), summary: nil, latency: nil, replayCheck: nil)
+        let stored = try await store.liveRuns().runs.first
+        XCTAssertEqual(stored?.loggingStopped, stopped)
+        let read = try await store.predictions(liveRun: run.liveRunID)
+        XCTAssertFalse(read.lastLineTruncated)
+        XCTAssertGreaterThan(read.records.count, 0)
     }
 
     private func assertRefused<T>(_ fragment: String, _ body: @autoclosure () async throws -> T, line: UInt = #line) async {
