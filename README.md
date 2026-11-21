@@ -38,7 +38,7 @@ Also shipped since 0.1.0 (on main, in the next release): a first-run intro and a
 montage view of the declared electrode positions (brief 003), and a **Quality** tab on each
 recording with per-channel spectra (raw and band-passed) and flatline, clipping, large
 deflection, mains and outlier checks that each name their rule and measured value (brief 002).
-Cued protocols (brief 005) and live feedback (brief 006) come next.
+Live feedback (brief 006) comes next.
 
 ## Live acquisition (brief 004, on main)
 
@@ -68,6 +68,43 @@ Cued protocols (brief 005) and live feedback (brief 006) come next.
 The Cyton + Daisy row changes once the hand-run checklist in brief 004's appendix passes on
 the real board (decision #26).
 
+## Cued protocol (brief 005, on main)
+
+- **Protocols** in the project sidebar lists the project's cued protocols with their version
+  and how many runs used each one. A project starts with "Left vs right hand (Graz-style)" v1:
+  fixation 2 s, arrow cue 4 s, rest 1.5–2.5 s, 20 trials per class, 4 runs per session.
+  Every value can be edited. An edit is saved as a new version, and a version is never
+  changed in place.
+- **Start Run…** on the acquisition screen (while streaming) picks a protocol version, a
+  session seed and the participant display. A borderless full-screen window then shows a
+  fixation cross, an arrow and a blank rest, trial after trial, in a seeded order the app can
+  reproduce. The operator panel shows the run, trial and phase, the stream health, and
+  **Abort Trial** (Esc), **Pause** / **Resume** (Space) and **Abort Run** (⌘.). These keys
+  work from either window. With one display, the participant window covers the operator
+  window and the keyboard is the control. Each run is its own run and segment in the same
+  recording. Its run plan (seed and planned trials) is written before the first cue.
+- Every phase is logged as an event with its intended time, the app's presentation
+  callback, and the EEG sample it is tied to (the BrainFlow marker the app inserted, or, if
+  the marker isn't found, the nearest receipt timestamp, and the event says which).
+  **Evaluate** on the recording uses the protocol's class labels and needs at least 3 runs.
+  Aborted trials, and trials whose window spans a detected gap, are excluded and listed.
+  **Export Result** includes the run plans and the protocol versions they used
+  ([docs/export-format.md](docs/export-format.md)).
+- **Try it without hardware:** connect the **Demo** source, wait for the preview, press
+  **Start Run…**, and run a session. The Demo plays back the bundled example's EEG, which
+  has nothing to do with the arrows shown, so evaluating a Demo session tests the workflow,
+  not decoding: expect accuracy near chance.
+
+**Timing, stated honestly.** After each run the panel shows "Cue timing (software)": how
+late each phase was presented relative to its schedule (median, 95th percentile, max), and
+how many screen changes were a frame or more late. These numbers come from the app's own
+display callbacks. The delay from the app's callback to light on the screen, and from the
+screen to the EEG sample, is **not** measured (that would need a photodiode or trigger box),
+so `timingUncertaintyNanos` stays empty for marker-tied cues. That uncertainty is small
+relative to a motor-imagery window, which is why this protocol is offered and P300/SSVEP are
+not. The Cyton + Daisy behaviour (where the marker lands on real packets, lateness with the
+board streaming, two-display setups) is checked by hand in brief 005's appendix.
+
 ## Layout
 
 ```
@@ -80,6 +117,7 @@ Sources/Contracts/          on-disk record types: Project, Recording, Event, Pip
 Sources/ProjectStore/       .bciproj store: atomic chunk writer + CommitHook, verified reader,
                             bundled-example import, results, export
 Sources/Evaluation/         EvaluationRunner: worker lifecycle, typed progress, reproduction links
+Sources/Protocol/           ProtocolRunner (phases, pauses, aborts, markers), ProtocolSchedule (seeded order)
 Sources/Acquisition/        AcquisitionSession (live state machine, drain loop, reconnect), stream
                             health, board configuration and readback, preview buffer
 Tools/BCIStoreCrashHelper/  command-line helper the crash tests kill at a named commit point

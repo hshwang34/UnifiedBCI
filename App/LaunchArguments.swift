@@ -1,7 +1,6 @@
 import AppKit
 import CoreGraphics
 import Foundation
-import Synchronization
 
 /// Development-only launch arguments for driving the app without clicks (screenshots,
 /// smoke tests). Compiled out of Release builds, so a shipped app never opens anything
@@ -54,11 +53,12 @@ import Synchronization
 ///                                              "live-recorded", "live-recorded-full" (tall),
 ///                                              "live-recorded-segments",
 ///                                              "live-recorded-quality"
-///     -BCICueWindowPreview YES                 open the participant cue window (brief 005 PR 5)
-///                                              on the display the picker chooses and cycle
-///                                              instructions, fixation, left cue, rest, right
-///                                              cue; snapshots "cue-<phase>" and prints the
-///                                              software lateness. Esc closes it.
+///     -BCIStartRun N                           with -BCIConnectSource: a short protocol (N trials per
+///                                              class, 3 runs, the minimum Evaluate accepts) on that
+///                                              stream; snapshots "run-instructions", "run-cue" (the
+///                                              operator panel and the participant window mid-run),
+///                                              "run-summary", then evaluates the recording:
+///                                              "run-evaluated"
 @MainActor
 enum LaunchArguments {
     private static var done = false
@@ -205,10 +205,6 @@ enum LaunchArguments {
                 workspace.welcomeFlow.apply(.next)
             }
             try? await Task.sleep(for: .seconds(1))
-        }
-        if defaults.bool(forKey: "BCICueWindowPreview") {
-            await cueWindowPreview(snapshots: snapshots != nil, snap: snap)
-            return
         }
         await snap("welcome")
 
@@ -380,6 +376,8 @@ enum LaunchArguments {
         if model.declaredMap != nil { model.confirmMap() } else { model.recordWithoutPositions() }
         await model.perform(.startPreview)               // the sheet hands over to the screen
         await snap("live-preview", .seconds(12))         // the 10 s window is full
+        let trials = UserDefaults.standard.integer(forKey: "BCIStartRun")
+        if trials > 0 { return await protocolRun(session, trialsPerClass: trials, snap: snap) }
         guard recordSeconds > 0 else { return }
         await model.perform(.record)
         guard model.isRecording else { return await snap("live-record-refused", .seconds(1)) }
@@ -408,57 +406,46 @@ enum LaunchArguments {
         await snap("live-recorded-quality", .seconds(1.5))
     }
 
-    /// Brief 005 PR 5: the participant window cycling through its phases, presented by the
-    /// display link as a run would present them. With snapshots (or -BCIQuitWhenDone) one
-    /// cycle; otherwise until Esc.
-    private static func cueWindowPreview(snapshots: Bool, snap: (String, Duration) async -> Void) async {
-        let displays = CueWindowController.displays(operatorScreen: NSApp.keyWindow?.screen ?? NSApp.windows.first?.screen)
-        guard let choice = CueDisplayPicker.choose(from: displays, remembered: CueDisplayPicker.remembered(in: .standard)),
-              let screen = CueWindowController.screen(for: choice.display) else { return }
-        FileHandle.standardError.write(Data("cue preview: \(CueWindowModel.displayLabel(choice.display))\n".utf8))
-        let scheduler = CueFrameScheduler()
-        let window = CueWindowController(scheduler: scheduler, screen: screen)
-        window.show()
-        let sink = PreviewSink()
-        var stop = false
-        let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            if event.keyCode == 53 { stop = true; return nil }
-            return event
-        }
-        defer { if let monitor { NSEvent.removeMonitor(monitor) } }
-        let phases: [(String, CueFrame)] = [("instructions", .instructions(CueWindowModel.previewInstructions)), ("fixation", .fixation),
-                                            ("left", .cue(.leftArrow)), ("rest", .blank), ("fixation-2", .fixation),
-                                            ("right", .cue(.rightArrow)), ("rest-2", .blank)]
-        let once = snapshots || UserDefaults.standard.bool(forKey: "BCIQuitWhenDone")
-        var token: UInt64 = 0
-        repeat {
-            for (name, frame) in phases where !stop {
-                token += 1
-                let at = HostMonotonicClock.nowNanos() + 40_000_000
-                sink.expect(PresentationToken(value: token), intended: at)
-                scheduler.show(frame, atMonotonicNanos: at, token: PresentationToken(value: token), sink: sink)
-                try? await Task.sleep(for: .milliseconds(300))
-                if snapshots { await snap("cue-\(name)", .zero) }
-                try? await Task.sleep(for: .milliseconds(snapshots ? 200 : 1200))
+    /// Brief 005 PR 6: three short runs of a snapshot protocol on the live stream through
+    /// Start run…, then Evaluate on the recording they made.
+    private static func protocolRun(_ session: ProjectSession, trialsPerClass: Int, snap: (String, Duration) async -> Void) async {
+        var draft = ProtocolDraft.grazDefault
+        draft.name = "Snapshot run"
+        draft.timing = .init(fixationMs: 1000, cueMs: 4000, restMinMs: 1000, restMaxMs: 1500)
+        draft.trialsPerClass = min(max(trialsPerClass, 1), 100)
+        draft.runsPerSession = RunCountModel.minimumRuns
+        guard (try? await session.store.createProtocolVersion(draft, basedOn: nil)) != nil else { return }
+        await session.showStartRun(operatorScreen: NSApp.windows.first { $0.title == session.name }?.screen)
+        guard var form = session.startRunForm, let p = form.protocols.first(where: { $0.name == draft.name }) else { return }
+        form.pick(p.protocolID)
+        form.seedText = "20261120"
+        await snap("run-start-sheet", .seconds(1))
+        session.startRuns(form)
+        guard let runs = session.runs else { return await snap("run-refused", .seconds(1)) }
+        for run in 0..<runs.setup.runsPerSession {
+            if run > 0 { runs.startNextRun() }
+            if run == 0 { await snap("run-instructions", .seconds(1.5)) } else { try? await Task.sleep(for: .seconds(1)) }
+            runs.begin()
+            if run == 0 {
+                while runs.status?.phase != .cue, runs.isRunActive { try? await Task.sleep(for: .milliseconds(20)) }
+                await snap("run-cue", .milliseconds(600))
             }
-        } while !once && !stop
-        window.close()
-        FileHandle.standardError.write(Data("cue preview: \(sink.summary())\n".utf8))
-    }
-
-    /// Collects presented − intended for the preview's frames.
-    private final class PreviewSink: PresentationSink {
-        private let box = Mutex<(intended: [UInt64: Int64], lateness: [Int64])>(([:], []))
-        func expect(_ token: PresentationToken, intended: Int64) { box.withLock { $0.intended[token.value] = intended } }
-        func presented(_ token: PresentationToken, atMonotonicNanos at: Int64) {
-            box.withLock { b in if let i = b.intended.removeValue(forKey: token.value) { b.lateness.append(at - i) } }
+            await runs.awaitRun()
+            if run == 0 { await snap("run-summary", .seconds(3)) }
         }
-        func summary() -> String {
-            let (missing, late) = box.withLock { ($0.intended.count, $0.lateness.sorted()) }
-            guard let max = late.last else { return "no presentation callbacks; \(missing) missing" }
-            let ms = { (n: Int64) in Fmt.fixed(Double(n) / 1e6, 1) }
-            return "\(late.count) frames presented, lateness median \(ms(late[late.count / 2])) ms, max \(ms(max)) ms; \(missing) missing"
+        try? await Task.sleep(for: .seconds(3))          // the last run's placements are counted
+        await snap("run-summaries", .zero)
+        await session.finishRuns()
+        guard let id = session.live?.lastRecordingID else { return }
+        session.showRecording(id)
+        session.showInspector = true
+        await snap("run-recording", .seconds(1.5))
+        await session.evaluateAndWait()
+        if let root = session.resultTree.first {
+            session.section = .results
+            session.selectedResultID = root.id
         }
+        await snap("run-evaluated", .seconds(2))
     }
 
     /// Captures every visible titled window of this app into `<name>-<n>-<title>.png`.

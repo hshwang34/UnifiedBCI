@@ -218,6 +218,27 @@ final class ConnectController: Identifiable {
         sync()
     }
 
+    // MARK: Protocol runs (brief 005)
+
+    /// Where a protocol run records: this stream, with the confirmed map. Nil while Record
+    /// would be disabled, or while a plain recording is in progress.
+    func runHost() -> AcquisitionRunHost? {
+        guard let session, let board = snapshot.board, recordDisabledReason == nil, !isRecordingNow,
+              let request = ChannelMapModel.request(for: choice, board: board) else { return nil }
+        return AcquisitionRunHost(session: session, request: request, store: store)
+    }
+
+    /// A protocol run started the recording: watch it as Record would, so its end is
+    /// reported and the list reloads.
+    func adoptRecording(_ id: UUID) {
+        guard watchedRecordingID == nil else { return }
+        recordMessage = nil
+        endBeforeRecording = snapshot.lastRecordingEnd
+        watchedRecordingID = id
+        recordingStartedAt = Date()
+        sync()
+    }
+
     func stopRecording() async {
         guard let session else { return }
         _ = await session.stopRecording()

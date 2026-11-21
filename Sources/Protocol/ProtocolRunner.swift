@@ -155,7 +155,7 @@ public actor ProtocolRunner: PresentationSink {
         }
     }
 
-    private enum Command { case begin, abortTrial, pause, resume, abortRun, displayChanged }
+    private enum Command { case begin, abortTrial(Int?), pause, resume, abortRun, displayChanged }
 
     private struct Step {
         let trial: Int
@@ -214,7 +214,10 @@ public actor ProtocolRunner: PresentationSink {
     /// Space on the instructions screen.
     public nonisolated func begin() { send(.begin) }
     /// Esc: the trial in progress is aborted and excluded, never re-queued (decision #34).
-    public nonisolated func abortTrial() { send(.abortTrial) }
+    public nonisolated func abortTrial() { send(.abortTrial(nil)) }
+    /// Aborts trial `index` (0-based) only if it is still the one in progress, so a late or
+    /// repeated key press can never abort the trial after it.
+    public nonisolated func abortTrial(_ index: Int) { send(.abortTrial(index)) }
     public nonisolated func pause() { send(.pause) }
     /// Ignored while the stream is down (decision #35).
     public nonisolated func resume() { send(.resume) }
@@ -333,8 +336,8 @@ public actor ProtocolRunner: PresentationSink {
 
     private func handle(_ c: Command, now: Int64) async {
         switch (c, status.state) {
-        case (.abortTrial, .running):
-            guard let a = active, !aborted.contains(a), ending == nil else { return }
+        case (.abortTrial(let only), .running):
+            guard let a = active, !aborted.contains(a), ending == nil, only == nil || only == a else { return }
             let phase = phase(of: a, at: now)
             abort(a, origin: "operator", reason: "operator")
             await record(["trial_abort"], trial: a, origin: "operator", intended: now, reason: "operator")
