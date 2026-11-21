@@ -350,6 +350,119 @@ def predict_from_arrays(arrays: dict[str, np.ndarray], X_filtered: np.ndarray) -
     return class_from_score(arrays, score_from_arrays(arrays, X_filtered))
 
 
+class ModelError(ValueError):
+    """Fitted arrays that can't be used as a model; the message says why."""
+
+
+# The documented keys of one fitted model per feature kind (`fitted_arrays`). A file holds the
+# reference model at the top level and may hold the baseline under `MODEL_PREFIXES["baseline"]`.
+MODEL_KEYS: dict[str, frozenset[str]] = {
+    "csp_log_power": frozenset({"bandpass_sos", "feature_kind", "csp_filters", "csp_patterns", "csp_component_indices",
+                                "csp_eigenvalues", "lda_coef", "lda_intercept", "lda_classes"}),
+    "log_variance": frozenset({"bandpass_sos", "feature_kind", "lda_coef", "lda_intercept", "lda_classes"}),
+}
+MODEL_PREFIXES = {"reference": "", "baseline": "baseline__"}
+MAX_MODEL_CHANNELS = 256
+MAX_FILTER_SECTIONS = 32
+_INT_KEYS = frozenset({"csp_component_indices", "lda_classes"})
+
+
+def validate_model_arrays(arrays: dict[str, np.ndarray], which: str = "reference",
+                          n_channels: int | None = None) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    """Checks every array of a fitted-arrays file and returns the `which` model's arrays
+    (prefix stripped, copied) with a summary. Refused (`ModelError`): keys outside the
+    documented lists, a missing key, `feature_kind` not a string of a known kind, floats
+    that aren't finite float64, integer arrays that aren't integers, shapes that don't fit
+    the channel count (or `n_channels`, when given), more than two or repeated classes, and
+    an unstable band-pass. Both models in the file are validated, not just the one used."""
+    if which not in MODEL_PREFIXES:
+        raise ModelError(f"unknown model {which!r}; expected one of {sorted(MODEL_PREFIXES)}")
+    groups: dict[str, dict[str, np.ndarray]] = {"reference": {}, "baseline": {}}
+    for key, value in arrays.items():
+        name = "baseline" if key.startswith(MODEL_PREFIXES["baseline"]) else "reference"
+        groups[name][key[len(MODEL_PREFIXES[name]):]] = value
+    for name in {"reference", which}:
+        if not groups[name]:
+            raise ModelError(f"the file has no {name} model")
+    out: dict[str, Any] = {}
+    for name, group in groups.items():
+        if group or name == which:
+            out[name] = _validate_one(name, group, n_channels)
+    return out[which]
+
+
+def _validate_one(name: str, a: dict[str, np.ndarray], n_channels: int | None) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    kind_arr = a.get("feature_kind")
+    if kind_arr is None:
+        raise ModelError(f"{name} model has no feature_kind")
+    if not (isinstance(kind_arr, np.ndarray) and kind_arr.dtype.kind == "U" and kind_arr.ndim == 0):
+        raise ModelError(f"{name} model feature_kind is not a string")
+    kind = str(kind_arr)
+    if kind not in MODEL_KEYS:
+        raise ModelError(f"{name} model has unknown feature kind {kind!r}")
+    expected = MODEL_KEYS[kind]
+    if set(a) - expected:
+        raise ModelError(f"{name} model has undocumented arrays: {sorted(set(a) - expected)}")
+    if expected - set(a):
+        raise ModelError(f"{name} model is missing arrays: {sorted(expected - set(a))}")
+    for key, value in a.items():
+        if key == "feature_kind":
+            continue
+        if not isinstance(value, np.ndarray):
+            raise ModelError(f"{name} model {key} is not an array")
+        if key in _INT_KEYS:
+            if value.dtype.kind not in "iu":
+                raise ModelError(f"{name} model {key} is {value.dtype}, not an integer array")
+        elif value.dtype != np.float64:
+            raise ModelError(f"{name} model {key} is {value.dtype}, not float64")
+        elif not np.all(np.isfinite(value)):
+            raise ModelError(f"{name} model {key} has non-finite values")
+
+    def shape(key: str, want: tuple[int, ...]) -> None:
+        if a[key].shape != want:
+            raise ModelError(f"{name} model {key} has shape {a[key].shape}, expected {want}")
+
+    sos = a["bandpass_sos"]
+    if sos.ndim != 2 or sos.shape[1] != 6 or not 1 <= sos.shape[0] <= MAX_FILTER_SECTIONS:
+        raise ModelError(f"{name} model bandpass_sos has shape {sos.shape}, expected (1..{MAX_FILTER_SECTIONS}, 6)")
+    if not np.all(sos[:, 3] == 1.0):
+        raise ModelError(f"{name} model bandpass_sos is not normalised (a0 must be 1)")
+    try:
+        warmup = settling_samples(sos)
+    except ValueError as exc:
+        raise ModelError(f"{name} model band-pass: {exc}") from exc
+    if kind == "csp_log_power":
+        if a["csp_filters"].ndim != 2:
+            raise ModelError(f"{name} model csp_filters is not a matrix")
+        k, channels = a["csp_filters"].shape
+        if not 1 <= k <= channels:
+            raise ModelError(f"{name} model has {k} CSP components for {channels} channels")
+        shape("csp_patterns", (k, channels))
+        shape("csp_component_indices", (k,))
+        shape("csp_eigenvalues", (channels,))
+        idx = a["csp_component_indices"]
+        if np.any(idx < 0) or np.any(idx >= channels) or len(set(idx.tolist())) != k:
+            raise ModelError(f"{name} model csp_component_indices are out of range or repeated")
+        n_features = k
+    else:
+        if a["lda_coef"].ndim != 2:
+            raise ModelError(f"{name} model lda_coef is not a matrix")
+        channels = n_features = a["lda_coef"].shape[1]
+    if not 1 <= channels <= MAX_MODEL_CHANNELS:
+        raise ModelError(f"{name} model has {channels} channels; at most {MAX_MODEL_CHANNELS} are supported")
+    if n_channels is not None and channels != n_channels:
+        raise ModelError(f"{name} model expects {channels} channels, the recording has {n_channels}")
+    shape("lda_coef", (1, n_features))
+    shape("lda_intercept", (1,))
+    shape("lda_classes", (2,))
+    classes = a["lda_classes"].tolist()
+    if classes[0] == classes[1]:
+        raise ModelError(f"{name} model lda_classes repeats class {classes[0]}")
+    clean = {k: (np.array(str(v)) if k == "feature_kind" else np.array(v, copy=True)) for k, v in a.items()}
+    return clean, {"model": name, "feature_kind": kind, "n_channels": channels, "n_features": n_features,
+                   "bandpass_sections": int(sos.shape[0]), "filter_warmup_samples": warmup, "lda_classes": classes}
+
+
 # --------------------------------------------------------------------------------------
 # Synthetic data
 # --------------------------------------------------------------------------------------

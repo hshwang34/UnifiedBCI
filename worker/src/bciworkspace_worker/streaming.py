@@ -364,3 +364,63 @@ def parity_report(streamed: Sequence[Prediction], reference: Sequence[Prediction
         "missing_windows": [list(k) for k in missing],
         "extra_windows": [list(k) for k in extra],
     }
+
+
+DEFAULT_CHUNKINGS: tuple[int | str, ...] = (1, 7, 13, 125, "random")
+
+
+def resolve_chunking(chunking: int | str, seed: int) -> list[int]:
+    """Chunk sizes for one replay pass; "random" is a seeded mix of 1..64 samples."""
+    if chunking == "random":
+        return np.random.default_rng(seed).integers(1, 65, size=257).tolist()
+    if isinstance(chunking, bool) or not isinstance(chunking, int) or chunking <= 0:
+        raise ValueError(f"chunking {chunking!r} is not a positive sample count or 'random'")
+    return [chunking]
+
+
+def replay(arrays: dict[str, np.ndarray], spec: WindowSpec, segments: Sequence[tuple[int | None, np.ndarray,
+           Sequence[tuple[int, str]], Sequence[Cue]]], chunkings: Sequence[int | str] = DEFAULT_CHUNKINGS,
+           seed: int = 0, threshold: float = DEFAULT_ABSTAIN_THRESHOLD,
+           check: Any = None) -> tuple[dict[str, Any], list[Prediction], list[Prediction]]:
+    """Runs recorded segments `(index, data, gaps, cues)` through the offline reference once
+    and the streaming path once per chunking. Returns the combined report (one parity report
+    per chunking, `passed` only if all pass), the first chunking's streamed predictions and
+    the reference predictions. `check` is called between passes (cancellation)."""
+    if not chunkings:
+        raise ValueError("need at least one chunking")
+    reference: list[Prediction] = []
+    ref_filtered: list[np.ndarray] = []
+    for index, data, gaps, cues in segments:
+        preds, filtered = reference_segment(arrays, spec, data, gaps, cues, index)
+        reference += preds
+        ref_filtered.append(filtered)
+    passes = []
+    first: list[Prediction] = []
+    for chunking in chunkings:
+        sizes = resolve_chunking(chunking, seed)
+        predictor = StreamingPredictor(arrays, segments[0][1].shape[0], spec)
+        streamed: list[Prediction] = []
+        dev = 0.0
+        for (index, data, gaps, cues), want in zip(segments, ref_filtered):
+            if check:
+                check()
+            preds, filtered = stream_segment(predictor, data, sizes, gaps, cues, index)
+            streamed += preds
+            dev = max(dev, float(np.max(np.abs(filtered - want))) if want.size else 0.0)
+        passes.append({"chunking": chunking, "report": parity_report(streamed, reference, dev, threshold)})
+        if not first:
+            first = streamed
+    reports = [p["report"] for p in passes]
+    summary = {
+        "passed": all(r["passed"] for r in reports),
+        "windows_compared": reports[0]["windows_compared"],
+        "tolerances": dict(TOLERANCES),
+        "abstain_threshold": threshold,
+        "max_deviation": {q: {"max": max(r["max_deviation"][q]["max"] for r in reports), "tolerance": TOLERANCES[q],
+                              "within": all(r["max_deviation"][q]["within"] for r in reports)}
+                          for q in ("bandpassed_uv", "features", "score")},
+        "boundary_windows": reports[0]["boundary_windows"],
+        "first_valid_window_stop": reports[0]["first_valid_window_stop"],
+        "chunkings": passes,
+    }
+    return summary, first, reference
