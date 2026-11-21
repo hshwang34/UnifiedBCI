@@ -56,7 +56,7 @@ enum CueDisplayPicker {
 
 /// Copy and geometry of the participant window (brief 005, "Participant window"): neutral
 /// dark background, centred white fixation cross, the arrow drawn over it, blank rest. No
-/// branding, controls, numbers or feedback. Sizes are fractions of the display's shorter side so
+/// branding, controls or numbers; feedback only in a live run (brief 006: the bar under the cross). Sizes are fractions of the display's shorter side so
 /// the cues read the same from across a room on any display.
 enum CueWindowModel {
     /// Background and ink as sRGB 0…1. Near-black and near-white: ~18:1, calm rather than glaring.
@@ -71,6 +71,16 @@ enum CueWindowModel {
     static let arrowHeadLength = 0.11
     static let instructionsSize = 0.034  // font size, × shorter side
     static let instructionsWidth = 0.62  // × width
+
+    // Live feedback (brief 006, decision #27): a bar under the cross, clear of the arrow.
+    static let feedbackDrop = 0.24       // bar centre below the cross centre, × shorter side
+    static let feedbackHalfWidth = 0.30  // full confidence reaches this far from the centre line
+    static let feedbackHeight = 0.034
+    static let feedbackTick = 0.07       // the centre line's height
+    static let feedbackMinimum = 0.006   // a just-confident bar is still visible
+    static let feedbackTrackAlpha = 0.16
+    static let feedbackWordsSize = 0.032
+    static let feedbackWordsAlpha = 0.78
 
     static func displayLabel(_ d: CueDisplayInfo) -> String {
         "\(d.name) (\(d.width) × \(d.height))" + (d.isOperator ? " · this window's display" : "")

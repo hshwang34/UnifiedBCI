@@ -66,6 +66,9 @@ public actor AcquisitionSession {
         public var montage: String
         public var sessionID = UUID().uuidString
         public var runID = UUID().uuidString
+        /// The id the recording will get, when the caller needs it before it exists (a live
+        /// run names its recording when it starts, brief 006); nil: a fresh one.
+        public var recordingID: UUID?
 
         public init(channels: [ChannelSpec], reference: String, montage: String) {
             self.channels = channels; self.reference = reference; self.montage = montage
@@ -252,7 +255,7 @@ public actor AcquisitionSession {
         let d = board.description
         let (wall, now) = (Date(), HostMonotonicClock.nowNanos())
         let manifest = RecordingManifest(
-            recordingID: UUID(), sessionID: request.sessionID, runID: request.runID, createdAt: wall,
+            recordingID: request.recordingID ?? UUID(), sessionID: request.sessionID, runID: request.runID, createdAt: wall,
             source: source.recordingSource(d, appVersion: options.appVersion), channels: request.channels,
             reference: request.reference, montage: request.montage,
             timing: .init(nominalSampleRateHz: Double(d.samplingRate), timestampClock: .brainflowReceipt, timestampGeneratedBy: "host",

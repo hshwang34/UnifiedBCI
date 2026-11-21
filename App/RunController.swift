@@ -14,10 +14,17 @@ protocol CueSurface: AnyObject {
     func close()
     /// Fits the window to its display again; false when the display is gone.
     func reframe() -> Bool
+    /// Live feedback for the window to draw during cues (brief 006); nil: none.
+    func attachFeedback(_ feed: FeedbackFeed?)
+}
+
+extension CueSurface {
+    func attachFeedback(_ feed: FeedbackFeed?) {}
 }
 
 extension CueWindowController: CueSurface {
     var display: any CueDisplay { scheduler }
+    func attachFeedback(_ feed: FeedbackFeed?) { feedback = feed }
 }
 
 /// One session of protocol runs on the live stream (brief 005 PR 6): the runs of one

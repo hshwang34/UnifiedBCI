@@ -51,6 +51,16 @@ public actor LiveInferenceRunner {
         public var predictions = 0
         public var lastSequence: Int?
         public var stopped = false
+        /// Valid hop windows and how many of them abstained (the operator's abstain rate).
+        public var validHops = 0
+        public var abstainedHops = 0
+        /// Receipt → emission so far, in milliseconds (operator panel; `run.json` at the end).
+        public var receiptToEmission: LiveRunRecord.Percentiles?
+        /// Each trial's live outcome so far (decision #41), by trial id.
+        public var outcomes: [String: FeedbackPolicy.TrialOutcome] = [:]
+
+        /// Valid hop windows that abstained, 0…1; nil before the first valid window.
+        public var abstainRate: Double? { validHops > 0 ? Double(abstainedHops) / Double(validHops) : nil }
     }
 
     /// One change of the display, for the participant window: it calls `presented` when the
@@ -110,6 +120,7 @@ public actor LiveInferenceRunner {
     private var records: [PredictionRecord] = []
     private var bufferWaitsMs: [Double] = []
     private var presentationMs: [Double] = []
+    private var receiptMs: [Double] = []
     private var emitted: [Int: Int64] = [:]
 
     /// `writer` is nil only in tests that read the status alone. `now` is the latency
@@ -165,9 +176,10 @@ public actor LiveInferenceRunner {
     }
 
     /// Ends the run: unsubscribes, closes the worker session (its unfinished cue-locked
-    /// windows are logged), stops the worker and writes the summaries into `run.json`.
+    /// windows are logged), stops the worker and writes the summaries into `run.json` (with
+    /// `runIDs`, the protocol runs it covered, when given).
     @discardableResult
-    public func stop() async -> (summary: LiveRunRecord.Summary, latency: LiveRunRecord.LatencySummary) {
+    public func stop(runIDs: [String]? = nil) async -> (summary: LiveRunRecord.Summary, latency: LiveRunRecord.LatencySummary) {
         unsubscribe?()
         unsubscribe = nil
         loops.forEach { $0.cancel() }
@@ -185,10 +197,9 @@ public actor LiveInferenceRunner {
         let summary = LiveRunRecord.Summary(predictions: records.count,
                                             byValidity: Dictionary(grouping: records, by: \.validity.rawValue).mapValues(\.count),
                                             abstained: records.filter { $0.validity == .valid && $0.action.kind == .abstain }.count)
-        let receipt = records.compactMap { p in p.acquisitionReceiptMonotonicNanos.flatMap { r in p.emittedAtMonotonicNanos.map { Double($0 - r) / 1e6 } } }
-        let latency = LiveRunRecord.LatencySummary(receiptToEmission: Self.percentiles(receipt), bufferWait: Self.percentiles(bufferWaitsMs),
+        let latency = LiveRunRecord.LatencySummary(receiptToEmission: Self.percentiles(receiptMs), bufferWait: Self.percentiles(bufferWaitsMs),
                                                    emissionToPresentation: Self.percentiles(presentationMs))
-        try? await writer?.finish(endedAt: Date(), summary: summary, latency: latency, replayCheck: nil)
+        try? await writer?.finish(endedAt: Date(), summary: summary, latency: latency, replayCheck: nil, runIDs: runIDs)
         return (summary, latency)
     }
 
@@ -401,13 +412,22 @@ public actor LiveInferenceRunner {
         // Hop windows drive the bar; a cue-locked window is the trial's outcome, not feedback.
         let drivesDisplay = r.windowKind != "cue_locked"
         let display = configuration.policy.display(for: r)
+        if let rc = r.acquisitionReceiptMonotonicNanos, let e = r.emittedAtMonotonicNanos { receiptMs.append(Double(e - rc) / 1e6) }
+        let latency = drivesDisplay && r.acquisitionReceiptMonotonicNanos != nil ? Self.percentiles(receiptMs) : nil
+        let outcome = FeedbackPolicy.trialOutcomes([r]).first
         published.withLock { s in
             s.predictions += 1
             s.lastSequence = seq
             if drivesDisplay {
                 s.validity = r.validity; s.detail = r.validityDetail; s.display = display
                 s.score = r.score; s.confidence = r.confidence
+                if r.validity == .valid, r.inputSampleRange != nil {
+                    s.validHops += 1
+                    if r.action.kind == .abstain { s.abstainedHops += 1 }
+                }
+                if let latency { s.receiptToEmission = latency }
             }
+            if let outcome, s.outcomes[outcome.key] == nil { s.outcomes[outcome.key] = outcome.value }
         }
         guard drivesDisplay, display != shown else { return }
         shown = display

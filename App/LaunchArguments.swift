@@ -123,6 +123,17 @@ enum LaunchArguments {
         #endif
     }
 
+    /// `-BCILiveFeedbackPreview YES` (brief 006 PR 7, until PR 8 adds Live Test setup):
+    /// Start run… becomes a live run with the newest frozen model, and Live Test shows its
+    /// operator view.
+    static var liveFeedbackPreview: Bool {
+        #if DEBUG
+        return UserDefaults.standard.bool(forKey: "BCILiveFeedbackPreview")
+        #else
+        return false
+        #endif
+    }
+
     /// `-BCILiveRecordSeconds`: the recorded-recording snapshots bring the tabs into view.
     static var liveSnapshots: Bool {
         #if DEBUG
@@ -412,6 +423,8 @@ enum LaunchArguments {
         if model.declaredMap != nil { model.confirmMap() } else { model.recordWithoutPositions() }
         await model.perform(.startPreview)               // the sheet hands over to the screen
         await snap("live-preview", .seconds(12))         // the 10 s window is full
+        let liveTrials = UserDefaults.standard.integer(forKey: "BCILiveTest")
+        if liveTrials > 0 { return await liveTest(session, trialsPerClass: liveTrials, snap: snap) }
         let trials = UserDefaults.standard.integer(forKey: "BCIStartRun")
         if trials > 0 { return await protocolRun(session, trialsPerClass: trials, snap: snap) }
         guard recordSeconds > 0 else { return }
@@ -482,6 +495,83 @@ enum LaunchArguments {
             session.selectedResultID = root.id
         }
         await snap("run-evaluated", .seconds(2))
+    }
+
+    /// Brief 006: a live run on the connected stream. The model must match the stream's
+    /// channels and rate (never resampled), so without a matching frozen model one is made
+    /// here: three short cued runs on this stream, evaluated with a 2 s window (decision
+    /// #40), frozen. Then one live run of `trialsPerClass` trials per class with feedback;
+    /// snapshots "live-instructions", "live-feedback" (participant bar and operator view),
+    /// "live-run-done".
+    private static func liveTest(_ session: ProjectSession, trialsPerClass: Int, snap: (String, Duration) async -> Void) async {
+        guard let board = session.live?.snapshot.board, let ids = session.live?.runHost()?.request.channels.map(\.id) else { return }
+        await session.frozen.awaitLoads()
+        var model = session.frozen.models.first { $0.expectedSampleRateHz == Double(board.samplingRate) && $0.expectedChannelIDs == ids }
+        if model == nil {
+            var training = ProtocolDraft.grazDefault
+            training.name = "Live test training"
+            training.timing = .init(fixationMs: 1000, cueMs: 4000, restMinMs: 1000, restMaxMs: 1500)
+            training.trialsPerClass = 6
+            training.runsPerSession = RunCountModel.minimumRuns
+            guard let recording = await runSession(session, training, runs: training.runsPerSession) else { return await snap("live-training-failed", .seconds(1)) }
+            session.showRecording(recording)
+            session.parameters.windowLengthSeconds = 2
+            _ = await session.evaluateAndWait()
+            guard let result = session.results.first(where: { $0.recordingID == recording }) else { return await snap("live-training-failed", .seconds(1)) }
+            session.section = .results
+            session.selectedResultID = result.resultID
+            await session.awaitSelectedResult()
+            guard let stored = session.selectedResult else { return }
+            session.showFreeze(stored)
+            try? await Task.sleep(for: .seconds(1))
+            model = await session.freeze()
+            try? await Task.sleep(for: .seconds(1))
+        }
+        guard let model else { return await snap("live-freeze-refused", .seconds(1)) }
+        var draft = ProtocolDraft.grazDefault
+        draft.name = "Live test"
+        draft.timing = .init(fixationMs: 1000, cueMs: 4000, restMinMs: 1000, restMaxMs: 1500)
+        draft.trialsPerClass = min(max(trialsPerClass, 1), 100)
+        draft.runsPerSession = 1
+        guard let form = await startForm(session, draft) else { return }
+        await session.startLiveRuns(form, model: model, policy: FeedbackPolicy())
+        guard let runs = session.runs, let live = session.liveFeedback else { return await snap("live-refused", .seconds(1)) }
+        session.section = .liveTest
+        await snap("live-instructions", .seconds(1.5))
+        runs.begin()
+        while !live.status.display.isShown, runs.isRunActive { try? await Task.sleep(for: .milliseconds(20)) }
+        await snap("live-feedback", .milliseconds(150))
+        await runs.awaitRun()
+        await snap("live-run-done", .seconds(2))
+        await session.finishRuns()
+        await snap("live-finished", .seconds(1))
+    }
+
+    /// Start run…'s form for a new version of `draft` (created here), seed fixed.
+    private static func startForm(_ session: ProjectSession, _ draft: ProtocolDraft) async -> StartRunForm? {
+        guard (try? await session.store.createProtocolVersion(draft, basedOn: nil)) != nil else { return nil }
+        await session.showStartRun(operatorScreen: NSApp.windows.first { $0.title == session.name }?.screen)
+        guard var form = session.startRunForm, let p = form.protocols.first(where: { $0.name == draft.name }) else { return nil }
+        form.pick(p.protocolID)
+        form.seedText = "20261121"
+        return form
+    }
+
+    /// All runs of `draft` without snapshots, then Finish; the recording they made.
+    private static func runSession(_ session: ProjectSession, _ draft: ProtocolDraft, runs count: Int) async -> UUID? {
+        guard let form = await startForm(session, draft) else { return nil }
+        session.startRuns(form)
+        guard let runs = session.runs else { return nil }
+        for run in 0..<count {
+            if run > 0 { runs.startNextRun() }
+            try? await Task.sleep(for: .seconds(1))
+            runs.begin()
+            await runs.awaitRun()
+        }
+        try? await Task.sleep(for: .seconds(1))
+        await session.finishRuns()
+        session.dismissRuns()
+        return session.live?.lastRecordingID
     }
 
     /// Captures every visible titled window of this app into `<name>-<n>-<title>.png`.

@@ -247,12 +247,14 @@ public actor LiveRunWriter {
         bytes[name] = size
     }
 
-    /// The one rewrite of `run.json`: the same run with `endedAt` and its summaries.
+    /// The one rewrite of `run.json`: the same run with `endedAt` and its summaries, and the
+    /// runs it covered when they were only known at the end.
     public func finish(endedAt: Date, summary: LiveRunRecord.Summary?, latency: LiveRunRecord.LatencySummary?,
-                       replayCheck: LiveRunRecord.ReplayCheck?) throws {
+                       replayCheck: LiveRunRecord.ReplayCheck?, runIDs: [String]? = nil) throws {
         guard record.endedAt == nil else { throw ProjectStoreError.invalidModel("the live run is already finished") }
         var r = record
         r.endedAt = endedAt; r.summary = summary; r.latency = latency; r.replayCheck = replayCheck
+        if let runIDs { r.runIDs = Array(runIDs.prefix(1_000)) }
         r.loggingStopped = loggingStopped
         try AtomicFile.write(try ContractJSON.encoder().encode(r), to: directory.appendingPathComponent(ProjectStore.liveRunFileName))
         record = r

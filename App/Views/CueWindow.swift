@@ -82,6 +82,12 @@ final class CueWindowController {
 
     var isVisible: Bool { panel.isVisible }
 
+    /// Live feedback (brief 006): the bar or its words, drawn under the cross during cues.
+    var feedback: FeedbackFeed? {
+        get { view.feedback }
+        set { view.feedback = newValue }
+    }
+
     /// Stops the display link and drops frames not yet drawn (never reported).
     func close() {
         if let observer { NotificationCenter.default.removeObserver(observer) }
@@ -139,7 +145,8 @@ private final class CuePanel: NSPanel {
 /// refresh takes the newest due frame for that refresh's target presentation time, sets it,
 /// and reports that target time (converted to `HostMonotonicClock` by an offset sampled in
 /// the same callback). That is the app's own callback, not light leaving the screen.
-/// Nothing ever animates (implicit layer actions are off), so Reduce Motion holds as is.
+/// Nothing ever animates (implicit layer actions are off), so Reduce Motion holds as is:
+/// the feedback bar jumps to each new length on the refresh that reports it.
 private final class CueView: NSView {
     static let backgroundColor = NSColor(srgbRed: CueWindowModel.background.r, green: CueWindowModel.background.g,
                                          blue: CueWindowModel.background.b, alpha: 1)
@@ -153,6 +160,11 @@ private final class CueView: NSView {
     private var link: CADisplayLink?
     private var lastCallback: CFTimeInterval?
     private var frameShown: CueFrame = .blank
+    var feedback: FeedbackFeed?
+    private let bar = CAShapeLayer()
+    private let track = CAShapeLayer()
+    private let feedbackWords = NSTextField(labelWithString: "")
+    private var feedbackShown: FeedbackPolicy.Display = .hidden(words: nil)
 
     init(scheduler: CueFrameScheduler) {
         self.scheduler = scheduler
@@ -165,6 +177,16 @@ private final class CueView: NSView {
             shape.isHidden = true
             layer?.addSublayer(shape)
         }
+        for (shape, alpha) in [(track, CueWindowModel.feedbackTrackAlpha), (bar, 1.0)] {
+            shape.fillColor = Self.inkColor.withAlphaComponent(alpha).cgColor
+            shape.actions = ["path": NSNull(), "hidden": NSNull(), "position": NSNull(), "bounds": NSNull()]
+            shape.isHidden = true
+            layer?.addSublayer(shape)
+        }
+        feedbackWords.textColor = Self.inkColor.withAlphaComponent(CueWindowModel.feedbackWordsAlpha)
+        feedbackWords.alignment = .center
+        feedbackWords.isHidden = true
+        addSubview(feedbackWords)
         instructions.textColor = Self.inkColor
         instructions.alignment = .center
         instructions.isSelectable = false
@@ -200,9 +222,52 @@ private final class CueView: NSView {
         lastCallback = link.timestamp
         // An unknown refresh time still draws what is due now, but reports nothing: the
         // runner stores that phase with no presented time.
-        guard let next = scheduler.take(forRefreshAt: target ?? mono) else { return }
-        apply(next.frame)
-        if let target { next.sink.presented(next.token, atMonotonicNanos: target, afterStall: stall) }
+        let next = scheduler.take(forRefreshAt: target ?? mono)
+        if let next { apply(next.frame) }
+        let shown = feedback?.take(cueOnScreen: { if case .cue = frameShown { true } else { false } }())
+        if let shown { applyFeedback(shown.display) }
+        if let next, let target { next.sink.presented(next.token, atMonotonicNanos: target, afterStall: stall) }
+        // Feedback is logged either way; an unknown refresh time is logged as unknown.
+        if let shown { feedback?.presented(shown, at: target) }
+    }
+
+    private func applyFeedback(_ display: FeedbackPolicy.Display) {
+        feedbackShown = display
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layoutFeedback()
+        CATransaction.commit()
+    }
+
+    /// The bar grows from the centre line toward its class's side; hidden, its words (if
+    /// any) take the same place, so a hidden bar is never mistaken for a short one.
+    private func layoutFeedback() {
+        let unit = Self.unit(bounds), y = bounds.midY - unit * CueWindowModel.feedbackDrop
+        let half = unit * CueWindowModel.feedbackHalfWidth, height = unit * CueWindowModel.feedbackHeight
+        switch feedbackShown {
+        case .bar(let side, let length):
+            let dir = feedback?.directions[side] ?? 1
+            let w = max(half * CGFloat(min(max(length, 0), 1)), unit * CueWindowModel.feedbackMinimum)
+            // The bar and the centre line in full ink; the track faint behind them.
+            let tick = unit * CueWindowModel.feedbackTick, t = unit * CueWindowModel.crossStroke / 2
+            let solid = CGMutablePath()
+            solid.addRect(CGRect(x: dir < 0 ? bounds.midX - w : bounds.midX, y: y - height / 2, width: w, height: height))
+            solid.addRect(CGRect(x: bounds.midX - t / 2, y: y - tick / 2, width: t, height: tick))
+            bar.path = solid
+            track.path = CGPath(rect: CGRect(x: bounds.midX - half, y: y - height / 2, width: 2 * half, height: height), transform: nil)
+            bar.isHidden = false
+            track.isHidden = false
+            feedbackWords.isHidden = true
+        case .hidden(let words):
+            bar.isHidden = true
+            track.isHidden = true
+            feedbackWords.stringValue = words ?? ""
+            feedbackWords.font = .systemFont(ofSize: max(13, unit * CueWindowModel.feedbackWordsSize), weight: .medium)
+            feedbackWords.sizeToFit()
+            let size = feedbackWords.frame.size
+            feedbackWords.frame = NSRect(x: bounds.midX - size.width / 2, y: y - size.height / 2, width: size.width, height: size.height)
+            feedbackWords.isHidden = words == nil
+        }
     }
 
     private func apply(_ frame: CueFrame) {
@@ -239,6 +304,9 @@ private final class CueView: NSView {
         CATransaction.setDisableActions(true)
         cross.frame = bounds
         arrow.frame = bounds
+        bar.frame = bounds
+        track.frame = bounds
+        layoutFeedback()
         cross.path = Self.crossPath(in: bounds)
         if case .cue(let symbol) = frameShown { arrow.path = Self.arrowPath(in: bounds, angle: CueWindowModel.symbolAngle(symbol)) }
         CATransaction.commit()

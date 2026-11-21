@@ -68,6 +68,8 @@ final class ProjectSession: Identifiable {
     let traces: SignalWindowRunner
     /// Brief 006: frozen models and replays, on a worker of their own.
     let frozen: FrozenModelsController
+    /// The worker live runs start their own inference process from (brief 006).
+    @ObservationIgnored let launch: WorkerLaunch?
     nonisolated var id: URL { url }
 
     private(set) var name: String
@@ -196,6 +198,7 @@ final class ProjectSession: Identifiable {
         guard let live else { return }
         runs?.tearDown()
         runs = nil
+        await liveFeedback?.stop()
         await live.close()
         if self.live === live { self.live = nil }
         liveShown = false
@@ -235,22 +238,69 @@ final class ProjectSession: Identifiable {
 
     /// Opens the participant window on the chosen display and starts the first run.
     func startRuns(_ form: StartRunForm) {
-        startRunSheetError = nil
-        if let reason = form.disabledReason(streamReason: startRunDisabledReason) { startRunSheetError = reason; return }
-        guard let p = form.selected, let seed = form.seed, let display = form.display else { return }
-        // The display list is from when the sheet opened; never fail silently on a stale one.
-        guard let screen = CueWindowController.screen(for: display) else { startRunSheetError = StartRunCopy.displayGone; return }
-        guard let host = live?.runHost() else { startRunSheetError = live?.recordDisabledReason ?? RecordGate.notStreaming; return }
-        CueDisplayPicker.remember(display, in: .standard)
-        let setup = RunController.Setup(protocolRecord: p, sessionSeed: seed, runsPerSession: form.runsPerSession, display: display,
-                                        framePeriodNanos: 1_000_000_000 / Int64(max(1, screen.maximumFramesPerSecond)))
+        #if DEBUG
+        // PR 7 preview: Start run… becomes a live run with the newest frozen model.
+        if LaunchArguments.liveFeedbackPreview, let model = frozen.models.first {
+            Task { await startLiveRuns(form, model: model, policy: FeedbackPolicy()) }
+            return
+        }
+        #endif
+        guard let (setup, host, screen) = prepareRuns(form) else { return }
         startRunForm = nil
         startRuns(setup, host: host, surface: CueWindowController(scheduler: CueFrameScheduler(), screen: screen))
     }
 
-    /// Tests pass a fake surface and host.
-    func startRuns(_ setup: RunController.Setup, host: any ProtocolRunHost, surface: any CueSurface, options: ProtocolRunner.Options = .init()) {
+    /// The checks Start makes before anything runs; sets `startRunSheetError` when one fails.
+    private func prepareRuns(_ form: StartRunForm) -> (RunController.Setup, AcquisitionRunHost, NSScreen)? {
+        startRunSheetError = nil
+        if let reason = form.disabledReason(streamReason: startRunDisabledReason) { startRunSheetError = reason; return nil }
+        guard let p = form.selected, let seed = form.seed, let display = form.display else { return nil }
+        // The display list is from when the sheet opened; never fail silently on a stale one.
+        guard let screen = CueWindowController.screen(for: display) else { startRunSheetError = StartRunCopy.displayGone; return nil }
+        guard let host = live?.runHost() else { startRunSheetError = live?.recordDisabledReason ?? RecordGate.notStreaming; return nil }
+        CueDisplayPicker.remember(display, in: .standard)
+        let setup = RunController.Setup(protocolRecord: p, sessionSeed: seed, runsPerSession: form.runsPerSession, display: display,
+                                        framePeriodNanos: 1_000_000_000 / Int64(max(1, screen.maximumFramesPerSecond)))
+        return (setup, host, screen)
+    }
+
+    // MARK: Live runs (brief 006)
+
+    /// The live run of the current (or last) session of runs.
+    private(set) var liveFeedback: LiveFeedbackController?
+    /// Set while a live run's worker starts; Start stays disabled.
+    private(set) var isStartingLive = false
+
+    /// Starts a live run: the inference worker first (a model that doesn't match the stream
+    /// is refused here, before anything runs), then the protocol runs with feedback on.
+    func startLiveRuns(_ form: StartRunForm, model: ModelRecord, policy: FeedbackPolicy) async {
+        guard !isStartingLive, let (setup, host, screen) = prepareRuns(form), let board = live?.snapshot.board else { return }
+        isStartingLive = true
+        defer { isStartingLive = false }
+        var request = host.request
+        request.recordingID = UUID()
+        do {
+            let c = try await LiveFeedbackController.start(model: model, protocolRecord: setup.protocolRecord, policy: policy, store: store,
+                                                           launch: launch, session: host.session, board: board, request: request)
+            startRunForm = nil
+            startRuns(setup, host: AcquisitionRunHost(session: host.session, request: request, store: store),
+                      surface: CueWindowController(scheduler: CueFrameScheduler(), screen: screen), feedback: c)
+        } catch let e as WorkerError {
+            startRunSheetError = ModelErrorText.describe(code: e.code, message: e.message)
+        } catch {
+            startRunSheetError = "\(error)"
+        }
+    }
+
+    /// Tests pass a fake surface and host. With `feedback`, the runs are a live run's:
+    /// cues reach its runner and the participant window draws its bar.
+    func startRuns(_ setup: RunController.Setup, host: any ProtocolRunHost, surface: any CueSurface, options: ProtocolRunner.Options = .init(),
+                   feedback: LiveFeedbackController? = nil) {
         runs?.tearDown()
+        if liveFeedback !== feedback { liveFeedback?.tearDown() }
+        liveFeedback = feedback
+        let host = feedback?.host(wrapping: host) ?? host
+        surface.attachFeedback(feedback?.feed)
         let live = live
         let r = RunController(setup: setup, host: host, store: store, surface: surface, options: options,
                               onRecording: { [weak live] id in live?.adoptRecording(id) },
@@ -262,6 +312,7 @@ final class ProjectSession: Identifiable {
 
     func finishRuns() async {
         await runs?.finish()
+        await liveFeedback?.stop()
         await liveReload?.value
     }
 
@@ -288,6 +339,7 @@ final class ProjectSession: Identifiable {
         self.inspector = InspectionRunner(projectDirectory: url, launch: launch)
         self.traces = SignalWindowRunner(inspector: inspector)
         self.frozen = FrozenModelsController(store: store, launch: launch)
+        self.launch = launch
         self.name = name
     }
 
@@ -770,6 +822,7 @@ final class ProjectSession: Identifiable {
         isClosing = true
         // Stops a recording (`stopped`, partial chunk flushed) and releases the board.
         runs?.tearDown()
+        await liveFeedback?.stop()
         await live?.close()
         // The inspection worker stops alongside the evaluation, inside the same budget.
         async let inspection: Void = inspector.shutdown()

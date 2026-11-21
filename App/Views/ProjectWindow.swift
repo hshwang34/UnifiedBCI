@@ -466,7 +466,7 @@ private struct DetailColumn: View {
                 Placeholder(title: ProtocolCopy.noSelection, symbol: SidebarSection.protocols.symbol, text: nil)
             }
         case .liveTest:
-            Placeholder(title: session.section.title, symbol: session.section.symbol, text: session.section.placeholder)
+            LiveTestDetail(session: session)
         }
     }
 }
