@@ -192,7 +192,7 @@ extension WorkerClient {
         // Refused here, before any piece is sent: a non-finite value found by the worker in a
         // later piece would leave the session half-advanced.
         guard rows.allSatisfy({ $0.allSatisfy(\.isFinite) }) else {
-            throw WorkerError(code: "bad_request", message: "live push holds non-finite samples; nothing was sent")
+            throw WorkerError(code: "non_finite_samples", message: "live push holds non-finite samples; nothing was sent")
         }
         guard gaps.allSatisfy({ (firstSample - 1..<firstSample + n).contains($0.afterSample) }) else {
             throw WorkerError(code: "bad_request", message: "a gap lies outside the pushed chunk")

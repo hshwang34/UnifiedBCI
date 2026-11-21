@@ -164,7 +164,7 @@ final class ReplayRunnerTests: XCTestCase {
             _ = try await client.livePush(session: info.session, segment: 0, firstSample: 1_300, rows: poisoned)
             XCTFail("non-finite samples are refused")
         } catch let error as WorkerError {
-            XCTAssertEqual(error.code, "bad_request")
+            XCTAssertEqual(error.code, "non_finite_samples")
         }
         let more = try await client.livePush(session: info.session, segment: 0, firstSample: 1_300, rows: rows.map { Array($0.prefix(16)) })
         XCTAssertEqual(more.map(\.nSamples), [1_316])

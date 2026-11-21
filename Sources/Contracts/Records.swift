@@ -522,6 +522,10 @@ public struct PredictionRecord: Codable, Sendable, Equatable {
     public var feedbackEligible: Bool?
     /// Replay only: the offline reference for the same window.
     public var offline: Offline?
+    /// Live cue-locked windows: how the cue's sample was found, as in
+    /// `EventRecord.SampleAssociation.method` (`brainflow_marker`, or the flagged estimate
+    /// `drain_time_minus_buffer_wait`). Optional; older readers ignore it.
+    public var cueSampleMethod: String?
 
     public init(pipelineID: UUID, inputSegment: Int, inputSampleRange: SampleRange?, score: Double?, validity: Validity,
                 emittedAtMonotonicNanos: Int64?, action: Action, feedbackPresentedAtMonotonicNanos: Int64?,
