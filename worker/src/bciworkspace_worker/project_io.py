@@ -42,10 +42,13 @@ class ProjectError(Exception):
 
 
 FORMAT_VERSION = 1
-# Gap evidence that means the samples around it are not one clean sequence (docs/data-contracts.md);
-# the rest (receipt_interval, duplicate_counter, clock_anomaly) is provenance, and disconnect /
-# process_terminated sit at a segment's end, past every window that fits.
-DATA_GAP_EVIDENCE = frozenset({"sequence_skip", "stale_half", "invalid_counter", "overflow_suspected"})
+# Gap evidence that means the samples around it are not one clean, evenly spaced sequence
+# (docs/data-contracts.md). `duplicate_counter` is included: on a step-1 board BrainFlow stores a
+# repeated packet as received (brief 004), so the window holds one sample twice and every later
+# sample sits one period late. Nothing was lost, but the window is not what the online path would
+# see on clean data, so it is excluded like a loss. receipt_interval and clock_anomaly are
+# provenance only; disconnect / process_terminated sit at a segment's end, past every window.
+DATA_GAP_EVIDENCE = frozenset({"sequence_skip", "stale_half", "duplicate_counter", "invalid_counter", "overflow_suspected"})
 # The protocol's event for an aborted trial (brief 005); its trialID names the trial.
 ABORT_LABEL = "trial_abort"
 
@@ -252,7 +255,8 @@ def load_segments(rec: Recording, labels: dict[str, int] | None, only: int | Non
         gaps = tuple((int(g["afterSampleIndex"]), str(g["evidence"])) for g in seg.get("detectedGaps", [])
                      if g["evidence"] in DATA_GAP_EVIDENCE)
         out.append(Segment(data=data, sfreq=rec.sfreq, events=events_by_segment.get(index, []),
-                           run_id=str(seg["runID"]), session_id=seg.get("sessionID"), gaps=gaps, aborted_trials=aborted))
+                           run_id=str(seg["runID"]), session_id=seg.get("sessionID"), gaps=gaps, aborted_trials=aborted,
+                           segment_index=index))
     return out
 
 

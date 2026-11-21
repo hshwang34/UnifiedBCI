@@ -60,6 +60,7 @@ class Segment:
     session_id: str | None = None
     gaps: tuple[tuple[int, str], ...] = ()
     aborted_trials: frozenset[str] = frozenset()
+    segment_index: int | None = None      # the manifest's segment index, when read from a project
 
     def __post_init__(self) -> None:
         self.data = np.asarray(self.data, dtype=np.float64)
@@ -566,6 +567,38 @@ def _evidence(segments: Sequence[Segment], manifest: dict[str, Any]) -> str:
     return "mixed-session"
 
 
+def check_runs_and_trials(segments: Sequence[Segment]) -> None:
+    """Segments sharing a run id are one run only when the data says so: they are
+    consecutive (in the list and, when known, by manifest segment index) and carry the same,
+    declared session. A reconnect mid-run (decision #35) looks exactly like that; anything
+    else is two runs with one id, refused as before. Trial ids must be unique, or the
+    split manifest could not name trials."""
+    positions: dict[str, list[int]] = {}
+    for i, seg in enumerate(segments):
+        positions.setdefault(seg.run_id, []).append(i)
+    for run, pos in positions.items():
+        if len(pos) == 1:
+            continue
+        parts = [segments[i] for i in pos]
+        indices = [p.segment_index for p in parts]
+        consecutive = pos == list(range(pos[0], pos[0] + len(pos))) and (
+            any(i is None for i in indices) or indices == list(range(indices[0], indices[0] + len(indices))))
+        if not consecutive:
+            raise ValueError(f"duplicate run id {run!r}: its segments are not consecutive, so they are not one run")
+        sessions = {p.session_id for p in parts}
+        if len(sessions) > 1:
+            raise ValueError(f"run ids span more than one session: [{run!r}]")
+        if None in sessions:
+            raise ValueError(f"duplicate run id {run!r}: its segments declare no session, so they can't be shown to be one run")
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for seg in segments:
+        for _, _, trial_id in seg.events:
+            (duplicates if str(trial_id) in seen else seen).add(str(trial_id))
+    if duplicates:
+        raise ValueError(f"duplicate trial ids: {sorted(duplicates)[:10]}")
+
+
 def fit_evaluate(
     segments: Sequence[Segment],
     window: tuple[float, float] = (0.5, 2.0),
@@ -585,14 +618,7 @@ def fit_evaluate(
     fitted arrays (`fitted_arrays`) for the caller to write as `.npz`."""
     if not segments:
         raise ValueError("no segments")
-    # A run may span several segments (reconnects); trials still group by run, so a run's
-    # segments must agree on its session, or the evidence label would be a guess.
-    sessions: dict[str, set[str | None]] = {}
-    for s in segments:
-        sessions.setdefault(s.run_id, set()).add(s.session_id)
-    mixed = sorted(r for r, ids in sessions.items() if len(ids) > 1)
-    if mixed:
-        raise ValueError(f"run ids span more than one session: {mixed}")
+    check_runs_and_trials(segments)
     sfreq = segments[0].sfreq
     sos = bandpass.design(sfreq)
     warmup_samples = settling_samples(sos) if warmup_seconds is None else int(round(warmup_seconds * sfreq))
@@ -713,4 +739,10 @@ def fit_evaluate(
             "lda_shrinkage": lda.shrinkage,
         },
     }
+    # An abort naming no cue in the recording is reported, not silently ignored. The key is
+    # only present when there is something to say, so earlier records keep their bytes.
+    cue_ids = {str(e[2]) for seg in segments for e in seg.events}
+    unknown = sorted(set().union(*(seg.aborted_trials for seg in segments)) - cue_ids)
+    if unknown:
+        record["warnings"] = [{"kind": "abort_names_unknown_trial", "trial_id": t} for t in unknown]
     return (record, fitted) if return_fitted else record

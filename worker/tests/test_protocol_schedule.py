@@ -44,4 +44,5 @@ def test_bad_inputs_are_refused():
     with pytest.raises(ValueError):
         ps.SplitMix64(1 << 64)
     with pytest.raises(ValueError):
-        ps.SplitMix64(0).below(0)
+        ps.SplitMix64(0).below(-1)
+    assert ps.SplitMix64(0).below(0) == 0xE220A8397B1DCDAF, "n = 0 is 2**64, as in Swift"

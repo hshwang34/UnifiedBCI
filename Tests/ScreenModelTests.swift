@@ -240,6 +240,15 @@ final class ScreenModelTests: XCTestCase {
         }
     }
 
+    /// Brief 005 PR 2: the worker's new exclusion reasons and their extra keys
+    /// (`gap_after_sample`, `gap_evidence`) and a top-level `warnings` list decode.
+    func testResultDetail_decodesProtocolExclusionsWithExtraKeys() throws {
+        let exclusions = #"[{"trial_id": "r-t03", "run_id": "r", "label": 0, "reason": "trial_aborted", "window_start_sample": 10, "window_stop_sample": 20}, {"trial_id": "r-t05", "run_id": "r", "label": 1, "reason": "window_spans_detected_gap", "window_start_sample": 30, "window_stop_sample": 40, "gap_after_sample": 33, "gap_evidence": "sequence_skip"}]"#
+        let m = try ResultDetailModel(stored: try stored(holdoutRuns: ["R1"], baCI: nil, diffCI: nil, exclusions: exclusions + #", "warnings": [{"kind": "abort_names_unknown_trial", "trial_id": "x"}]"#))
+        XCTAssertEqual(m.exclusions, ["Trial r-t03 (r, Left-fist cue (cue_left_fist)): trial was aborted",
+                                      "Trial r-t05 (r, Right-fist cue (cue_right_fist)): window or its filter warm-up spans a detected gap"])
+    }
+
     func testResultDetail_confusionCellsSplitAndExclusions() throws {
         let exclusions = #"[{"trial_id": "S001R04-t00", "run_id": "S001R04", "label": 1, "reason": "window_starts_before_filter_warmup", "window_start_sample": 0, "window_stop_sample": 1}]"#
         let m = try ResultDetailModel(stored: try stored(holdoutRuns: ["R1"], baCI: nil, diffCI: nil, exclusions: exclusions))

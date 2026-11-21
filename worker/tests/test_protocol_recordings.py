@@ -111,3 +111,42 @@ def test_malformed_detected_gaps_are_an_integrity_error(tmp_path):
     def edit2(m, rec_dir):
         m["segments"][0]["detectedGaps"] = {"evidence": "sequence_skip"}
     assert "detectedGaps" in expect_integrity(hostile_copy(tmp_path / "b", edit2))
+
+
+def test_a_pre_005_single_segment_recording_with_gaps_now_excludes_the_trials_it_touches(tmp_path):
+    """Behaviour change (brief 005): an ordinary one-segment recording made before this brief,
+    with counter gaps in its manifest, used to keep every trial. Now each trial whose window or
+    filter warm-up holds a data-gap sample is excluded and listed; provenance-only evidence
+    (receipt_interval, clock_anomaly) still excludes nothing."""
+    run = pipeline.make_synthetic_runs(n_runs=1, trials_per_run=12, n_channels=8, sfreq=SFREQ, seed=8)[0]
+    rid = str(uuid.UUID(int=8)).upper()
+    project = tmp_path / "gaps.bciproj"
+    rec_dir = project / "recordings" / rid
+    (rec_dir / "chunks").mkdir(parents=True)
+    (project / "project.json").write_text(json.dumps({"formatVersion": 1, "name": "g", "created": "2026-11-01T00:00:00.000Z"}))
+    raw = run.data.astype("<f8").tobytes()
+    (rec_dir / "chunks" / "000000.f64").write_bytes(raw)
+    ev = run.events
+    off, length = int(0.5 * SFREQ), int(2.0 * SFREQ)       # the default window below
+    gaps = [(ev[2][0] + off + 50, "sequence_skip"), (ev[4][0] + off + 1, "stale_half"),
+            (ev[6][0] + off + length - 2, "duplicate_counter"), (ev[8][0] + off - 30, "overflow_suspected"),
+            (ev[9][0] + off + 40, "receipt_interval"), (ev[10][0] + off + 40, "clock_anomaly")]
+    manifest = {"formatVersion": 1, "recordingID": rid, "sessionID": None, "runID": run.run_id, "source": {"kind": "brainflow"},
+                "timing": {"nominalSampleRateHz": SFREQ}, "channels": [{"id": f"ch{c:02d}", "sourceRow": c} for c in range(8)],
+                "chunks": [{"index": 0, "fileName": "chunks/000000.f64", "segment": 0, "firstSampleIndex": 0, "sampleCount": run.data.shape[1],
+                            "rowCount": 8, "sha256": hashlib.sha256(raw).hexdigest()}],
+                "segments": [{"index": 0, "runID": run.run_id, "sessionID": None,
+                              "detectedGaps": [{"afterSampleIndex": a, "evidence": e, "estimatedMissingSamples": None, "ambiguous": False} for a, e in gaps]}]}
+    (rec_dir / "recording.json").write_text(json.dumps(manifest))
+    (rec_dir / "events.jsonl").write_text("".join(json.dumps({
+        "eventID": str(uuid.uuid4()), "trialID": t, "label": LABELS["left"] if lab == 0 else LABELS["right"],
+        "sampleAssociation": {"recordingID": rid, "segment": 0, "sampleIndex": int(smp)}}) + "\n" for smp, lab, t in ev))
+    rec = project_io.open_recording(project, rid)
+    (seg,) = project_io.load_segments(rec, {LABELS["left"]: 0, LABELS["right"]: 1})
+    sos = pipeline.BandpassSpec().design(SFREQ)
+    epochs = pipeline.epoch_segments([seg], sos, (0.5, 2.0), pipeline.settling_samples(sos))
+    pinned = {(e["trial_id"], e["gap_evidence"]) for e in epochs.exclusions if e["reason"] == "window_spans_detected_gap"}
+    assert pinned == {(ev[2][2], "sequence_skip"), (ev[4][2], "stale_half"), (ev[6][2], "duplicate_counter"), (ev[8][2], "overflow_suspected")}
+    kept = set(epochs.trial_ids.tolist())
+    assert {ev[9][2], ev[10][2]} <= kept, "provenance-only evidence excludes nothing"
+    assert len(kept) + len(epochs.exclusions) == len(ev)

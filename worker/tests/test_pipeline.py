@@ -243,6 +243,44 @@ def test_a_run_whose_segments_disagree_on_session_is_refused():
         pipeline.fit_evaluate([segs[0], *parts, *segs[2:]], seed=20)
 
 
+def test_shared_run_ids_merge_only_for_consecutive_same_session_segments():
+    segs = small_runs(n_runs=4, trials_per_run=6, seed=20)
+    for s in segs:
+        s.session_id = None
+    segs[1].run_id = segs[0].run_id                   # two runs, one id, no session: as before
+    with pytest.raises(ValueError, match="duplicate run id 'run00'"):
+        pipeline.fit_evaluate(segs, seed=20)
+    segs = small_runs(n_runs=4, trials_per_run=6, seed=20)
+    for s in segs:
+        s.session_id = "S1"
+    segs[2].run_id = segs[0].run_id                   # same session but not consecutive
+    with pytest.raises(ValueError, match="not consecutive"):
+        pipeline.fit_evaluate(segs, seed=20)
+    segs = small_runs(n_runs=4, trials_per_run=6, seed=20)
+    for i, s in enumerate(segs):
+        s.session_id, s.segment_index = "S1", (0, 1, 5, 6)[i]
+    segs[2].run_id = segs[1].run_id                   # adjacent in the list, not in the manifest
+    with pytest.raises(ValueError, match="not consecutive"):
+        pipeline.fit_evaluate(segs, seed=20)
+
+
+def test_duplicate_trial_ids_are_refused():
+    segs = small_runs(n_runs=4, trials_per_run=6, seed=23)
+    sample, label, _ = segs[2].events[1]
+    segs[2].events[1] = (sample, label, segs[0].events[0][2])
+    with pytest.raises(ValueError, match="duplicate trial ids"):
+        pipeline.fit_evaluate(segs, seed=23)
+
+
+def test_an_abort_naming_no_cue_is_a_warning_and_absent_otherwise():
+    segs = small_runs(n_runs=4, trials_per_run=8, seed=21)
+    assert "warnings" not in pipeline.fit_evaluate(segs, seed=21)
+    for s in segs:
+        s.aborted_trials = frozenset({"ghost-t99", segs[0].events[0][2]})
+    out = pipeline.fit_evaluate(segs, seed=21)
+    assert out["warnings"] == [{"kind": "abort_names_unknown_trial", "trial_id": "ghost-t99"}]
+
+
 def test_aborted_trials_are_excluded_and_listed():
     segs = small_runs(n_runs=4, trials_per_run=8, seed=21)
     aborted = frozenset({segs[0].events[2][2], segs[3].events[5][2]})

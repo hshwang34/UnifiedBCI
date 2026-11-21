@@ -12,7 +12,7 @@ RNG behaviour can differ):
    `z = state; z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9; z = (z ^ (z >> 27)) *
    0x94D049BB133111EB; out = z ^ (z >> 31)`, all mod 2**64. The state starts at the run seed.
 2. `below(n)`: an unbiased integer in [0, n) by rejection. `t = (2**64 - n) % n`; draw `x`
-   until `x >= t`; return `x % n`. Always draws at least once.
+   until `x >= t`; return `x % n`. Always draws at least once; n == 0 means 2**64.
 3. Order: the class-balanced list (class 0 repeated N times, then class 1 N times), shuffled
    by Fisher-Yates from the end: for i = len-1 down to 1, j = below(i + 1), swap i and j.
 4. Rest: after the shuffle, one draw per trial in trial order,
@@ -48,8 +48,11 @@ class SplitMix64:
         return z ^ (z >> 31)
 
     def below(self, n: int) -> int:
-        if n < 1:
-            raise ValueError("n must be at least 1")
+        """Unbiased integer in [0, n); n == 0 stands for 2**64 (one raw draw), as in Swift."""
+        if not 0 <= n <= MASK:
+            raise ValueError("n must be an unsigned 64-bit integer")
+        if n == 0:
+            return self.next()
         threshold = ((1 << 64) - n) % n
         while True:
             x = self.next()

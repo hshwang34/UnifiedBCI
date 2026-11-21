@@ -129,6 +129,8 @@ enum EvidenceText {
         case "window_starts_before_filter_warmup": return "window starts before filter warm-up"
         case "window_starts_before_segment": return "window starts before the recording"
         case "window_exceeds_segment": return "window runs past the end of the recording"
+        case "trial_aborted": return "trial was aborted"
+        case "window_spans_detected_gap": return "window or its filter warm-up spans a detected gap"
         default: return code.replacingOccurrences(of: "_", with: " ")
         }
     }
