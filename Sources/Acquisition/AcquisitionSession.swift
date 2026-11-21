@@ -96,6 +96,10 @@ public actor AcquisitionSession {
         public var gaps: [RecordingManifest.Gap]
         /// Monotonic and wall clock read together at drain (BrainFlow buffer wait).
         public var clockPair: RecordingWriter.ClockPair?
+        /// The recording segment this chunk was submitted to (its manifest index), or nil when
+        /// nothing records it (between protocol runs, no recording). A live run uses it to
+        /// window exactly the samples the replay check reads back.
+        public var recordedSegment: Int?
     }
 
     public enum SessionError: Error, Equatable {
@@ -114,6 +118,8 @@ public actor AcquisitionSession {
     private nonisolated let inferenceSinks = Mutex<[UUID: AsyncStream<InferenceFrame>.Continuation]>([:])
     /// Samples drained in the current stream segment (the next frame's `firstSample`).
     private var segmentSamples = 0
+    /// The open recording segment's manifest index (counts every `beginSegment`).
+    private var recordingSegment = 0
 
     /// Subscribes a live-inference consumer. Never blocks the drain: each subscriber has its
     /// own buffer of `buffer` frames (≈ 50 ms each) that drops the oldest when full.
@@ -274,6 +280,7 @@ public actor AcquisitionSession {
             throw SessionError.streamEnded
         }
         writer = w
+        recordingSegment = 0
         recordingConfiguration = configuration
         published.withLock { $0.recordingEndedByReconnect = nil }
         power?.release()
@@ -364,6 +371,7 @@ public actor AcquisitionSession {
         if let w = writer {
             guard betweenRuns else { throw SessionError.alreadyRecording }
             betweenRuns = false
+            recordingSegment += 1
             w.beginSegment(startedAtWall: Date(), startedAtMonotonicNanos: HostMonotonicClock.nowNanos(), runID: runID)
             published.withLock { $0.runSegmentOpen = true }
             return w.recordingID
@@ -441,7 +449,8 @@ public actor AcquisitionSession {
         if chunk.count > 0 {
             lastSampleNanos = chunk.drainedAtMonotonicNanos
             previewSink.yield(.init(segment: health.health.segment, chunk: chunk))
-            let frame = InferenceFrame(segment: health.health.segment, firstSample: segmentSamples, chunk: chunk, gaps: block.gaps, clockPair: block.clockPair)
+            let frame = InferenceFrame(segment: health.health.segment, firstSample: segmentSamples, chunk: chunk, gaps: block.gaps, clockPair: block.clockPair,
+                                       recordedSegment: writer != nil && !betweenRuns ? recordingSegment : nil)
             segmentSamples += chunk.count
             inferenceSinks.withLock { sinks in for sink in sinks.values { sink.yield(frame) } }
             if let w = writer, !betweenRuns, case .refused = w.submit(block) {
@@ -499,6 +508,7 @@ public actor AcquisitionSession {
                         // Its last segment already ended `disconnect`.
                         _ = finish(w, .disconnect)
                     } else if !betweenRuns {
+                        recordingSegment += 1
                         w.beginSegment(startedAtWall: Date(), startedAtMonotonicNanos: HostMonotonicClock.nowNanos())
                     }
                 }

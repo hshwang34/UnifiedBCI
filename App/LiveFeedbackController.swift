@@ -8,7 +8,12 @@ import Observation
 @MainActor
 @Observable
 final class LiveFeedbackController {
-    enum Phase: Equatable { case running, stopping, ended }
+    enum Phase: Equatable { case running, stopping, checking, ended }
+
+    /// Replays a recording through a model and returns the replay's predictions, or why not
+    /// (`ProjectSession` uses `ReplayRunner`; tests their own).
+    typealias Replay = @MainActor (ModelRecord, UUID, Double, Double) async -> Result<[PredictionRecord], ReplayFailure>
+    struct ReplayFailure: Error, Equatable { let reason: String }
 
     let model: ModelRecord
     let protocolRecord: ProtocolRecord
@@ -26,14 +31,19 @@ final class LiveFeedbackController {
     private(set) var runIDs: [String] = []
     private(set) var summary: LiveRunRecord.Summary?
     private(set) var latency: LiveRunRecord.LatencySummary?
+    private(set) var replayCheck: LiveRunRecord.ReplayCheck?
+    /// Why the live-vs-replay check didn't run, if it didn't.
+    private(set) var checkProblem: String?
 
     @ObservationIgnored private let runner: LiveInferenceRunner
+    @ObservationIgnored private let writer: LiveRunWriter
+    @ObservationIgnored private let store: ProjectStore
     @ObservationIgnored private var tasks: [Task<Void, Never>] = []
 
     private init(model: ModelRecord, protocolRecord: ProtocolRecord, policy: FeedbackPolicy, liveRunID: UUID, recordingID: UUID,
-                 runner: LiveInferenceRunner) {
+                 runner: LiveInferenceRunner, writer: LiveRunWriter, store: ProjectStore) {
         self.model = model; self.protocolRecord = protocolRecord; self.policy = policy
-        self.liveRunID = liveRunID; self.recordingID = recordingID; self.runner = runner
+        self.liveRunID = liveRunID; self.recordingID = recordingID; self.runner = runner; self.writer = writer; self.store = store
         feed = FeedbackFeed(directions: FeedbackFeed.directions(classes: protocolRecord.classes, modelLabels: model.classLabels))
     }
 
@@ -47,9 +57,10 @@ final class LiveFeedbackController {
                                    abstainThreshold: policy.threshold, staleLimitMillis: policy.staleLimitMillis, startedAt: Date())
         let writer = try await store.createLiveRun(record)
         let rows = request.channels.map(\.sourceRow)
-        let config = LiveInferenceRunner.Configuration(model: model, arraysPath: await store.arraysURL(for: model).path, channelRows: rows,
+        var config = LiveInferenceRunner.Configuration(model: model, arraysPath: await store.arraysURL(for: model).path, channelRows: rows,
                                                        channelIDs: request.channels.map(\.id), sampleRateHz: Double(board.samplingRate),
                                                        timestampRow: board.timestampRow, markerRow: board.markerRow, policy: policy)
+        config.recordedOnly = true
         let runner = LiveInferenceRunner(configuration: config, launch: launch, writer: writer, sourceState: { session.snapshot.state })
         do {
             try await runner.start(source: session)
@@ -64,7 +75,7 @@ final class LiveFeedbackController {
             throw error
         }
         let c = LiveFeedbackController(model: model, protocolRecord: protocolRecord, policy: policy, liveRunID: record.liveRunID,
-                                       recordingID: recordingID, runner: runner)
+                                       recordingID: recordingID, runner: runner, writer: writer, store: store)
         c.wire()
         return c
     }
@@ -104,21 +115,38 @@ final class LiveFeedbackController {
         }
     }
 
-    /// Ends the live run: the runner closes its worker session and writes the summaries.
-    func stop() async {
+    /// Ends the live run: the runner closes its worker session; then (with `replay`, once the
+    /// recording has ended) the recording is replayed through the model and compared with
+    /// what was logged live; `run.json` is written once, with the summaries and the check.
+    func stop(replay: Replay? = nil) async {
         guard phase == .running else { return }
         phase = .stopping
-        let (summary, latency) = await runner.stop(runIDs: runIDs)
+        let (summary, latency) = await runner.stop(runIDs: runIDs, finishing: false)
         feed.finish()
         tasks.forEach { $0.cancel() }
         tasks = []
         status = runner.status
         self.summary = summary
         self.latency = latency
+        if let replay, !runIDs.isEmpty {
+            phase = .checking
+            let cue = Double(protocolRecord.timing.cueMs) / 1000
+            switch await replay(model, recordingID, policy.threshold, cue) {
+            case .success(let replayed):
+                let (store, id) = (store, liveRunID)
+                let live = await Task.detached { try? await store.predictions(liveRun: id).records }.value ?? []
+                replayCheck = LiveReplayCheck.compare(live: live, replay: replayed)
+            case .failure(let f):
+                checkProblem = f.reason
+            }
+        } else if runIDs.isEmpty {
+            checkProblem = LiveRunCopy.noRunsChecked
+        }
+        try? await writer.finish(endedAt: Date(), summary: summary, latency: latency, replayCheck: replayCheck, runIDs: runIDs)
         phase = .ended
     }
 
-    /// Window closing or quit: stop without waiting for the caller.
+    /// Window closing or quit: stop without the check.
     func tearDown() { if phase == .running { Task { await stop() } } }
 }
 

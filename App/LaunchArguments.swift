@@ -59,6 +59,14 @@ import Foundation
 ///                                              operator panel and the participant window mid-run),
 ///                                              "run-summary", then evaluates the recording:
 ///                                              "run-evaluated"
+///     -BCILiveTest N                           with -BCIConnectSource: a live run of N trials per class
+///                                              with feedback (brief 006). Uses a frozen model matching
+///                                              the stream, else first records three short runs on it,
+///                                              evaluates them with a 2 s window and freezes that.
+///                                              Snapshots "live-setup", "live-instructions",
+///                                              "live-feedback" (participant bar + operator view mid-run),
+///                                              "live-run-done", "live-card", "live-card-full",
+///                                              "live-result" (the card under its source result)
 ///     -BCIFreezeAndReplay YES                  with -BCIAutoEvaluate: Freeze for live use… on the
 ///                                              first result ("freeze-sheet"), freeze it, the model
 ///                                              under Pipelines ("pipelines-models"), Replay… over its
@@ -120,17 +128,6 @@ enum LaunchArguments {
         return RecordingTab.allCases.first { $0.rawValue.lowercased() == raw.lowercased() }
         #else
         return nil
-        #endif
-    }
-
-    /// `-BCILiveFeedbackPreview YES` (brief 006 PR 7, until PR 8 adds Live Test setup):
-    /// Start run… becomes a live run with the newest frozen model, and Live Test shows its
-    /// operator view.
-    static var liveFeedbackPreview: Bool {
-        #if DEBUG
-        return UserDefaults.standard.bool(forKey: "BCILiveFeedbackPreview")
-        #else
-        return false
         #endif
     }
 
@@ -533,10 +530,17 @@ enum LaunchArguments {
         draft.timing = .init(fixationMs: 1000, cueMs: 4000, restMinMs: 1000, restMaxMs: 1500)
         draft.trialsPerClass = min(max(trialsPerClass, 1), 100)
         draft.runsPerSession = 1
-        guard let form = await startForm(session, draft) else { return }
-        await session.startLiveRuns(form, model: model, policy: FeedbackPolicy())
-        guard let runs = session.runs, let live = session.liveFeedback else { return await snap("live-refused", .seconds(1)) }
+        guard let created = try? await session.store.createProtocolVersion(draft, basedOn: nil) else { return }
         session.section = .liveTest
+        session.selectedLiveRunID = nil
+        session.liveRunForm = nil
+        await session.prepareLiveSetup(operatorScreen: NSApp.windows.first { $0.title == session.name }?.screen)
+        session.liveRunForm?.pick(created.protocolID)
+        session.liveRunForm?.seedText = "20261121"
+        session.liveTestForm.modelID = model.modelID
+        await snap("live-setup", .seconds(1.5))
+        await session.startLiveFromSetup()
+        guard let runs = session.runs, let live = session.liveFeedback else { return await snap("live-refused", .seconds(1)) }
         await snap("live-instructions", .seconds(1.5))
         runs.begin()
         while !live.status.display.isShown, runs.isRunActive { try? await Task.sleep(for: .milliseconds(20)) }
@@ -544,7 +548,17 @@ enum LaunchArguments {
         await runs.awaitRun()
         await snap("live-run-done", .seconds(2))
         await session.finishRuns()
-        await snap("live-finished", .seconds(1))
+        await snap("live-card", .seconds(2))
+        if let window = NSApp.windows.first(where: { $0.title == session.name }) {
+            let frame = window.frame
+            window.setFrame(NSRect(x: frame.minX, y: frame.maxY - 1500, width: frame.width, height: 1500), display: true)
+            await snap("live-card-full", .seconds(1.5))
+            session.section = .results
+            session.selectedResultID = model.sourceResultID
+            window.setFrame(NSRect(x: frame.minX, y: frame.maxY - 2900, width: frame.width, height: 2900), display: true)
+            await snap("live-result", .seconds(2.5))
+            window.setFrame(frame, display: true)
+        }
     }
 
     /// Start run…'s form for a new version of `draft` (created here), seed fixed.

@@ -74,8 +74,7 @@ struct RecentProject: Identifiable, Equatable {
 
 // MARK: - Sidebar
 
-/// The project window's sidebar, in the spec's order. Live Test is present but empty until
-/// phase 3.
+/// The project window's sidebar, in the spec's order. Every section is real since brief 006.
 enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
     case recordings, protocols, pipelines, results, liveTest
 
@@ -104,13 +103,8 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
     /// Whether the row carries a count badge (recordings, results).
     var showsCount: Bool { self == .recordings || self == .results }
 
-    /// The `ContentUnavailableView` copy for sections that arrive in later phases.
-    var placeholder: String? {
-        switch self {
-        case .liveTest: return "Live Test arrives in phase 3. Needs a frozen pipeline from phase 2."
-        default: return nil
-        }
-    }
+    /// The `ContentUnavailableView` copy for sections that arrive in later phases (none now).
+    var placeholder: String? { nil }
 
     static let statusLine = "No hardware connected · Replay mode"
 }

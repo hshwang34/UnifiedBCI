@@ -96,7 +96,7 @@ final class LiveScreenTests: XCTestCase {
         XCTAssertTrue(LiveScreenModel.emptyRecordings.contains("New Recording…"))
         // Protocols is a real section since brief 005; Live Test still arrives later (brief 006).
         XCTAssertNil(SidebarSection.protocols.placeholder)
-        XCTAssertTrue(SidebarSection.liveTest.placeholder!.contains("arrives"))
+        XCTAssertNil(SidebarSection.liveTest.placeholder, "Live Test is real since brief 006")
     }
 
     func testLiveRecordingTitle_namesSourceAndStart() throws {
