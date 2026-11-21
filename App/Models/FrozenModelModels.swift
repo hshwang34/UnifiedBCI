@@ -7,12 +7,23 @@ import Foundation
 enum ModelErrorText {
     static let modelCodes: Set<String> = ["invalid_model", "channel_mismatch"]
 
+    /// Why `t` can't be an abstention threshold, or nil. Model confidence is always at
+    /// least 0.5, so anything below would never abstain and 1 would always abstain.
+    static func thresholdProblem(_ t: Double) -> String? {
+        guard t.isFinite, t >= 0.5, t < 1 else {
+            return "The abstention threshold must be at least 0.50 and below 1.00 (model confidence is never below 0.50)."
+        }
+        return nil
+    }
+
     static func describe(code: String, message: String) -> String {
         switch code {
         case "invalid_model":
             return message.contains("changed since it was frozen")
                 ? "This model's file changed since it was frozen, so it can't be trusted. Freeze the result again."
                 : "This model can't be used: its stored arrays failed the check (\(message))."
+        case "invalid_threshold":
+            return message
         case "channel_mismatch":
             return "This recording doesn't match the model: \(message.replacingOccurrences(of: "channels differ from the model: ", with: "")). "
                 + "Nothing is reordered or resampled."

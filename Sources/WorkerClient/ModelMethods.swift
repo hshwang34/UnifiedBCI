@@ -132,6 +132,8 @@ public struct LiveCue: Sendable, Equatable { public var sample: Int; public var 
 extension WorkerClient {
     /// Mirrors main.py `MAX_PUSH_SAMPLES`.
     public static let maxPushSamples = 512
+    /// Mirrors streaming.py `DEFAULT_HOP_SAMPLES` (128 ms at 125 Hz); sent explicitly.
+    public static let hopSamples = 16
 
     static func snakeDecoder() -> JSONDecoder {
         let d = JSONDecoder()
@@ -159,6 +161,7 @@ extension WorkerClient {
             // Labels as the evaluation named them: lda class 0 is `left` (ProjectStore.freeze).
             "labels": .object(["left": .string(model.classLabels[0]), "right": .string(model.classLabels[1])]),
             "abstain_threshold": .double(abstainThreshold), "predictions_path": .string(predictionsPath.path),
+            "hop_samples": .int(Self.hopSamples),
         ]
         if let cueLengthSeconds { params["cue_length_s"] = .double(cueLengthSeconds) }
         let data = try await call("replay_recording", params: params, timeout: timeout, requestID: requestID)
@@ -173,7 +176,7 @@ extension WorkerClient {
             "expected_channel_ids": .array(model.expectedChannelIDs.map { .string($0) }),
             "expected_sample_rate_hz": .double(model.expectedSampleRateHz),
             "window": .object(["offset_s": .double(model.window.offsetSeconds), "length_s": .double(model.window.lengthSeconds)]),
-            "warmup_samples": .int(model.warmupSamples),
+            "warmup_samples": .int(model.warmupSamples), "hop_samples": .int(Self.hopSamples),
         ]
         return try Self.snakeDecoder().decode(LiveSessionInfo.self, from: try await call("live_open", params: params, timeout: timeout))
     }
@@ -185,6 +188,11 @@ extension WorkerClient {
                          timeout: Duration = .seconds(1)) async throws -> [LivePushResult] {
         guard let n = rows.first?.count, n > 0, rows.allSatisfy({ $0.count == n }) else {
             throw WorkerError(code: "bad_request", message: "live push needs channel rows of one non-zero length")
+        }
+        // Refused here, before any piece is sent: a non-finite value found by the worker in a
+        // later piece would leave the session half-advanced.
+        guard rows.allSatisfy({ $0.allSatisfy(\.isFinite) }) else {
+            throw WorkerError(code: "bad_request", message: "live push holds non-finite samples; nothing was sent")
         }
         guard gaps.allSatisfy({ (firstSample - 1..<firstSample + n).contains($0.afterSample) }) else {
             throw WorkerError(code: "bad_request", message: "a gap lies outside the pushed chunk")

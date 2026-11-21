@@ -25,6 +25,10 @@ public final class ReplayRunner {
 
     public private(set) var state: State = .idle
     public private(set) var lastReplay: LiveRunRecord?
+    /// Set when `cancel()` arrives while the replay is being stored: storing is short and
+    /// finishes cleanly (a half-stored replay can't exist), so the cancel is refused and
+    /// this says so. Cleared on the next replay.
+    public private(set) var cancelNotice: String?
     public let store: ProjectStore
     public let callTimeout: Duration
 
@@ -45,7 +49,11 @@ public final class ReplayRunner {
 
     /// Validates the result's fitted arrays in the worker, then freezes them (decision #38).
     /// Throws `WorkerError` (`invalid_model` and the rest) or a store refusal.
+    /// Refused while a replay runs, so it can never discard the client that replay uses.
     public func freeze(result: StoredResult, role: ModelRole, name: String) async throws -> ModelRecord {
+        guard !isBusy else { throw WorkerError(code: "busy", message: "a replay is running; freeze when it has finished") }
+        isBusy = true
+        defer { isBusy = false }
         let client = try await readyClient()
         let arrays = await store.fittedArraysURL(pipelineID: result.pipeline.pipelineID)
         do {
@@ -66,8 +74,10 @@ public final class ReplayRunner {
     @discardableResult
     public func replay(model: ModelRecord, recordingID: UUID, abstainThreshold: Double = 0.6, cueLengthSeconds: Double? = nil) async -> State {
         guard !isBusy else { return state }
+        if let problem = ModelErrorText.thresholdProblem(abstainThreshold) { return finish(.refused(code: "invalid_threshold", message: problem)) }
         isBusy = true
         cancelRequested = false
+        cancelNotice = nil
         defer { isBusy = false; currentRequestID = nil }
         state = .running(.starting)
         let client: WorkerClient
@@ -105,7 +115,7 @@ public final class ReplayRunner {
             let predictions = try await Task.detached { try Self.readPredictions(file, model: model, threshold: abstainThreshold) }.value
             let handle = try await store.recording(id: recordingID)
             let record = LiveRunRecord(kind: .replay, modelID: model.modelID, recordingID: recordingID,
-                                       runIDs: Array(Set(handle.manifest.segments.map(\.runID))).sorted(), hopSamples: 16,
+                                       runIDs: Array(Set(handle.manifest.segments.map(\.runID))).sorted(), hopSamples: WorkerClient.hopSamples,
                                        abstainThreshold: abstainThreshold, staleLimitMillis: nil, startedAt: started, endedAt: Date(),
                                        parity: Self.parity(report, predictions: predictions), summary: Self.summary(predictions))
             try await store.storeReplay(record, predictions: predictions)
@@ -118,6 +128,10 @@ public final class ReplayRunner {
 
     public func cancel() {
         guard isBusy, !cancelRequested else { return }
+        if state == .running(.storing) {
+            cancelNotice = "The replay is being saved and can't be cancelled now."
+            return
+        }
         cancelRequested = true
         guard let client, let id = currentRequestID else { return }
         Task { _ = try? await client.cancel(requestID: id) }
@@ -136,16 +150,20 @@ public final class ReplayRunner {
 
     /// A worker prediction as a `PredictionRecord`: abstain below `threshold` (decision #39)
     /// or for any window without a valid score; otherwise the class the score favours.
+    /// Throws when the worker's class disagrees with the sign of its own score.
     nonisolated static func record(_ p: WorkerPrediction, model: ModelRecord, threshold: Double, sequence: Int,
-                                   emittedAt: Int64? = nil) -> PredictionRecord {
+                                   emittedAt: Int64? = nil) throws -> PredictionRecord {
         let validity = Validity(rawValue: p.validity) ?? .invalidInput
+        if let s = p.score, let k = p.predictedClass, k != (s > 0 ? 1 : 0) {
+            throw WorkerError(code: "protocol_mismatch", message: "prediction \(sequence): class \(k) disagrees with score \(s)")
+        }
         var action = PredictionRecord.Action.abstain
         if validity == .valid, let s = p.score, let c = p.confidence, c >= threshold { action = .chosen(model.classLabels[s > 0 ? 1 : 0]) }
         return PredictionRecord(
             pipelineID: model.sourcePipelineID, inputSegment: p.segment ?? 0,
             inputSampleRange: .init(start: p.windowStart, count: max(0, p.windowStop - p.windowStart)), score: p.score, validity: validity,
             emittedAtMonotonicNanos: emittedAt, action: action, feedbackPresentedAtMonotonicNanos: nil, sequence: sequence,
-            validityDetail: p.detail, confidence: p.confidence, windowKind: p.kind, trialID: p.trialId, feedbackEligible: p.feedbackEligible,
+            validityDetail: p.detail, confidence: p.confidence, windowKind: p.kind, trialID: p.trialId, predictedClass: p.predictedClass, feedbackEligible: p.feedbackEligible,
             offline: p.offline.map { .init(validity: Validity(rawValue: $0.validity) ?? .invalidInput, score: $0.score) })
     }
 
@@ -155,7 +173,7 @@ public final class ReplayRunner {
         }
         let decoder = WorkerClient.snakeDecoder()
         return try data.split(separator: 0x0A).enumerated().map { i, line in
-            record(try decoder.decode(WorkerPrediction.self, from: line), model: model, threshold: threshold, sequence: i)
+            try record(try decoder.decode(WorkerPrediction.self, from: line), model: model, threshold: threshold, sequence: i)
         }
     }
 
@@ -174,7 +192,8 @@ public final class ReplayRunner {
         let cueLocked = predictions.filter { $0.windowKind == "cue_locked" && $0.offline != nil }.count
         return .init(passed: r.passed, windowsCompared: r.windowsCompared, deviations: deviations, boundaryWindows: r.boundaryWindows.count,
                      firstValidWindowStop: firstValid, chunkings: r.chunkings.map { "\($0.chunking)" }, cueLockedCompared: cueLocked,
-                     mismatches: Array(mismatches.prefix(LiveRunRecord.ParityReport.maxMismatches)))
+                     mismatches: Array(mismatches.prefix(LiveRunRecord.ParityReport.maxMismatches)),
+                     storedChunking: r.chunkings.first.map { "\($0.chunking)" })
     }
 
     nonisolated static func summary(_ predictions: [PredictionRecord]) -> LiveRunRecord.Summary {

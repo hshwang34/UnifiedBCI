@@ -61,6 +61,8 @@ final class ReplayRunnerTests: XCTestCase {
         XCTAssertEqual(parity.firstValidWindowStop.count, 3, "one per segment")
         XCTAssertGreaterThan(parity.cueLockedCompared ?? 0, 0, "cue-locked trial windows are compared too")
         XCTAssertEqual(parity.mismatches, [])
+        XCTAssertEqual(parity.storedChunking, "1")
+        XCTAssertEqual(stored.hopSamples, WorkerClient.hopSamples)
 
         let preds = try await store.predictions(liveRun: id).records
         XCTAssertEqual(preds.map(\.sequence), Array(0..<preds.count).map { $0 })
@@ -71,6 +73,7 @@ final class ReplayRunnerTests: XCTestCase {
         let valid = preds.filter { $0.validity == .valid }
         XCTAssertFalse(valid.isEmpty)
         XCTAssertTrue(valid.allSatisfy { ($0.confidence ?? 0) >= 0.5 })
+        XCTAssertTrue(valid.allSatisfy { $0.predictedClass == (($0.score ?? 0) > 0 ? 1 : 0) }, "the worker's class is stored")
         XCTAssertTrue(valid.allSatisfy { $0.action.kind == (($0.confidence ?? 0) >= 0.6 ? .class : .abstain) })
         XCTAssertTrue(preds.filter { $0.validity != .valid }.allSatisfy { $0.action == .abstain })
 
@@ -113,6 +116,12 @@ final class ReplayRunnerTests: XCTestCase {
         XCTAssertEqual(code2, "invalid_model")
         XCTAssertEqual(ModelErrorText.describe(code: code2, message: message2),
                        "This model's file changed since it was frozen, so it can't be trusted. Freeze the result again.")
+        for t in [0.4, 1.0, Double.nan] {
+            let bad = await runner.replay(model: model, recordingID: recordingID, abstainThreshold: t)
+            guard case .refused("invalid_threshold", let words) = bad else { return XCTFail("\(t): \(bad)") }
+            XCTAssertEqual(ModelErrorText.describe(code: "invalid_threshold", message: words),
+                           "The abstention threshold must be at least 0.50 and below 1.00 (model confidence is never below 0.50).")
+        }
         let stored = try await store.liveRuns().runs
         XCTAssertEqual(stored, [], "a refused replay stores nothing")
     }
@@ -147,6 +156,18 @@ final class ReplayRunnerTests: XCTestCase {
         let hops = results.flatMap(\.predictions).filter { $0.kind == "hop" }
         XCTAssertTrue((80...82).contains(hops.count), "a window every 16 samples: \(hops.count)")
         XCTAssertTrue(hops.contains { $0.detail == "window_spans_detected_gap" }, "the gap travelled with its piece")
+        // A non-finite value anywhere is refused before any piece is sent: the session stays
+        // where it was and the next push continues at sample 1,300.
+        var poisoned = rows
+        poisoned[3][900] = .nan
+        do {
+            _ = try await client.livePush(session: info.session, segment: 0, firstSample: 1_300, rows: poisoned)
+            XCTFail("non-finite samples are refused")
+        } catch let error as WorkerError {
+            XCTAssertEqual(error.code, "bad_request")
+        }
+        let more = try await client.livePush(session: info.session, segment: 0, firstSample: 1_300, rows: rows.map { Array($0.prefix(16)) })
+        XCTAssertEqual(more.map(\.nSamples), [1_316])
         _ = try await client.liveClose(session: info.session)
         do {
             _ = try await client.livePush(session: info.session, segment: 0, firstSample: 1_300, rows: rows)
@@ -154,6 +175,26 @@ final class ReplayRunnerTests: XCTestCase {
         } catch let error as WorkerError {
             XCTAssertEqual(error.code, "bad_request")
         }
+    }
+
+    func testFreezeIsRefusedWhileAReplayRuns_andAClassThatDisagreesWithItsScoreIsAnError() async throws {
+        let result = try await evaluated()
+        let runner = try makeRunner()
+        let model = try await runner.freeze(result: result, role: .reference, name: "R")
+        let replay = Task { await runner.replay(model: model, recordingID: recordingID) }
+        while !runner.isBusy { await Task.yield() }
+        do {
+            _ = try await runner.freeze(result: result, role: .baseline, name: "B")
+            XCTFail("freeze waits for the replay")
+        } catch let error as WorkerError {
+            XCTAssertEqual(error.code, "busy")
+        }
+        guard case .done = await replay.value else { return XCTFail("\(runner.state)") }
+
+        let line = #"{"segment":0,"kind":"hop","window_start":0,"window_stop":16,"validity":"valid","detail":null,"score":0.7,"#
+            + #""confidence":0.67,"predicted_class":0,"trial_id":null,"feedback_eligible":false,"gap":null}"#
+        let p = try WorkerClient.snakeDecoder().decode(WorkerPrediction.self, from: Data(line.utf8))
+        XCTAssertThrowsError(try ReplayRunner.record(p, model: model, threshold: 0.6, sequence: 0))
     }
 
     func testFreezeSheetCopy() throws {
