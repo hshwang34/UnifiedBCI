@@ -133,25 +133,41 @@ targets:
       - name: Generate and copy the Demo playback file
         # Decision #42: the bundled example's run S001R04 as a Cyton+Daisy playback CSV plus
         # its provenance sidecar (worker/tools/make_demo_playback.py; ~2.3 MB, never committed).
-        # Regenerated only when an input is newer than the stamp; the tool itself rewrites a
-        # file only on change. Without uv (or if it fails) the build goes on with a warning and
-        # the sheet shows the Demo as unavailable. scripts/release.sh requires it.
+        # Regenerated only when an input is newer than the stamp (the tool also rewrites a file
+        # only on change). If it can't be regenerated (no uv, or the tool failed), nothing
+        # stale is copied: the app's Demo/ is removed and the sheet shows the Demo as
+        # unavailable. A missing input is a broken checkout and fails the build.
+        # scripts/release.sh generates it up front and requires it.
         script: |
           export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
           OUT="$SRCROOT/build/demo"
           DST="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Demo"
           STAMP="$OUT/.inputs.stamp"
-          INPUTS="$SRCROOT/worker/tools/make_demo_playback.py $SRCROOT/worker/uv.lock $SRCROOT/worker/src/bciworkspace_worker/project_io.py $SRCROOT/App/Resources/ExampleProject"
-          if [ ! -f "$STAMP" ] || [ -n "$(find $INPUTS -newer "$STAMP" -print -quit)" ]; then
+          TOOL="$SRCROOT/worker/tools/make_demo_playback.py"
+          LOCK="$SRCROOT/worker/uv.lock"
+          IO="$SRCROOT/worker/src/bciworkspace_worker/project_io.py"
+          EXAMPLE="$SRCROOT/App/Resources/ExampleProject"
+          FRESH=0
+          if [ -f "$STAMP" ]; then
+            if ! CHANGED="$(find "$TOOL" "$LOCK" "$IO" "$EXAMPLE" -newer "$STAMP" -print -quit)"; then
+              echo "error: Demo inputs missing or unreadable (find failed); is the checkout complete?"
+              exit 1
+            fi
+            [ -z "$CHANGED" ] && FRESH=1
+          fi
+          if [ "$FRESH" = 0 ]; then
             if command -v uv >/dev/null && (cd "$SRCROOT/worker" && uv run --frozen python tools/make_demo_playback.py --out "$OUT"); then
               touch "$STAMP"
+              FRESH=1
             else
-              echo "warning: Demo playback file not generated (needs uv: brew install uv); the Demo source is unavailable in this build"
+              echo "warning: Demo playback file not generated (needs uv: brew install uv). The Demo source is unavailable in this build; no stale copy is bundled."
             fi
           fi
-          if [ -d "$OUT" ]; then
+          if [ "$FRESH" = 1 ]; then
             mkdir -p "$DST"
             rsync -a --delete --exclude '.*' "$OUT/" "$DST/"
+          else
+            rm -rf "$DST"
           fi
         basedOnDependencyAnalysis: false
 

@@ -348,6 +348,9 @@ enum ConnectSheetModel {
     static let configurationHeader = "Requested vs readback"
     static let columns = ("Channel", "Requested", "Readback")
     static let differs = "Readback differs from requested"
+    static let sectionPicker = "Section"
+    static let unknownVersion = "unknown"
+    static func channelName(_ n: Int) -> String { "Channel \(n)" }
 
     enum Tab: String, CaseIterable, Identifiable {
         case board = "Board", channelMap = "Channel map"

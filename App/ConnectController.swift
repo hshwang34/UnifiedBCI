@@ -13,6 +13,10 @@ final class ConnectController: Identifiable {
     private(set) var source: ConnectSource?
     private(set) var snapshot = AcquisitionSession.Snapshot()
     private(set) var hasStreamed = false
+    /// A Connect is in flight (its button is disabled until it returns).
+    private(set) var isConnecting = false
+    /// Set by `close()`; a Connect still in flight then releases what it opened.
+    private(set) var isClosed = false
     var tab: ConnectSheetModel.Tab = .board
 
     // Channel-map editor (decision #31).
@@ -25,6 +29,8 @@ final class ConnectController: Identifiable {
     private(set) var mapMessage: String?
 
     let demoFile: URL?
+    /// Read once: the identity panel shows it, and `body` must not call into BrainFlow.
+    let brainflowVersion = (try? BrainFlowBoard.libraryVersion()) ?? ConnectSheetModel.unknownVersion
     @ObservationIgnored private let store: ProjectStore
     @ObservationIgnored private let projectDirectory: URL
     @ObservationIgnored private(set) var session: AcquisitionSession?
@@ -56,7 +62,9 @@ final class ConnectController: Identifiable {
     func refresh() async {
         let scan = scan
         let found = await Task.detached(priority: .userInitiated) { scan() }.value
-        if case .serial(let p)? = selected, !found.contains(where: { $0.path == p.path }) {
+        // A port a session is using stays selected; the session reports its own loss.
+        let inUse = session != nil && !canPickSource
+        if !inUse, case .serial(let p)? = selected, !found.contains(where: { $0.path == p.path }) {
             gonePort = p
             selectedID = nil
         } else if let gone = gonePort, found.contains(where: { $0.path == gone.path }) {
@@ -87,8 +95,11 @@ final class ConnectController: Identifiable {
     }
 
     func connect() async {
-        guard let picked = selected, isAvailable(picked), let acquisition = acquisitionSource(picked) else { return }
+        guard !isClosed, !isConnecting, let picked = selected, isAvailable(picked), let acquisition = acquisitionSource(picked) else { return }
+        isConnecting = true
+        defer { isConnecting = false }
         await session?.disconnect()
+        guard !isClosed else { return }
         let s = AcquisitionSession(source: acquisition, projectDirectory: projectDirectory)
         session = s
         source = picked
@@ -96,6 +107,13 @@ final class ConnectController: Identifiable {
         choice = .none
         startPolling()
         await s.connect()
+        // Closed while the board was opening: `close()` may have run before `s` existed
+        // or while it prepared, so release it here too (disconnect is idempotent).
+        if isClosed {
+            poll?.cancel()
+            await s.disconnect()
+            return
+        }
         sync()
     }
 
@@ -109,6 +127,7 @@ final class ConnectController: Identifiable {
 
     /// Disconnects (stopping a stream) and stops polling; the sheet calls it on dismiss.
     func close() async {
+        isClosed = true
         poll?.cancel()
         await session?.disconnect()
     }
@@ -117,7 +136,8 @@ final class ConnectController: Identifiable {
         poll?.cancel()
         poll = Task { [weak self] in
             while !Task.isCancelled {
-                self?.sync()
+                guard let self else { return }
+                self.sync()
                 try? await Task.sleep(for: .milliseconds(200))
             }
         }

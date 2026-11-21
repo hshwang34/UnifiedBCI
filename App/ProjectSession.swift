@@ -114,9 +114,12 @@ final class ProjectSession: Identifiable {
     /// The open Connect sheet (brief 004 PR 5); Debug-only entry points until PR 6.
     var connectSheet: ConnectController?
 
+    #if DEBUG
+    // Debug-only until PR 6 wires New Recording… and the welcome button.
     func showConnectSheet() {
         if connectSheet == nil { connectSheet = ConnectController(store: store, projectDirectory: url) }
     }
+    #endif
 
     private var defaultsTask: Task<Void, Never>?
     private var resultLoad: Task<Void, Never>?

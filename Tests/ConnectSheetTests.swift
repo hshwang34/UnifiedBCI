@@ -17,7 +17,7 @@ final class ConnectSheetTests: XCTestCase {
     override func tearDownWithError() throws { try? FileManager.default.removeItem(at: scratch) }
 
     private func store() throws -> ProjectStore {
-        try ProjectStore.create(at: scratch.appendingPathComponent("p.bciproj"), name: "p")
+        try ProjectStore.create(at: scratch.appendingPathComponent("p-\(UUID().uuidString).bciproj"), name: "p")
     }
 
     private func sha(_ url: URL) throws -> String {
@@ -136,6 +136,33 @@ final class ConnectSheetTests: XCTestCase {
         await connect.value
         XCTAssertEqual(model.session?.snapshot.state, .disconnected)
         XCTAssertTrue(model.canPickSource)
+    }
+
+    func testCloseDuringAConnect_releasesTheBoard_andConnectIsSingleFlight() async throws {
+        // Close before the connect has created its session.
+        let early = ConnectController(store: try store(), projectDirectory: scratch, demoFile: nil, scan: { [] })
+        early.selectedID = ConnectSource.synthetic.id
+        let first = Task { await early.perform(.connect) }
+        await early.close()
+        await first.value
+        XCTAssertNil(early.session, "nothing opened after close")
+
+        // Close while the board is being prepared.
+        let model = ConnectController(store: try store(), projectDirectory: scratch.appendingPathComponent("b"), demoFile: nil, scan: { [] })
+        model.selectedID = ConnectSource.synthetic.id
+        let connect = Task { await model.perform(.connect) }
+        let deadline = ContinuousClock.now + .seconds(10)
+        while model.session == nil, ContinuousClock.now < deadline { await Task.yield() }
+        XCTAssertTrue(model.isConnecting)
+        let session = try XCTUnwrap(model.session)
+        await model.perform(.connect)                         // a second press while in flight
+        XCTAssertTrue(model.session === session, "Connect is disabled while one is in flight")
+        await model.close()
+        await connect.value
+        XCTAssertEqual(session.snapshot.state, .disconnected, "no board left open")
+        XCTAssertFalse(model.isConnecting)
+        await model.perform(.connect)
+        XCTAssertTrue(model.session === session, "a closed sheet never connects again")
     }
 
     // MARK: Demo source

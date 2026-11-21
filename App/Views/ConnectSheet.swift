@@ -19,7 +19,7 @@ struct ConnectSheet: View {
             if model.canPickSource {
                 SourcePicker(model: model)
             } else if model.snapshot.board != nil {
-                Picker("Section", selection: $model.tab) {
+                Picker(ConnectSheetModel.sectionPicker, selection: $model.tab) {
                     ForEach(ConnectSheetModel.Tab.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
@@ -67,7 +67,7 @@ struct ConnectSheet: View {
             ForEach(model.actions, id: \.self) { action in
                 let primary = action == model.actions.first && action != .disconnect && action != .cancel
                 Button(action.rawValue) { Task { await model.perform(action) } }
-                    .disabled(action == .connect && !(model.selected.map(model.isAvailable) ?? false))
+                    .disabled(action == .connect && (model.isConnecting || !(model.selected.map(model.isAvailable) ?? false)))
                     .keyboardShortcut(primary ? .defaultAction : nil)
             }
         }
@@ -138,8 +138,8 @@ private struct BoardPanel: View {
                 if let board = model.snapshot.board, let source = model.source {
                     section(ConnectSheetModel.identityHeader) {
                         Grid(alignment: .leading, horizontalSpacing: Theme.Space.l, verticalSpacing: Theme.Space.s) {
-                            let version = (try? BrainFlowBoard.libraryVersion()) ?? "unknown"
-                            ForEach(Array(IdentityModel.rows(board: board, source: source, brainflowVersion: version, firmware: nil).enumerated()),
+                            ForEach(Array(IdentityModel.rows(board: board, source: source, brainflowVersion: model.brainflowVersion,
+                                                             firmware: nil).enumerated()),
                                     id: \.offset) { _, row in
                                 GridRow {
                                     Text(row.0).foregroundStyle(Theme.textSecondary)
@@ -235,7 +235,7 @@ private struct ChannelMapEditor: View {
                 Grid(alignment: .leading, horizontalSpacing: Theme.Space.m, verticalSpacing: Theme.Space.xs) {
                     ForEach(model.labels.indices, id: \.self) { i in
                         GridRow {
-                            Text("Channel \(i + 1)").font(.callout).foregroundStyle(Theme.textSecondary)
+                            Text(ConnectSheetModel.channelName(i + 1)).font(.callout).foregroundStyle(Theme.textSecondary)
                             TextField(ChannelMapModel.labelField(i + 1), text: $model.labels[i])
                                 .textFieldStyle(.roundedBorder)
                                 .accessibilityLabel(ChannelMapModel.labelField(i + 1))
