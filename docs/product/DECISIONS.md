@@ -130,3 +130,15 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #42 · 2026-11-20 · The Connect sheet offers a "Demo" source next to the serial ports and the synthetic board: the bundled example EEG streamed through BrainFlow's playback-file board along the full live path. On screen it is labelled "Demo" only; the stored recording keeps source kind `playback` and names the played file.
 *Why:* PM decision; lets anyone see live acquisition on real EEG without the kit (and makes honest screenshots possible), while stored provenance stays exact. Brief 004.
+
+#43 · 2026-11-21 · Opening a project with no goal asks "What do you want to do?" with four goals: see how it works on the example, record EEG from a headset, train and check a decoder, run live feedback with a participant. "Not now" is always available.
+*Why:* PM decision; guided setup starts from the user's objective (brief 007 Q1, PRD §5).
+
+#44 · 2026-11-21 · The step guide is a compact card at the bottom of the project sidebar, with the step list and a "Show me" button that navigates to the step and highlights the control. No coach-mark overlays, no mandatory wizard; it can be hidden.
+*Why:* PM decision; always visible without covering data (brief 007 Q2).
+
+#45 · 2026-11-21 · Guide steps tick off automatically from the project's real state, or from what the user actually did, never by hand. Any step can be skipped and is shown as skipped, not done.
+*Why:* PM decision; a checklist must not drift from reality (brief 007 Q3).
+
+#46 · 2026-11-21 · "?" help is a short native popover (2–4 sentences, offline) at about a dozen concept-heavy spots only. There is no Help Book in this pass.
+*Why:* PM decision; clean UX, help where people actually get stuck (brief 007 Q4).
