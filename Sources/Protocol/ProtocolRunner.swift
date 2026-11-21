@@ -56,8 +56,9 @@ public protocol ProtocolRunHost: Sendable {
     func beginRun(runID: String, sessionID: String) async throws -> UUID
     /// Closes the run's segment `stopped`; the stream keeps going.
     func endRun() async
-    /// See `AcquisitionSession.recordProtocolEvents`.
-    func record(_ events: [EventRecord], marker: Double?, associateAt: Int64?) async
+    /// See `AcquisitionSession.recordProtocolEvents`. False when nothing records any more
+    /// (the writer stopped: disk full, write error, recording ended).
+    func record(_ events: [EventRecord], marker: Double?, associateAt: Int64?) async -> Bool
     /// Samples are flowing into the run's recording. False while interrupted or failed, or
     /// once the recording ended (decision #35).
     var isStreaming: Bool { get }
@@ -120,16 +121,24 @@ public actor ProtocolRunner: PresentationSink {
         /// presented − intended, per phase with a callback, in order.
         public var latenessNanos: [Int64] = []
         public var missingPresentations = 0
+        /// Why the run ended early: `operator` (Abort run) or `recording_stopped` (an event
+        /// could not be recorded, so the run stopped rather than go on unrecorded).
+        public var endReason: String?
+        /// Labels of events the recording refused; never dropped silently.
+        public var unrecordedEvents: [String] = []
     }
 
-    /// BrainFlow marker per event type (brief 005): 1 fixation, 2 + class index cue, 4 cue
-    /// end (the rest that starts with it shares its sample), 5 a rest shown after an abort.
+    /// BrainFlow marker per event type (brief 005): 1 fixation, 4 cue end (the rest that
+    /// starts with it shares its sample), 5 a rest shown after an abort, and the cues from
+    /// `cueMarkerBase` + class index. The cue range is disjoint from the phase values for any
+    /// class count, so a cue can never be read as another phase; the writer matches by value.
+    public static let cueMarkerBase = 10
     public static func marker(for label: String, in p: ProtocolRecord) -> Double {
         switch label {
         case "fixation": return 1
         case "cue_end": return 4
         case "rest": return 5
-        default: return Double(2 + (p.classes.firstIndex { $0.label == label } ?? 0))
+        default: return Double(cueMarkerBase + (p.classes.firstIndex { $0.label == label } ?? 0))
         }
     }
 
@@ -176,6 +185,8 @@ public actor ProtocolRunner: PresentationSink {
     private var aborted = Set<Int>()
     private var tokens: UInt64 = 0
     private var ending: (aborted: Bool, at: Int64)?
+    /// Set when the host refused an event: the run ends with `recording_stopped`.
+    private var recordingLost = false
 
     public init(protocol p: ProtocolRecord, runID: String, sessionID: String, runIndex: Int, sessionSeed: UInt64,
                 host: any ProtocolRunHost, display: any CueDisplay, store: ProjectStore,
@@ -275,10 +286,20 @@ public actor ProtocolRunner: PresentationSink {
             ending = (false, now)
         }
         publishPhase(now)
+        if recordingLost {
+            // Nothing records any more: stop at once, showing blank, and say why.
+            steps.removeAll()
+            outstanding.removeAll()
+            showNow(.blank, now: now, trial: nil, labels: [])
+            await host.endRun()
+            update { $0.state = .ended(aborted: true); $0.endReason = "recording_stopped"; $0.trial = nil; $0.phase = .none; $0.label = nil }
+            return false
+        }
         if let ending, outstanding.isEmpty {
             await record(["run_end"], trial: nil, origin: ending.aborted ? "operator" : "protocol", intended: ending.at, abortedRun: ending.aborted ? true : nil)
             await host.endRun()
-            update { $0.state = .ended(aborted: ending.aborted); $0.trial = nil; $0.phase = .none; $0.label = nil }
+            let reason: String? = recordingLost ? "recording_stopped" : (ending.aborted ? "operator" : nil)
+            update { $0.state = .ended(aborted: ending.aborted || recordingLost); $0.endReason = reason; $0.trial = nil; $0.phase = .none; $0.label = nil }
             return false
         }
         var wake = now + options.poll
@@ -401,20 +422,30 @@ public actor ProtocolRunner: PresentationSink {
     private func recordPhase(_ o: Outstanding, presented: Int64?) async {
         let events = o.labels.map { event($0, trial: o.trial, origin: "protocol", intended: o.intended, presented: presented) }
         // No callback: no marker (nothing was seen to present), association by the fallback.
-        await host.record(events, marker: presented == nil ? nil : o.marker, associateAt: presented ?? o.intended)
+        submit(events, ok: await host.record(events, marker: presented == nil ? nil : o.marker, associateAt: presented ?? o.intended))
     }
 
     private func record(_ labels: [String], trial: Int?, origin: String, intended: Int64, reason: String? = nil, abortedRun: Bool? = nil) async {
-        await host.record(labels.map { event($0, trial: trial, origin: origin, intended: intended, presented: nil, reason: reason, abortedRun: abortedRun) },
-                          marker: nil, associateAt: nil)
+        let events = labels.map { label in
+            event(label, trial: trial, origin: origin, intended: intended, presented: nil, reason: reason, abortedRun: abortedRun,
+                  plannedLabel: label == "trial_abort" ? trial.flatMap { plan?.trials[$0].label } : nil)
+        }
+        submit(events, ok: await host.record(events, marker: nil, associateAt: nil))
+    }
+
+    /// A refused event is named in the status and ends the run (`recording_stopped`).
+    private func submit(_ events: [EventRecord], ok: Bool) {
+        guard !ok else { return }
+        recordingLost = true
+        update { $0.unrecordedEvents += events.map(\.label) }
     }
 
     private func event(_ label: String, trial: Int?, origin: String, intended: Int64?, presented: Int64?,
-                       reason: String? = nil, abortedRun: Bool? = nil) -> EventRecord {
+                       reason: String? = nil, abortedRun: Bool? = nil, plannedLabel: String? = nil) -> EventRecord {
         EventRecord(eventID: UUID(), sessionID: sessionID, runID: runID, trialID: trial.flatMap { plan?.trials[$0].trialID },
                     label: label, origin: origin, intendedAtMonotonicNanos: intended, presentedAtMonotonicNanos: presented,
                     sourceTimeNanos: nil, wallTime: Date(), sampleAssociation: nil, timingUncertaintyNanos: nil,
-                    reason: reason, aborted: abortedRun)
+                    reason: reason, aborted: abortedRun, plannedLabel: plannedLabel)
     }
 
     // MARK: Helpers
@@ -461,7 +492,7 @@ public struct AcquisitionRunHost: ProtocolRunHost {
 
     public func endRun() async { await session.endRunSegment() }
 
-    public func record(_ events: [EventRecord], marker: Double?, associateAt: Int64?) async {
+    public func record(_ events: [EventRecord], marker: Double?, associateAt: Int64?) async -> Bool {
         await session.recordProtocolEvents(events, marker: marker, associateAt: associateAt)
     }
 

@@ -226,7 +226,8 @@ def read_chunk(rec: Recording, entry: dict[str, Any]) -> np.ndarray:
     return np.frombuffer(raw, dtype="<f8").reshape(rows, count)
 
 
-def load_segments(rec: Recording, labels: dict[str, int] | None, only: int | None = None) -> list[Segment]:
+def load_segments(rec: Recording, labels: dict[str, int] | None, only: int | None = None,
+                  notes: dict[str, Any] | None = None) -> list[Segment]:
     """Assemble one `Segment` per stream segment from its chunks, with the events
     whose label is in `labels` (label -> class index); `labels=None` loads samples only
     and never reads `events.jsonl` (signal inspection needs no events). `only` loads just
@@ -234,7 +235,7 @@ def load_segments(rec: Recording, labels: dict[str, int] | None, only: int | Non
     each segment contiguously from sample 0; anything else is an integrity error."""
     manifest = rec.manifest
     rows = [int(c["sourceRow"]) for c in manifest["channels"]]
-    events_by_segment, aborted = ({}, frozenset()) if labels is None else _events_by_segment(rec, labels)
+    events_by_segment, aborted = ({}, frozenset()) if labels is None else _events_by_segment(rec, labels, notes)
     out: list[Segment] = []
     for seg in sorted(manifest["segments"], key=lambda s: int(s["index"])):
         index = int(seg["index"])
@@ -260,50 +261,107 @@ def load_segments(rec: Recording, labels: dict[str, int] | None, only: int | Non
     return out
 
 
-def _events_by_segment(rec: Recording, labels: dict[str, int]) -> tuple[dict[int, list[tuple[int, int, str]]], frozenset[str]]:
+def _events_by_segment(rec: Recording, labels: dict[str, int],
+                       notes: dict[str, Any] | None = None) -> tuple[dict[int, list[tuple[int, int, str]]], frozenset[str]]:
     """Cue events by segment, and the trial ids of `trial_abort` events (brief 005).
 
-    A cue event must name its sample, except one of an aborted trial: the app can't
-    associate a cue presented as the stream dropped (no sample of it reached the disk), and
-    that trial is excluded anyway, so it is skipped rather than failing the recording."""
+    Nothing a protocol recording can hold makes it unevaluable on its own. When `notes` is
+    given it is filled with what the evaluation must still report:
+    - `unplaced`: exclusions for trials with no sample to cut at: a cue without a sample
+      association (`no_sample_for_cue`, or `trial_aborted` when its trial was aborted), and
+      an aborted trial whose cue never appeared (its `trial_abort` names the planned class
+      in `plannedLabel`), listed `trial_aborted` so unequal class counts stay visible.
+    - `fallback`: trial ids of cues placed by `nearest_receipt_timestamp`, not a marker.
+    - `truncated_line`: the number of a last line cut off mid-write (no newline, not JSON),
+      which is ignored; any other malformed line is still an error.
+    Without `notes` (recordings that predate brief 005 never need them) a cue without an
+    association is still an error, as before."""
     path = rec.directory / "events.jsonl"
     try:
-        lines = _read_regular_text(path).splitlines()
+        text = _read_regular_text(path)
     except (OSError, ValueError) as exc:
         raise ProjectError(f"cannot read {path}: {exc}") from exc
+    lines = text.splitlines()
     parsed: list[tuple[int, dict[str, Any]]] = []
-    aborted: set[str] = set()
+    aborted: dict[str, dict[str, Any]] = {}
     for n, line in enumerate(lines, 1):
         if not line.strip():
             continue
         try:
             ev = json.loads(line)
         except ValueError as exc:
+            if notes is not None and n == len(lines) and not text.endswith("\n"):
+                notes["truncated_line"] = n
+                continue
             raise ProjectError(f"{path}:{n}: not JSON: {exc}") from exc
         if not isinstance(ev, dict):
             raise ProjectError(f"{path}:{n}: not an event object")
         if ev.get("label") == ABORT_LABEL and isinstance(ev.get("trialID"), str):
-            aborted.add(ev["trialID"])
+            aborted.setdefault(ev["trialID"], ev)
         else:
             parsed.append((n, ev))
     out: dict[int, list[tuple[int, int, str]]] = {}
+    unplaced: dict[str, dict[str, Any]] = {}
+    seen: set[str] = set()
+    fallback: list[str] = []
     for n, ev in parsed:
         label = ev.get("label")
         if not isinstance(label, str) or label not in labels:
             continue
         assoc = ev.get("sampleAssociation")
-        if assoc is None and ev.get("trialID") in aborted:
+        trial_id = str(ev.get("trialID") or ev.get("eventID"))
+        seen.add(trial_id)
+        if assoc is None and notes is not None:
+            reason = "trial_aborted" if trial_id in aborted else "no_sample_for_cue"
+            unplaced.setdefault(trial_id, _unplaced(trial_id, ev.get("runID"), labels[label], reason))
+            continue
+        if assoc is None and trial_id in aborted:
             continue
         if not isinstance(assoc, dict) or str(assoc.get("recordingID")).lower() != rec.recording_id:
             raise ProjectError(f"{path}:{n}: cue event {ev.get('eventID')} has no sample association for this recording")
-        trial_id = ev.get("trialID") or str(ev.get("eventID"))
         segment, sample = assoc.get("segment"), assoc.get("sampleIndex")
         if any(isinstance(v, bool) or not isinstance(v, int) for v in (segment, sample)):
             raise ProjectError(f"{path}:{n}: cue event {ev.get('eventID')} has a non-integer segment/sampleIndex")
-        out.setdefault(segment, []).append((sample, labels[label], str(trial_id)))
+        if assoc.get("method") == "nearest_receipt_timestamp":
+            fallback.append(trial_id)
+        out.setdefault(segment, []).append((sample, labels[label], trial_id))
+    if notes is not None:
+        for trial_id, ev in aborted.items():
+            planned = ev.get("plannedLabel")
+            if trial_id not in seen and isinstance(planned, str) and planned in labels:
+                unplaced[trial_id] = _unplaced(trial_id, ev.get("runID"), labels[planned], "trial_aborted")
+        notes["unplaced"] = sorted(unplaced.values(), key=lambda e: e["trial_id"])
+        notes["fallback"] = sorted(fallback)
     for events in out.values():
         events.sort(key=lambda e: e[0])
     return out, frozenset(aborted)
+
+
+def _unplaced(trial_id: str, run_id: Any, label: int, reason: str) -> dict[str, Any]:
+    """An exclusion for a trial with no sample: no window to name."""
+    return {"trial_id": trial_id, "run_id": str(run_id), "label": label, "reason": reason,
+            "window_start_sample": None, "window_stop_sample": None}
+
+
+def evaluation_notes(record: dict[str, Any], notes: dict[str, Any]) -> None:
+    """Adds `_events_by_segment`'s notes to an evaluation record. Keys appear only when
+    there is something to say, so records of earlier recordings keep their bytes."""
+    unplaced = notes.get("unplaced") or []
+    if unplaced:
+        record["exclusions"] = record["exclusions"] + unplaced
+        listed = {e["trial_id"] for e in unplaced}
+        kept = [w for w in record.get("warnings", []) if not (w.get("kind") == "abort_names_unknown_trial" and w.get("trial_id") in listed)]
+        if kept:
+            record["warnings"] = kept
+        else:
+            record.pop("warnings", None)
+    warnings = list(record.get("warnings", []))
+    if notes.get("fallback"):
+        warnings.append({"kind": "cue_by_nearest_timestamp", "count": len(notes["fallback"]), "trial_ids": notes["fallback"]})
+    if notes.get("truncated_line"):
+        warnings.append({"kind": "events_last_line_truncated", "line": notes["truncated_line"]})
+    if warnings:
+        record["warnings"] = warnings
 
 
 def data_source(rec: Recording, segments: list[Segment]) -> dict[str, Any]:

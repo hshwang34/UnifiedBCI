@@ -210,7 +210,8 @@ def handle_fit_evaluate_project(req: Request, ctx: Context) -> dict[str, Any]:
     ctx.emit("progress", {"stage": "loading"})
     try:
         rec = project_io.open_recording(project_dir, recording_id)
-        segments = project_io.load_segments(rec, {left: 0, right: 1})
+        notes: dict[str, Any] = {}
+        segments = project_io.load_segments(rec, {left: 0, right: 1}, notes=notes)
     except project_io.IntegrityError as exc:
         raise ProtocolError("integrity", str(exc), req.id) from exc
     except project_io.ProjectError as exc:
@@ -230,6 +231,7 @@ def handle_fit_evaluate_project(req: Request, ctx: Context) -> dict[str, Any]:
         check_cancelled=ctx.check_cancelled,
         return_fitted=True,
     )
+    project_io.evaluation_notes(record, notes)
     record["data_source"] = project_io.data_source(rec, segments)
     t_fit = time.monotonic()
 

@@ -13,6 +13,12 @@ import Foundation
 /// sample whose BrainFlow timestamp is nearest is picked. Neither is corrected for transport
 /// delay. An event is written only once the sample it names is committed, and events are
 /// written in the order they were queued.
+///
+/// A fallback association carries `timingUncertaintyNanos`: the 95th percentile of the
+/// recent intervals between drains. A sample's receipt timestamp is only known to within the
+/// drain that delivered it, so that spread bounds the error of picking by timestamp from
+/// below; it is a conservative software figure, not a measured onset error. A marker
+/// association leaves it null (not measured; docs/data-contracts.md).
 struct EventAssociator {
     static let markerTimeoutNanos: Int64 = 1_000_000_000
     /// How long after the event's time samples must keep arriving before the fallback
@@ -35,6 +41,8 @@ struct EventAssociator {
     private(set) var queue: [Entry] = []
     private var history: [(index: Int, timestamp: Double)] = []
     private var pair: RecordingWriter.ClockPair?
+    private var lastDrain: Int64?
+    private var drainIntervals: [Int64] = []
 
     init(recordingID: UUID) { self.recordingID = recordingID }
 
@@ -53,6 +61,11 @@ struct EventAssociator {
     mutating func observe(markers: ArraySlice<Double>?, timestamps: ArraySlice<Double>?, firstIndex: Int, segment: Int,
                           drainedAt: Int64, pair newPair: RecordingWriter.ClockPair?) {
         if let newPair { pair = newPair }
+        if let last = lastDrain, drainedAt > last {
+            drainIntervals.append(drainedAt - last)
+            if drainIntervals.count > 64 { drainIntervals.removeFirst() }
+        }
+        lastDrain = drainedAt
         if let timestamps {
             for (j, t) in timestamps.enumerated() where t.isFinite { history.append((firstIndex + j, t)) }
             if history.count > Self.historyLimit { history.removeFirst(history.count - Self.historyLimit) }
@@ -100,10 +113,20 @@ struct EventAssociator {
         return queue.flatMap(\.events)
     }
 
-    private mutating func resolve(_ i: Int, sample: Int?, method: String) {
+    private mutating func resolve(_ i: Int, sample: Int?, method: String, uncertainty: Int64? = nil) {
         let association = sample.map { EventRecord.SampleAssociation(recordingID: recordingID, segment: queue[i].segment ?? 0, sampleIndex: $0, method: method) }
-        for k in queue[i].events.indices { queue[i].events[k].sampleAssociation = association }
+        for k in queue[i].events.indices {
+            queue[i].events[k].sampleAssociation = association
+            queue[i].events[k].timingUncertaintyNanos = association == nil ? nil : uncertainty
+        }
         queue[i].resolved = true
+    }
+
+    /// The 95th percentile of the recent drain intervals (nearest rank), nil before two drains.
+    var drainSpreadNanos: Int64? {
+        guard !drainIntervals.isEmpty else { return nil }
+        let sorted = drainIntervals.sorted()
+        return sorted[min(sorted.count - 1, Int((Double(sorted.count) * 0.95).rounded(.up)) - 1)]
     }
 
     /// Nearest BrainFlow timestamp to the event's time, among samples below `limit`; no
@@ -112,6 +135,6 @@ struct EventAssociator {
         guard let at = queue[i].at, let pair else { return resolve(i, sample: nil, method: "") }
         let wall = pair.wallSeconds + Double(at &- pair.monotonicNanos) / 1e9
         let nearest = history.lazy.filter { limit == nil || $0.index < limit! }.min { abs($0.timestamp - wall) < abs($1.timestamp - wall) }
-        resolve(i, sample: nearest?.index, method: "nearest_receipt_timestamp")
+        resolve(i, sample: nearest?.index, method: "nearest_receipt_timestamp", uncertainty: drainSpreadNanos)
     }
 }

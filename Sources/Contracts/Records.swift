@@ -404,14 +404,17 @@ public struct EventRecord: Codable, Sendable, Equatable {
     /// `pause` carry `operator`, `pause`, `disconnect` or `run_aborted` (brief 005). Absent on
     /// older events; an older reader ignores the key.
     public var reason: String?
-    /// `run_end` only: true when the operator ended the run early (brief 005).
+    /// `run_end` only: true when the run ended early (brief 005).
     public var aborted: Bool?
+    /// `trial_abort` only: the aborted trial's planned class label, so the trial is listed
+    /// as excluded even when its cue never appeared (decision #34).
+    public var plannedLabel: String?
 
     public init(eventID: UUID, sessionID: String?, runID: String, trialID: String?, label: String, origin: String,
                 intendedAtMonotonicNanos: Int64?, presentedAtMonotonicNanos: Int64?, sourceTimeNanos: Int64?,
                 wallTime: Date, sampleAssociation: SampleAssociation?, timingUncertaintyNanos: Int64?,
-                reason: String? = nil, aborted: Bool? = nil) {
-        self.reason = reason; self.aborted = aborted
+                reason: String? = nil, aborted: Bool? = nil, plannedLabel: String? = nil) {
+        self.reason = reason; self.aborted = aborted; self.plannedLabel = plannedLabel
         self.eventID = eventID; self.sessionID = sessionID; self.runID = runID; self.trialID = trialID
         self.label = label; self.origin = origin
         self.intendedAtMonotonicNanos = intendedAtMonotonicNanos; self.presentedAtMonotonicNanos = presentedAtMonotonicNanos

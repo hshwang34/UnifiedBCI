@@ -74,7 +74,7 @@ final class ProtocolRunnerTests: XCTestCase {
         let phaseRecords = records.filter { $0.marker != nil }
         XCTAssertEqual(phaseRecords.count, 40 * 3, "cue end and rest share one presentation and one marker")
         XCTAssertTrue(phaseRecords.allSatisfy { $0.associateAt == $0.events[0].presentedAtMonotonicNanos })
-        XCTAssertEqual(Set(phaseRecords.map { $0.marker! }), [1, 2, 3, 4])
+        XCTAssertEqual(Set(phaseRecords.map { $0.marker! }), [1, 10, 11, 4], "cue markers sit in their own range")
         XCTAssertEqual(final.latenessNanos, Array(repeating: 3_000_000, count: 120))
         XCTAssertEqual(f.host.begins, 1)
         XCTAssertEqual(f.host.ends, 1)
@@ -94,6 +94,7 @@ final class ProtocolRunnerTests: XCTestCase {
         let abort = try XCTUnwrap(events.first { $0.label == "trial_abort" })
         XCTAssertEqual(abort.origin, "operator")
         XCTAssertEqual(abort.reason, "operator")
+        XCTAssertEqual(abort.plannedLabel, third.label, "the planned class travels with the abort")
         XCTAssertEqual(final.abortedTrials, [third.trialID])
         XCTAssertEqual(f.host.records.first { $0.events[0].label == "rest" && $0.events.count == 1 }?.marker, 5)
         XCTAssertEqual(events.filter { $0.label == "fixation" }.count, 40, "the aborted trial is not run again (decision #34)")
@@ -161,6 +162,7 @@ final class ProtocolRunnerTests: XCTestCase {
         f.runner.begin()
         let final = await f.runner.run()
         XCTAssertEqual(final.state, .ended(aborted: true))
+        XCTAssertEqual(final.endReason, "operator")
         let plan = try await plan(f)
         let events = f.host.records.flatMap(\.events)
         XCTAssertEqual(events.last?.label, "run_end")
@@ -184,6 +186,21 @@ final class ProtocolRunnerTests: XCTestCase {
         XCTAssertEqual(cue.associateAt, cue.events[0].intendedAtMonotonicNanos)
         XCTAssertEqual(final.missingPresentations, 1)
         XCTAssertEqual(final.latenessNanos.count, 119)
+    }
+
+    func testRecordingStops_runEndsNamed_refusedEventsListed() async throws {
+        let f = try await fixture()
+        f.display.onShow = { [host = f.host] frame, n, runner in
+            if case .cue = frame, n.cues == 3 { host.accepting.withLock { $0 = false }; runner.abortTrial() }
+        }
+        f.runner.begin()
+        let final = await f.runner.run()
+        XCTAssertEqual(final.state, .ended(aborted: true))
+        XCTAssertEqual(final.endReason, "recording_stopped")
+        XCTAssertTrue(final.unrecordedEvents.contains("trial_abort"), "\(final.unrecordedEvents)")
+        XCTAssertEqual(f.host.ends, 1)
+        XCTAssertEqual(f.display.frames.last, .blank)
+        XCTAssertLessThan(f.display.frames.filter { $0 == .fixation }.count, 6, "the run stops instead of going on unrecorded")
     }
 
     func testAbortBeforeSpace_recordsNothing() async throws {
@@ -214,19 +231,19 @@ final class ProtocolRunnerTests: XCTestCase {
         let id = try await host.beginRun(runID: "run01", sessionID: "S")
         XCTAssertTrue(host.isStreaming)
         try await waitFor { link.delivered > 60 }
-        await host.record([ev("cue_left_hand", "run01")], marker: 2, associateAt: HostMonotonicClock.nowNanos())
+        _ = await host.record([ev("cue_left_hand", "run01")], marker: 10, associateAt: HostMonotonicClock.nowNanos())
         try await waitFor { link.delivered > 160 }
         link.set { $0.markerFails = true }
-        await host.record([ev("fixation", "run01")], marker: 1, associateAt: HostMonotonicClock.nowNanos())
+        _ = await host.record([ev("fixation", "run01")], marker: 1, associateAt: HostMonotonicClock.nowNanos())
         link.set { $0.markerFails = false }
         try await waitFor { link.delivered > 260 }
-        await host.record([ev("run_end", "run01")], marker: nil, associateAt: nil)
+        _ = await host.record([ev("run_end", "run01")], marker: nil, associateAt: nil)
         await host.endRun()
         XCTAssertFalse(host.isStreaming)
         try await waitFor { link.delivered > 360 }                   // between runs: not recorded
         let again = try await host.beginRun(runID: "run02", sessionID: "S")
         XCTAssertEqual(again, id)
-        await host.record([ev("cue_end", "run02"), ev("rest", "run02")], marker: 4, associateAt: HostMonotonicClock.nowNanos())
+        _ = await host.record([ev("cue_end", "run02"), ev("rest", "run02")], marker: 4, associateAt: HostMonotonicClock.nowNanos())
         try await waitFor { link.delivered > 460 }
         await host.endRun()
         _ = await session.stopRecording()
@@ -245,9 +262,11 @@ final class ProtocolRunnerTests: XCTestCase {
         XCTAssertEqual(cue.segment, 0)
         XCTAssertEqual(cue.method, "brainflow_marker")
         let entry = try XCTUnwrap(rec.chunks(inSegment: 0).first { ($0.firstSampleIndex..<($0.firstSampleIndex + $0.sampleCount)).contains(cue.sampleIndex) })
-        XCTAssertEqual(try rec.chunk(entry)[d.markerRow * entry.sampleCount + cue.sampleIndex - entry.firstSampleIndex], 2,
+        XCTAssertEqual(try rec.chunk(entry)[d.markerRow * entry.sampleCount + cue.sampleIndex - entry.firstSampleIndex], 10,
                        "the association names the sample BrainFlow marked")
         XCTAssertEqual(events[1].sampleAssociation?.method, "nearest_receipt_timestamp")
+        XCTAssertGreaterThan(events[1].timingUncertaintyNanos ?? 0, 0, "a fallback carries the drain spread")
+        XCTAssertNil(events[0].timingUncertaintyNanos, "a marker association is not measured")
         XCTAssertNil(events[2].sampleAssociation)
         XCTAssertEqual(events[3].sampleAssociation, events[4].sampleAssociation)
         XCTAssertEqual(events[3].sampleAssociation?.segment, 1)
@@ -257,7 +276,7 @@ final class ProtocolRunnerTests: XCTestCase {
     // MARK: Synthetic board end to end, through the worker
 
     @MainActor
-    func testSyntheticBoard_fourShortRuns_evaluateWithProtocolLabels_onlyTheAbortedTrialExcluded() async throws {
+    func testSyntheticBoard_fourShortRuns_evaluateWithProtocolLabels_onlyTheAbortedTrialsExcluded() async throws {
         let store = try store()
         let draft = ProtocolDraft(name: "Short", classes: ProtocolDraft.grazDefault.classes,
                                   timing: .init(fixationMs: 250, cueMs: 800, restMinMs: 100, restMaxMs: 150),
@@ -271,7 +290,7 @@ final class ProtocolRunnerTests: XCTestCase {
         let host = AcquisitionRunHost(session: session, request: .init(channels: channels, reference: "SRB2", montage: "undeclared"), store: store)
         var o = ProtocolRunner.Options()
         o.startLead = 600_000_000            // first window starts after the 0.55 s filter warm-up
-        var aborted: String?
+        var aborted: [String] = []
         for i in 0..<4 {
             let display = TimedDisplay()
             let runner = ProtocolRunner(protocol: p, runID: "run0\(i + 1)", sessionID: "S-e2e", runIndex: i, sessionSeed: 1000,
@@ -284,11 +303,19 @@ final class ProtocolRunnerTests: XCTestCase {
                     Task.detached { await HostProtocolClock().sleep(untilNanos: at + 300_000_000); runner.abortTrial() }
                 }
             }
+            if i == 2 {
+                // During the first fixation: the arrow never appears, yet the trial is listed.
+                let once = Mutex(false)
+                display.onShow = { frame, _, at in
+                    guard frame == .fixation, once.withLock({ let first = !$0; $0 = true; return first }) else { return }
+                    Task.detached { await HostProtocolClock().sleep(untilNanos: at + 100_000_000); runner.abortTrial() }
+                }
+            }
             runner.begin()
             let final = await runner.run()
             XCTAssertEqual(final.state, .ended(aborted: false))
             XCTAssertEqual(final.missingPresentations, 0)
-            if i == 1 { aborted = final.abortedTrials.first }
+            aborted += final.abortedTrials
         }
         let id = try XCTUnwrap(session.snapshot.recordingID)
         _ = await session.stopRecording()
@@ -315,11 +342,25 @@ final class ProtocolRunnerTests: XCTestCase {
         guard case .done(let resultID) = state else { return XCTFail("\(state)") }
         let json = try JSONSerialization.jsonObject(with: try await store.result(id: resultID).evaluationJSON) as? [String: Any]
         let exclusions = try XCTUnwrap(json?["exclusions"] as? [[String: Any]])
-        XCTAssertEqual(exclusions.map { $0["reason"] as? String }, ["trial_aborted"])
-        XCTAssertEqual(exclusions.first?["trial_id"] as? String, aborted)
+        XCTAssertEqual(exclusions.map { $0["reason"] as? String }, ["trial_aborted", "trial_aborted"])
+        XCTAssertEqual(aborted.count, 2)
+        XCTAssertEqual(Set(exclusions.compactMap { $0["trial_id"] as? String }), Set(aborted))
+        XCTAssertNil(json?["warnings"], "every cue found its marker")
         let source = try XCTUnwrap(json?["data_source"] as? [String: Any])
         XCTAssertEqual(source["n_runs"] as? Int, 4)
-        XCTAssertEqual(source["n_trials"] as? Int, 16)
+        XCTAssertEqual(source["n_trials"] as? Int, 15, "the cue that never appeared has no event")
+    }
+
+    func testWorkerWarnings_inWordsForTheResultScreen() throws {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        let json = #"[{"kind":"cue_by_nearest_timestamp","count":2,"trial_ids":["run01-t03","run02-t05"]},{"kind":"events_last_line_truncated","line":41},{"kind":"something_new"}]"#
+        let warnings = try d.decode([EvaluationReport.Warning].self, from: Data(json.utf8))
+        XCTAssertEqual(warnings.compactMap(EvidenceText.warning), [
+            "2 cues were placed on the EEG by the nearest receipt timestamp, not a BrainFlow marker (run01-t03, run02-t05). That placement is software-only and less precise.",
+            "The last line of the recording's event log was cut off (line 41) and was ignored.",
+        ])
+        XCTAssertEqual(EvidenceText.exclusionReason("no_sample_for_cue"), "no EEG sample could be matched to its cue")
     }
 
     private func waitFor(timeout: Duration = .seconds(20), _ condition: () -> Bool) async throws {
@@ -380,7 +421,7 @@ final class TimedDisplay: CueDisplay, @unchecked Sendable {
     private final class Box: Sendable { let pending = Mutex<[PresentationToken: Int64]>([:]) }
     private let box = Box()
     private let cues = Mutex(0)
-    var onShow: ((CueFrame, Int, Int64) -> Void)?
+    var onShow: (@Sendable (CueFrame, Int, Int64) -> Void)?
 
     func show(_ frame: CueFrame, atMonotonicNanos at: Int64, token: PresentationToken, sink: any PresentationSink) {
         box.pending.withLock { p in p = p.filter { $0.value < at }; p[token] = at }
@@ -398,6 +439,7 @@ final class FakeHost: ProtocolRunHost, @unchecked Sendable {
     struct Record { var events: [EventRecord]; var marker: Double?; var associateAt: Int64?; var segment: Int }
     let store: ProjectStore
     let streaming = Mutex(true)
+    let accepting = Mutex(true)
     private let state = Mutex<(records: [Record], begins: Int, ends: Int, segment: Int, recordingID: UUID?)>(([], 0, 0, 0, nil))
 
     init(store: ProjectStore) { self.store = store }
@@ -428,7 +470,9 @@ final class FakeHost: ProtocolRunHost, @unchecked Sendable {
 
     func endRun() async { state.withLock { $0.ends += 1 } }
 
-    func record(_ events: [EventRecord], marker: Double?, associateAt: Int64?) async {
+    func record(_ events: [EventRecord], marker: Double?, associateAt: Int64?) async -> Bool {
+        guard accepting.withLock({ $0 }) else { return false }
         state.withLock { $0.records.append(.init(events: events, marker: marker, associateAt: associateAt, segment: $0.segment)) }
+        return true
     }
 }
