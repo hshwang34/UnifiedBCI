@@ -334,7 +334,9 @@ public actor ProjectStore {
         let ids = try childIDs(in: "montages", requiring: Self.channelMapFileName)
         let maps = ids.compactMap { id -> ChannelMapRecord? in
             let url = parent.appendingPathComponent(id.uuidString).appendingPathComponent(Self.channelMapFileName)
-            guard let data = fm.contents(atPath: url.path),
+            guard let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? Int,
+                  size <= ChannelMapRecord.maxFileBytes,
+                  let data = fm.contents(atPath: url.path), data.count <= ChannelMapRecord.maxFileBytes,
                   let map = try? ContractJSON.decoder().decode(ChannelMapRecord.self, from: data),
                   map.problem(directoryID: id) == nil else { return nil }
             return map

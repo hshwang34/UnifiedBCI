@@ -81,7 +81,10 @@ final class AcquisitionConfigTests: XCTestCase {
         // Board block only (no Daisy): never half a guess.
         let boardOnly = try constructedDump().components(separatedBy: "Daisy ADS Registers")[0]
         XCTAssertEqual(CytonRegisterReadback.parse(boardOnly).keys.sorted(), ["raw"])
-        let rawOnly = RecordingManifest.BoardConfiguration(requested: DefaultChannelSettings.requested, readback: ["raw": "?"])
+        // Every command acknowledged: a missing `acknowledged` key would refuse Record (fail closed).
+        var acked = DefaultChannelSettings.requested
+        for n in 1...DefaultChannelSettings.channelCount { acked[DefaultChannelSettings.key(n) + ".acknowledged"] = "yes" }
+        let rawOnly = RecordingManifest.BoardConfiguration(requested: acked, readback: ["raw": "?"])
         XCTAssertEqual(ConfigurationModel.readbackNote(rawOnly), ConfigurationModel.rawOnly)
         let none = RecordingManifest.BoardConfiguration(requested: DefaultChannelSettings.requested, readback: [:])
         XCTAssertEqual(ConfigurationModel.readbackNote(none), "No readback from this board")
@@ -422,7 +425,10 @@ final class AcquisitionConfigReviewTests: XCTestCase {
         let swapped = try dump().replacingOccurrences(of: "Board ADS Registers", with: "X").replacingOccurrences(of: "Daisy ADS Registers", with: "Board ADS Registers")
             .replacingOccurrences(of: "\r\nX\r\n", with: "\r\nDaisy ADS Registers\r\n")
         XCTAssertEqual(CytonRegisterReadback.parse(swapped).keys.sorted(), ["raw"])
-        let rawOnly = RecordingManifest.BoardConfiguration(requested: DefaultChannelSettings.requested, readback: ["raw": "?"])
+        // Every command acknowledged: a missing `acknowledged` key would refuse Record (fail closed).
+        var acked = DefaultChannelSettings.requested
+        for n in 1...DefaultChannelSettings.channelCount { acked[DefaultChannelSettings.key(n) + ".acknowledged"] = "yes" }
+        let rawOnly = RecordingManifest.BoardConfiguration(requested: acked, readback: ["raw": "?"])
         XCTAssertEqual(RecordGate.warning(source: .serial(SerialPort(path: "/dev/cu.x")), configuration: rawOnly),
                        "Gain not confirmed by the board; µV scaling assumes 24.")
         XCTAssertNil(RecordGate.warning(source: .synthetic, configuration: rawOnly))
@@ -433,5 +439,90 @@ final class AcquisitionConfigReviewTests: XCTestCase {
         var h = StreamHealth()
         h.freeBytes = 5_000_000_000
         XCTAssertEqual(Dictionary(uniqueKeysWithValues: HealthModel.rows(h, nowNanos: 0))["Free disk"], "5000 MB free")
+    }
+}
+
+/// PR #25 follow-up: every channel field validated, format characters refused, a huge
+/// map or file refused before it is trusted, and a missing acknowledgement fails closed.
+final class ChannelMapValidationTests: XCTestCase {
+    private var scratch: URL!
+    private let daisy = try! BrainFlowBoard.describe(boardID: KnownBoard.cytonDaisy)
+
+    override func setUpWithError() throws {
+        scratch = FileManager.default.temporaryDirectory.appendingPathComponent("bci-cmv-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: scratch) }
+
+    private func problem(_ edit: (inout ChannelMapRecord) -> Void) -> String? {
+        var map = ChannelMapRecord.defaults(for: daisy)
+        edit(&map)
+        return map.problem(directoryID: map.mapID)
+    }
+
+    func testChannelIDKindAndUnit_areValidated() {
+        XCTAssertNil(problem { _ in })
+        XCTAssertNotNil(problem { $0.channels[0].id = " " })
+        XCTAssertNotNil(problem { $0.channels[0].id = String(repeating: "x", count: 33) })
+        XCTAssertNotNil(problem { $0.channels[0].id = "ch01\u{7}" })
+        XCTAssertNotNil(problem { $0.channels[0].kind = "" })
+        XCTAssertNotNil(problem { $0.channels[0].kind = String(repeating: "e", count: 17) })
+        XCTAssertNotNil(problem { $0.channels[0].unit = "u\u{200B}V" })
+        XCTAssertNotNil(problem { $0.channels[0].unit = "\n" })
+    }
+
+    func testFormatCharacters_areRefusedLikeControlCharacters() {
+        for scalar in ["\u{202A}", "\u{202B}", "\u{202C}", "\u{202D}", "\u{202E}", "\u{2066}", "\u{2067}", "\u{2068}",
+                       "\u{2069}", "\u{200B}", "\u{200C}", "\u{200D}", "\u{2060}", "\u{FEFF}", "\u{200E}", "\u{200F}"] {
+            XCTAssertFalse(ChannelMapRecord.isSane("C3" + scalar), "U+\(String(scalar.unicodeScalars.first!.value, radix: 16))")
+            XCTAssertNotNil(problem { $0.channels[0].label = "C" + scalar + "3" })
+            XCTAssertNotNil(problem { $0.montage = scalar + "10-20" })
+            XCTAssertNotNil(problem { $0.reference = "SRB2" + scalar })
+        }
+        XCTAssertTrue(ChannelMapRecord.isSane("Fp1 (left)"))
+        XCTAssertTrue(ChannelMapRecord.isSane("Cz-Ω µ"), "ordinary non-ASCII letters stay allowed")
+    }
+
+    func testTooManyChannels_isRefused() {
+        let board = ChannelMapRecord.defaults(for: daisy)
+        XCTAssertNotNil(problem { map in
+            map.channels = (0..<65).map { ChannelSpec(id: "c\($0)", label: "L\($0)", kind: "eeg", unit: "uV", sourceRow: $0) }
+        })
+        XCTAssertNil(problem { map in
+            map.channels = (0..<64).map { ChannelSpec(id: "c\($0)", label: "L\($0)", kind: "eeg", unit: "uV", sourceRow: $0) }
+        }, "64 is the cap, not beyond it")
+        XCTAssertEqual(board.channels.count, 16)
+    }
+
+    func testOversizedSavedMapFile_isSkippedWithoutDecoding() async throws {
+        let store = try ProjectStore.create(at: scratch.appendingPathComponent("big.bciproj"), name: "big")
+        let good = ChannelMapRecord.defaults(for: daisy)
+        try await store.saveChannelMap(good)
+        // A valid map padded with whitespace past the cap: decodable, but never read.
+        let padded = ChannelMapRecord.defaults(for: daisy)
+        var data = try ContractJSON.encoder().encode(padded)
+        data.append(Data(repeating: 0x20, count: ChannelMapRecord.maxFileBytes))
+        let dir = store.directory.appendingPathComponent("montages").appendingPathComponent(padded.mapID.uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try data.write(to: dir.appendingPathComponent(ProjectStore.channelMapFileName))
+        XCTAssertNoThrow(try ContractJSON.decoder().decode(ChannelMapRecord.self, from: data), "only the size refuses it")
+        let (maps, unreadable) = try await store.channelMaps()
+        XCTAssertEqual(maps.map(\.mapID), [good.mapID])
+        XCTAssertEqual(unreadable, 1)
+    }
+
+    func testMissingAcknowledgedKey_failsClosedOnADevice_only() {
+        var requested = DefaultChannelSettings.requested
+        for n in 1...DefaultChannelSettings.channelCount { requested[DefaultChannelSettings.key(n) + ".acknowledged"] = "yes" }
+        let acked = RecordingManifest.BoardConfiguration(requested: requested, readback: [:])
+        XCTAssertNil(AcquisitionSession.problem(acked, isDevice: true))
+        requested[DefaultChannelSettings.key(5) + ".acknowledged"] = nil
+        let missing = RecordingManifest.BoardConfiguration(requested: requested, readback: [:])
+        XCTAssertEqual(AcquisitionSession.problem(missing, isDevice: true), .notAcknowledged(channel: 5))
+        XCTAssertNil(AcquisitionSession.problem(missing, isDevice: false), "synthetic and playback have nothing to acknowledge")
+        requested[DefaultChannelSettings.key(2) + ".acknowledged"] = "maybe"
+        let odd = RecordingManifest.BoardConfiguration(requested: requested, readback: [:])
+        XCTAssertEqual(AcquisitionSession.problem(odd, isDevice: true), .notAcknowledged(channel: 2), "only \"yes\" counts")
     }
 }
