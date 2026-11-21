@@ -304,7 +304,17 @@ private struct Assembler {
             return await stop(Self.isDiskFull(error) ? .diskFull : .error, "\(error)")
         }
         consumed(n, ready: next, later: later, started: started)
+        savedSegments()
         return true
+    }
+
+    /// The manifest on disk now lists every segment as closed in memory, so a note left by
+    /// an earlier failed close is obsolete; left in place, `open` would apply it to the
+    /// segment that is open now if the process were then killed.
+    private mutating func savedSegments() {
+        guard leftOpen else { return }
+        leftOpen = false
+        lock.clearNote()
     }
 
     private func value(_ row: Int?, _ column: Int) -> Double? {
@@ -371,8 +381,10 @@ private struct Assembler {
         if await save() { return true }
         // Still open on disk. Leave the reason in the lock file, so the next
         // `ProjectStore.open` closes it with this reason rather than process_terminated.
+        // A failed close of a clean stop is noted `error`: the segment did not close cleanly.
         leftOpen = true
-        lock.note(reason, uncommitted: seg.uncommittedSampleCount ?? 0)
+        lock.note(.init(segment: seg.index, reason: RecordingLock.noteReasons.contains(reason) ? reason : .error,
+                        uncommitted: seg.uncommittedSampleCount ?? 0, endedAtMonotonicNanos: endedAt))
         return false
     }
 
@@ -383,6 +395,7 @@ private struct Assembler {
             do {
                 try await writer.updateSegments(segments)
                 unsavedAttribution = false
+                savedSegments()
                 return true
             } catch {
                 if attempt == 0 { _ = await writer.reconcileWithDisk(); continue }
