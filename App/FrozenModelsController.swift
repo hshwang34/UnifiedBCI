@@ -72,6 +72,14 @@ final class FrozenModelsController {
     func updateFreezeDraft(_ d: FreezeDraft) { if freezeDraft?.id == d.id { freezeDraft = d } }
     func updateReplayDraft(_ d: ReplayDraft) { if replayDraft?.id == d.id { replayDraft = d } }
 
+    /// Cancel in the Freeze sheet: refused (false) while the freeze is in flight.
+    @discardableResult
+    func cancelFreeze() -> Bool {
+        guard freezeDraft?.isFreezing != true else { return false }
+        freezeDraft = nil
+        return true
+    }
+
     /// The sheet went away (Escape, Cancel, or a finished freeze or replay).
     func sheetClosed() {
         sheet = nil
@@ -135,9 +143,12 @@ final class FrozenModelsController {
         freezeDraft = draft
         do {
             let model = try await runner.freeze(result: draft.result, role: draft.role, name: name.isEmpty ? draft.sheet.defaultName : name)
+            // Only the sheet that asked moves the selection (Cancel is refused while freezing,
+            // so this holds unless the window closed meanwhile).
+            let stillOpen = freezeDraft?.id == draft.id
             freezeDraft = nil
             await reload()
-            selectedModelID = model.modelID
+            if stillOpen { selectedModelID = model.modelID }
             return model
         } catch {
             freezeDraft?.isFreezing = false

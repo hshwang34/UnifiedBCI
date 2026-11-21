@@ -36,7 +36,8 @@ final class FrozenModelScreenTests: XCTestCase {
         XCTAssertNotNil(draft.sheet.windowSuggestion, "a 3.5 s window gets the 2 s suggestion (decision #40)")
         XCTAssertEqual(draft.name, draft.sheet.defaultName)
         session.frozen.freezeDraft?.name = "  Tiny model  "
-        let model = try XCTUnwrap(await session.freeze())
+        let frozenModel = await session.freeze()
+        let model = try XCTUnwrap(frozenModel)
         XCTAssertEqual(model.name, "Tiny model")
         XCTAssertNil(session.frozen.freezeDraft)
         XCTAssertNil(session.frozen.sheet)
@@ -56,7 +57,8 @@ final class FrozenModelScreenTests: XCTestCase {
 
         // The same fit again: the sheet stays open with the store's reason.
         session.showFreeze(stored)
-        XCTAssertNil(await session.freeze())
+        let again = await session.freeze()
+        XCTAssertNil(again)
         let refused = try XCTUnwrap(session.frozen.freezeDraft?.error)
         XCTAssertTrue(refused.hasPrefix("Not frozen: this fit is already frozen as \u{201C}Tiny model\u{201D}"), refused)
         session.frozen.freezeDraft = nil
@@ -90,9 +92,13 @@ final class FrozenModelScreenTests: XCTestCase {
         let n = predictions.records.filter { $0.windowKind == "cue_locked" }.count
         XCTAssertGreaterThan(n, 0)
         XCTAssertEqual(view.cueLocked, "Cue-locked trial windows: \(n) of \(n) match offline (the windows each trial is scored on)")
-        let valid = predictions.records.filter { $0.validity == .valid }
-        let abstained = valid.filter { $0.action == .abstain }.count
-        XCTAssertEqual(view.abstentions, "At threshold 0.70: \(abstained) of \(valid.count) valid windows abstained (model confidence below 0.70)")
+        func counts(_ kind: String) -> String {
+            let valid = predictions.records.filter { $0.windowKind == kind && $0.validity == .valid }
+            return "\(valid.filter { $0.action == .abstain }.count) of \(valid.count)"
+        }
+        XCTAssertEqual(view.abstentions, "At threshold 0.70, abstained: hop windows \(counts("hop")) valid · cue-locked trial windows \(counts("cue_locked")) valid "
+                       + "(model confidence below 0.70)")
+        XCTAssertEqual(view.tolerances.map(\.within), [true, true, true])
         XCTAssertTrue(ReplayCopy.replayRow(replay, recording: "Tiny").hasSuffix(" · Tiny · matches"))
     }
 
@@ -113,11 +119,79 @@ final class FrozenModelScreenTests: XCTestCase {
                                    summary: .init(predictions: 10, byValidity: ["valid": 6, "insufficient_window": 4], abstained: 2))
         let view = ParityViewModel(record: record, sampleRateHz: 125)!
         XCTAssertEqual(view.headline, "Streaming differs from offline")
-        XCTAssertFalse(view.tolerances[0].within)
+        XCTAssertEqual(view.tolerances.map(\.within), [nil, nil, false], "missing quantities are not compared, never a number")
+        XCTAssertEqual(view.tolerances[0].text, "Band-passed samples: not compared")
         XCTAssertEqual(view.cueLocked, "Cue-locked trial windows compared: 4")
         XCTAssertEqual(view.abstentions, "At threshold 0.60: 2 of 6 valid windows abstained (model confidence below 0.60)")
         XCTAssertEqual(view.boundary, "1 window on the decision boundary (listed, not counted as differences)")
         XCTAssertEqual(view.firstValid, "segment 1: no valid window")
         XCTAssertEqual(ReplayCopy.replayRow(record, recording: "R"), "2027-01-15 08:00 UTC · R · differs")
+
+        // A record claiming a pass while a deviation is over its tolerance shows "differs".
+        var claimed = record
+        claimed.parity?.passed = true
+        claimed.parity?.mismatches = []
+        let inconsistent = ParityViewModel(record: claimed, sampleRateHz: 125)!
+        XCTAssertFalse(inconsistent.passed)
+        XCTAssertEqual(inconsistent.headline, "Streaming differs from offline")
+
+        // Decision #40 copy: 2 s is suggested only to a longer window.
+        XCTAssertNil(FreezeSheetModel.suggestion(offset: 0.5, length: 2.0, cue: 4.0))
+        XCTAssertEqual(FreezeSheetModel.suggestion(offset: 0.5, length: 1.5, cue: 4.0),
+                       "This model's 1.5 s window is shorter than the 2 s suggested for live use, so feedback can show for more of each cue. "
+                       + "Its held-out result was measured with this window.")
+        XCTAssertTrue(FreezeSheetModel.suggestion(offset: 0.5, length: 3.0, cue: 4.0)!.hasPrefix("For live feedback, evaluate with a 2 s window: feedback would then show for 1.5 s"))
+        XCTAssertEqual(FreezeSheetModel.eligibleSpanSeconds(offset: -0.5, length: 2, cue: 4), 2, "a window never reaches back before the cue")
+    }
+
+    /// Cancel is refused while the freeze runs, and the freeze then selects its model.
+    func testCancelIsRefusedWhileFreezing() async throws {
+        let session = try await workspace.session(for: project)
+        guard case .done = await session.evaluateAndWait() else { return XCTFail("\(session.runner.state)") }
+        await session.awaitSelectedResult()
+        session.showFreeze(try XCTUnwrap(session.selectedResult))
+        let freezing = Task { await session.freeze() }
+        while session.frozen.freezeDraft?.isFreezing != true { await Task.yield() }
+        XCTAssertFalse(session.frozen.cancelFreeze())
+        XCTAssertNotNil(session.frozen.freezeDraft, "the sheet stays while freezing")
+        let frozenModel = await freezing.value
+        let model = try XCTUnwrap(frozenModel)
+        XCTAssertEqual(session.frozen.selectedModelID, model.modelID)
+        XCTAssertNil(session.frozen.sheet)
+        session.showFreeze(try XCTUnwrap(session.selectedResult))
+        XCTAssertTrue(session.frozen.cancelFreeze(), "an idle sheet cancels")
+        XCTAssertNil(session.frozen.sheet)
+    }
+
+    /// The sheet's feedback span is the worker's eligibility rule: per trial, eligible hop
+    /// windows start at or after cue + offset, end by the cue's end, and their ends cover
+    /// `eligibleSpanSeconds` to within one hop.
+    func testFeedbackSpanMatchesTheWorkersEligibility() async throws {
+        let session = try await workspace.session(for: project)
+        session.parameters.windowLengthSeconds = 2.0
+        guard case .done = await session.evaluateAndWait() else { return XCTFail("\(session.runner.state)") }
+        await session.awaitSelectedResult()
+        session.showFreeze(try XCTUnwrap(session.selectedResult))
+        let frozenModel = await session.freeze()
+        let model = try XCTUnwrap(frozenModel)
+        let recording = try XCTUnwrap(session.selectedRecordingID)
+        guard case .done(let id) = await session.frozen.runner.replay(model: model, recordingID: recording, cueLengthSeconds: 4.0) else {
+            return XCTFail("\(session.frozen.runner.state)")
+        }
+        let preds = try await session.store.predictions(liveRun: id).records
+        let rate = model.expectedSampleRateHz
+        let span = FreezeSheetModel.eligibleSpanSeconds(offset: model.window.offsetSeconds, length: model.window.lengthSeconds, cue: 4.0)
+        XCTAssertEqual(span, 1.5, accuracy: 1e-9)
+        let byTrial = Dictionary(grouping: preds.filter { $0.windowKind == "hop" && $0.feedbackEligible == true }, by: { $0.trialID ?? "" })
+        XCTAssertGreaterThan(byTrial.count, 5)
+        let hop = Double(WorkerClient.hopSamples) / rate
+        for (trial, windows) in byTrial {
+            let ends = windows.compactMap { $0.inputSampleRange.map { Double($0.start + $0.count) / rate } }
+            let covered = (ends.max() ?? 0) - (ends.min() ?? 0)
+            XCTAssertLessThanOrEqual(covered, span + 1e-9, trial)
+            XCTAssertGreaterThanOrEqual(covered, span - hop - 1e-9, trial)
+        }
+        XCTAssertEqual(FreezeSheetModel.span(offset: model.window.offsetSeconds, length: model.window.lengthSeconds, cue: 4.0),
+                       "Feedback can show for 1.5 s of each 4.0 s cue (only windows wholly inside the imagery period).")
     }
 }

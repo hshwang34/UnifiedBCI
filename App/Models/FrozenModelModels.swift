@@ -98,15 +98,7 @@ struct FreezeSheetModel: Equatable {
         canFreeze = offset != nil && length != nil
 
         feedbackSpan = Self.span(offset: offset, length: length, cue: cueLengthSeconds)
-        if let offset, let length, abs(length - Self.suggestedWindowSeconds) > 1e-9 {
-            let then = cueLengthSeconds.map { cue in
-                let s = cue - offset - Self.suggestedWindowSeconds
-                return s > 0 ? ": feedback would then show for \(Fmt.seconds(s)) of each cue" : ""
-            } ?? ""
-            windowSuggestion = "For live feedback, evaluate with a 2 s window\(then). This model's \(Fmt.seconds(length)) window leaves less of the cue for feedback."
-        } else {
-            windowSuggestion = nil
-        }
+        windowSuggestion = Self.suggestion(offset: offset, length: length, cue: cueLengthSeconds)
         let key = role == .reference ? report?.comparison.reference : report?.comparison.baseline
         if let h = key.flatMap({ report?.models[$0]?.holdout }) {
             let ci = Fmt.interval(h.accuracyCi95).map { " · accuracy \(Fmt.fixed(h.accuracy)), 95 % CI \($0) (trial-level, n = \(h.nTestTrials))" } ?? ""
@@ -116,11 +108,33 @@ struct FreezeSheetModel: Equatable {
         }
     }
 
+    /// Decision #40, the worker's rule (`streaming._eligible_trial`): a window is eligible
+    /// when it starts at or after cue + max(offset, 0) and ends by the cue's end, so eligible
+    /// windows end during the last `cue − max(offset, 0) − length` seconds of the cue.
+    static func eligibleSpanSeconds(offset: Double, length: Double, cue: Double) -> Double {
+        cue - max(offset, 0) - length
+    }
+
+    /// Decision #40: suggest 2 s only to a longer window (it leaves more of the cue for
+    /// feedback). A shorter window already leaves more; that is said without ranking it.
+    static func suggestion(offset: Double?, length: Double?, cue: Double?) -> String? {
+        guard let offset, let length, abs(length - suggestedWindowSeconds) > 1e-9 else { return nil }
+        guard length > suggestedWindowSeconds else {
+            return "This model's \(Fmt.seconds(length)) window is shorter than the 2 s suggested for live use, so feedback can show for more of each cue. "
+                + "Its held-out result was measured with this window."
+        }
+        let then = cue.map { c in
+            let s = eligibleSpanSeconds(offset: offset, length: suggestedWindowSeconds, cue: c)
+            return s > 0 ? ": feedback would then show for \(Fmt.seconds(s)) of each cue" : ""
+        } ?? ""
+        return "For live feedback, evaluate with a 2 s window\(then). This model's \(Fmt.seconds(length)) window leaves less of the cue for feedback."
+    }
+
     /// Decision #40: only windows wholly inside the imagery period show feedback.
     static func span(offset: Double?, length: Double?, cue: Double?) -> String {
         guard let offset, let length else { return "The evaluation didn't record its window, so the model can't be frozen." }
         guard let cue else { return "Feedback shows only for windows wholly inside each cue; how long depends on the protocol's cue length." }
-        let s = cue - offset - length
+        let s = eligibleSpanSeconds(offset: offset, length: length, cue: cue)
         guard s > 1e-9 else {
             return "Feedback can't show: the \(Fmt.seconds(offset)) offset and the \(Fmt.seconds(length)) window fill the whole \(Fmt.seconds(cue)) cue."
         }
@@ -149,7 +163,8 @@ struct ParityViewModel: Equatable {
     struct Line: Equatable, Identifiable {
         let quantity: String
         let text: String
-        let within: Bool
+        /// nil when nothing was compared for this quantity.
+        let within: Bool?
         var id: String { quantity }
     }
 
@@ -164,7 +179,7 @@ struct ParityViewModel: Equatable {
     let mismatches: [String]
     /// "Cue-locked trial windows: 40 of 40 match offline", from the stored predictions.
     let cueLocked: String
-    /// "At threshold 0.60: 12 of 140 valid windows abstained".
+    /// "At threshold 0.60: hop windows 12 of 140 valid abstained · cue-locked …".
     let abstentions: String
 
     /// `predictions`: the replay's stored `predictions.jsonl` (the first chunking), which
@@ -183,19 +198,34 @@ struct ParityViewModel: Equatable {
             }.count
             cueLocked = "Cue-locked trial windows: \(matched) of \(cl.count) match offline (the windows each trial is scored on)"
         }
-        let valid = record.summary?.byValidity[Validity.valid.rawValue] ?? 0
         let threshold = Fmt.fixed(record.abstainThreshold)
-        abstentions = "At threshold \(threshold): \(record.summary?.abstained ?? 0) of \(valid) valid windows abstained (model confidence below \(threshold))"
-        passed = p.passed
-        headline = p.passed ? "Streaming matches offline within tolerance" : "Streaming differs from offline"
-        symbol = p.passed ? "checkmark.seal" : "exclamationmark.triangle"
-        tolerances = p.deviations.map { d in
-            let name = Self.quantityName(d.quantity)
-            guard let observed = d.observed else { return Line(quantity: d.quantity, text: "\(name): nothing compared", within: true) }
-            let unit = d.quantity == "bandpassed_uv" ? " µV" : ""
-            return Line(quantity: d.quantity, text: "\(name): largest difference \(Fmt.scientific(observed))\(unit) · allowed \(Fmt.scientific(d.allowed))\(unit)",
-                        within: observed <= d.allowed)
+        if predictions.isEmpty {
+            let valid = record.summary?.byValidity[Validity.valid.rawValue] ?? 0
+            abstentions = "At threshold \(threshold): \(record.summary?.abstained ?? 0) of \(valid) valid windows abstained (model confidence below \(threshold))"
+        } else {
+            func count(_ kind: String) -> String {
+                let valid = predictions.filter { $0.windowKind == kind && $0.validity == .valid }
+                return "\(valid.filter { $0.action.kind == .abstain }.count) of \(valid.count)"
+            }
+            abstentions = "At threshold \(threshold), abstained: hop windows \(count("hop")) valid · cue-locked trial windows \(count("cue_locked")) valid "
+                + "(model confidence below \(threshold))"
         }
+        // Every declared quantity is listed; one the worker reported no value for is "not
+        // compared", never a number.
+        let names = ["bandpassed_uv", "features", "score"] + p.deviations.map(\.quantity).filter { !["bandpassed_uv", "features", "score"].contains($0) }
+        tolerances = names.map { q in
+            let name = Self.quantityName(q)
+            guard let d = p.deviations.first(where: { $0.quantity == q }), let observed = d.observed else {
+                return Line(quantity: q, text: "\(name): not compared", within: nil)
+            }
+            let unit = q == "bandpassed_uv" ? " µV" : ""
+            return Line(quantity: q, text: "\(name): largest difference \(Fmt.scientific(observed))\(unit) · allowed \(Fmt.scientific(d.allowed))\(unit)",
+                        within: observed.isFinite && observed <= d.allowed)
+        }
+        // The headline can't say "matches" while a line shows a difference over its tolerance.
+        passed = p.passed && !tolerances.contains { $0.within == false }
+        headline = passed ? "Streaming matches offline within tolerance" : "Streaming differs from offline"
+        symbol = passed ? "checkmark.seal" : "exclamationmark.triangle"
         let cue = p.cueLockedCompared.map { ", \($0) of them cue-locked trial windows" } ?? ""
         windows = "\(p.windowsCompared) windows compared\(cue)"
         boundary = p.boundaryWindows == 0 ? "No windows on the decision boundary"

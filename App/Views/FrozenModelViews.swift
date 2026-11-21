@@ -46,8 +46,9 @@ struct FreezeSheet: View {
             HStack {
                 if draft.isFreezing { ProgressView().controlSize(.small) }
                 Spacer()
-                Button("Cancel", role: .cancel) { session.frozen.freezeDraft = nil }
+                Button("Cancel", role: .cancel) { session.frozen.cancelFreeze() }
                     .keyboardShortcut(.cancelAction)
+                    .disabled(draft.isFreezing)
                 Button("Freeze") { Task { await session.freeze() } }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
@@ -56,6 +57,8 @@ struct FreezeSheet: View {
         }
         .padding(Theme.Space.xl)
         .frame(width: 560)
+        // Freezing can't be called off half-way: the sheet stays until it has finished.
+        .interactiveDismissDisabled(draft.isFreezing)
     }
 }
 
@@ -203,10 +206,10 @@ struct ParityView: View {
                 Label {
                     Text(line.text).font(.callout).monospacedDigit()
                 } icon: {
-                    Image(systemName: line.within ? "checkmark.circle" : "xmark.octagon")
-                        .foregroundStyle(line.within ? Theme.positive : Theme.danger)
+                    Image(systemName: line.within.map { $0 ? "checkmark.circle" : "xmark.octagon" } ?? "minus.circle")
+                        .foregroundStyle(line.within.map { $0 ? Theme.positive : Theme.danger } ?? Theme.textSecondary)
                 }
-                .accessibilityLabel("\(line.text), \(line.within ? "within" : "outside") tolerance")
+                .accessibilityLabel(line.within.map { "\(line.text), \($0 ? "within" : "outside") tolerance" } ?? line.text)
             }
             Divider()
             ForEach([m.windows, m.cueLocked, m.boundary, m.abstentions, m.firstValid, m.chunkings], id: \.self) { text in
