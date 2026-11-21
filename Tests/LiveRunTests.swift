@@ -197,6 +197,36 @@ final class LiveRunTests: XCTestCase {
         XCTAssertEqual(stored.runIDs, ["run01"])
     }
 
+    /// Stop drains everything into feedback.jsonl before run.json is final: every report
+    /// still queued, then the hidden "stopped" record, in order.
+    func testStop_drainsQueuedReportsAndTheStoppedRecordBeforeRunJSON() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("bci-drain-\(UUID().uuidString).bciproj", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try ProjectStore.create(at: dir, name: "drain")
+        let writer = try await store.createLiveRun(LiveRunRecord(kind: .live, modelID: Self.model.modelID, recordingID: UUID(), runIDs: [], hopSamples: 16,
+                                                                 abstainThreshold: 0.6, staleLimitMillis: 250, startedAt: Date()))
+        let c = await LiveFeedbackController.forTesting(model: Self.model, protocolRecord: LiveFeedbackViewTests.protocolRecord, store: store,
+                                                        writer: writer, recordingID: UUID())
+        let bar = FeedbackPolicy.Display.bar(side: "cue_right_hand", length: 0.4)
+        let n = 300
+        for i in 0..<n {      // frames the window presented just before Stop, still queued
+            c.feed.presented(.init(sequence: i, display: i % 2 == 0 ? bar : .hidden(words: "Model unsure"),
+                                   reason: i % 2 == 0 ? nil : "abstain", measured: true), at: Int64(i))
+        }
+        await c.stop()
+        XCTAssertEqual(c.phase, .ended)
+        let id = await writer.record.liveRunID
+        let logged = try await store.feedback(liveRun: id).records
+        XCTAssertEqual(logged.count, n + 1, "no queued report is lost")
+        XCTAssertEqual(logged.prefix(n).map(\.presentedAtMonotonicNanos), (0..<n).map { Int64($0) }, "in order")
+        XCTAssertEqual(logged.last, FeedbackRecord(predictionSequence: -1, shown: false, side: nil, length: nil, words: nil,
+                                                   presentedAtMonotonicNanos: nil, reason: "stopped"))
+        let runs = try await store.liveRuns().runs
+        let stored = try XCTUnwrap(runs.first)
+        XCTAssertNotNil(stored.endedAt)
+        XCTAssertEqual(stored.runIDs, ["run01"])
+    }
+
     private final class Flag: @unchecked Sendable {
         private let lock = NSLock()
         private var value = false

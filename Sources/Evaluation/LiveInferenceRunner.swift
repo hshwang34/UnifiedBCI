@@ -207,13 +207,21 @@ public actor LiveInferenceRunner {
         updateSink.yield(Update(sequence: last, display: .hidden(words: nil), emittedAt: now(), reason: "stopped"))
         updateSink.finish()
         published.withLock { $0.stopped = true }
+        let (summary, latency) = summaries()
+        // Not finishing: the caller drains the feedback reports still queued (`presented`),
+        // then writes `run.json` once with `summaries()`, after its live-vs-replay check.
+        if finishing { try? await writer?.finish(endedAt: Date(), summary: summary, latency: latency, replayCheck: nil, runIDs: runIDs) }
+        return (summary, latency)
+    }
+
+    /// The prediction and latency summaries so far; emission → presentation includes every
+    /// `presented` report handled until now (reports drained after `stop` count too).
+    public func summaries() -> (summary: LiveRunRecord.Summary, latency: LiveRunRecord.LatencySummary) {
         let summary = LiveRunRecord.Summary(predictions: records.count,
                                             byValidity: Dictionary(grouping: records, by: \.validity.rawValue).mapValues(\.count),
                                             abstained: records.filter { $0.validity == .valid && $0.action.kind == .abstain }.count)
         let latency = LiveRunRecord.LatencySummary(receiptToEmission: Self.percentiles(receiptMs), bufferWait: Self.percentiles(bufferWaitsMs),
                                                    emissionToPresentation: Self.percentiles(presentationMs))
-        // Not finishing: the caller writes `run.json` once, after its live-vs-replay check.
-        if finishing { try? await writer?.finish(endedAt: Date(), summary: summary, latency: latency, replayCheck: nil, runIDs: runIDs) }
         return (summary, latency)
     }
 

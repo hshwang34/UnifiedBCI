@@ -66,6 +66,77 @@ final class LiveFeedbackViewTests: XCTestCase {
                                                presentedAtMonotonicNanos: 900 * ms, reason: "delayed")])
     }
 
+    /// A prediction that arrives while the screen already shows the same thing (fixation) is
+    /// not a fresh change when the cue later draws it: logged, not counted as latency.
+    func testFrameState_aPredictionThatArrivedDuringNoCueIsNotFresh() {
+        var s = FeedbackFrameState(staleLimitNanos: 250 * ms)
+        s.submit(u(3, bar, at: 0))
+        XCTAssertEqual(s.take(cueOnScreen: false, targetNanos: 10 * ms)?.measured, true)
+        s.submit(u(4, bar, at: 20 * ms))
+        XCTAssertNil(s.take(cueOnScreen: false, targetNanos: 30 * ms))
+        XCTAssertEqual(s.drawn?.sequence, 4, "the screen is unchanged, but 4 is now behind it")
+        XCTAssertEqual(s.take(cueOnScreen: true, targetNanos: 40 * ms), .init(sequence: 4, display: bar, reason: nil, measured: false))
+        s.submit(u(5, notConfident, at: 50 * ms, reason: "abstain"))
+        XCTAssertEqual(s.take(cueOnScreen: true, targetNanos: 60 * ms)?.measured, true, "a new prediction changing the screen still counts")
+    }
+
+    func testFeed_finishEndsWithOneStoppedRecord() async {
+        let feed = FeedbackFeed(directions: [:])
+        feed.submit(u(1, bar, at: 90))
+        feed.presented(feed.take(cueOnScreen: true, targetNanos: 100)!, at: 100)
+        feed.submit(u(1, .hidden(words: nil), at: 110, reason: "stopped"))          // the runner's last update
+        feed.finish()
+        feed.presented(.init(sequence: 1, display: bar, reason: nil, measured: true), at: 120)   // after finish: dropped
+        var got: [FeedbackFeed.Report] = []
+        for await r in feed.reports { got.append(r) }
+        XCTAssertEqual(got, [.init(sequence: 1, display: bar, presentedAt: 100, reason: nil, measured: true),
+                             .init(sequence: 1, display: .hidden(words: nil), presentedAt: nil, reason: "stopped", measured: false)],
+                       "no frame showed the stop: logged without a guessed time")
+
+        // A window that drew the stop itself: no second record.
+        let drawn = FeedbackFeed(directions: [:])
+        drawn.submit(u(2, bar, at: 0))
+        drawn.presented(drawn.take(cueOnScreen: true, targetNanos: 10)!, at: 10)
+        drawn.submit(u(2, .hidden(words: nil), at: 20, reason: "stopped"))
+        drawn.presented(drawn.take(cueOnScreen: true, targetNanos: 30)!, at: 30)
+        drawn.finish()
+        var reasons: [String?] = []
+        for await r in drawn.reports { reasons.append(r.reason) }
+        XCTAssertEqual(reasons, [nil, "stopped"])
+    }
+
+    /// The operator's bar follows the participant's stale rule: too old at `now`, or hidden
+    /// by a stall in the participant window, it reads "Signal delayed".
+    func testMirror_followsTheStaleAndStallRule() {
+        var s = FeedbackFrameState(staleLimitNanos: 250 * ms)
+        XCTAssertNil(s.mirror(now: 0))
+        s.submit(u(1, bar, at: 0))
+        XCTAssertEqual(s.mirror(now: 200 * ms), bar)
+        XCTAssertEqual(s.mirror(now: 260 * ms), .hidden(words: "Signal delayed"), "older than 250 ms")
+        XCTAssertEqual(s.take(cueOnScreen: true, targetNanos: 10 * ms, stall: true)?.reason, "delayed")
+        XCTAssertEqual(s.mirror(now: 10 * ms), .hidden(words: "Signal delayed"), "the participant sees a stall: so does the operator")
+        XCTAssertEqual(s.take(cueOnScreen: true, targetNanos: 20 * ms)?.display, bar)
+        XCTAssertEqual(s.mirror(now: 20 * ms), bar)
+        s.submit(u(2, notConfident, at: 30 * ms, reason: "abstain"))
+        XCTAssertEqual(s.mirror(now: 900 * ms), notConfident, "only a bar goes stale; words stay")
+    }
+
+    func testPanel_neverShowsABarTheParticipantSeesDelayed_andShowsStopped() {
+        var s = LiveInferenceRunner.Status()
+        s.validity = .valid; s.display = bar; s.score = 0.9; s.confidence = 0.71
+        let delayed = panel(s, mirror: .hidden(words: "Signal delayed"))
+        XCTAssertNil(delayed.bar)
+        XCTAssertEqual(delayed.state, "Signal delayed")
+        XCTAssertEqual(delayed.tone, .warning)
+        XCTAssertEqual(delayed.detail, LiveTestCopy.delayedDetail)
+        XCTAssertNil(panel(s, mirror: nil).bar, "no update in the feed yet: a status bar is not trusted")
+        s.stopped = true
+        let stopped = panel(s, mirror: bar)
+        XCTAssertEqual(stopped.state, "Stopped")
+        XCTAssertNil(stopped.bar)
+        XCTAssertEqual(stopped.tone, .info)
+    }
+
     func testFrameState_neverStepsBackToAnOlderPrediction() {
         var s = FeedbackFrameState()
         s.submit(u(9, notConfident, at: 0))
@@ -111,7 +182,12 @@ final class LiveFeedbackViewTests: XCTestCase {
     // MARK: Operator view copy
 
     private func panel(_ s: LiveInferenceRunner.Status, truth: [String: String] = [:], aborted: Set<String> = []) -> LiveFeedbackPanelModel {
-        LiveFeedbackPanelModel(s, model: Self.model, protocolRecord: Self.protocolRecord, threshold: 0.6,
+        panel(s, mirror: s.display, truth: truth, aborted: aborted)
+    }
+
+    private func panel(_ s: LiveInferenceRunner.Status, mirror: FeedbackPolicy.Display?, truth: [String: String] = [:],
+                       aborted: Set<String> = []) -> LiveFeedbackPanelModel {
+        LiveFeedbackPanelModel(s, mirror: mirror, model: Self.model, protocolRecord: Self.protocolRecord, threshold: 0.6,
                                directions: ["cue_left_hand": -1, "cue_right_hand": 1], truth: truth, aborted: aborted)
     }
 

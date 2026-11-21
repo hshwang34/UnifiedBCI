@@ -260,8 +260,7 @@ struct LiveTestOperatorView: View {
     let live: LiveFeedbackController
 
     var body: some View {
-        let m = LiveFeedbackPanelModel(live.status, model: live.model, protocolRecord: live.protocolRecord, threshold: live.policy.threshold,
-                                       directions: live.feed.directions, truth: live.truth, aborted: live.aborted)
+        let m = panel()
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.cardGap) {
                 VStack(alignment: .leading, spacing: Theme.Space.xs) {
@@ -271,7 +270,9 @@ struct LiveTestOperatorView: View {
                 if live.phase != .running {
                     StatusChip(kind: .info, text: live.phase == .checking ? LiveRunCopy.checking : LiveRunCopy.stopping)
                 }
-                FeedbackStateCard(model: m)
+                // Re-evaluated 20 times a second, so the stale rule hides the operator's bar
+                // when the participant's is hidden, not at the next 4 Hz status refresh.
+                TimelineView(.periodic(from: .now, by: 0.05)) { _ in FeedbackStateCard(model: panel()) }
                 HStack(alignment: .top, spacing: Theme.Space.cardGap) {
                     StatTile(title: LiveTestCopy.abstainHeader, value: m.abstainValue, line: m.abstainLine, symbol: "hand.raised")
                     StatTile(title: LiveTestCopy.latencyHeader, value: m.latencyValue, line: m.latencyLine, symbol: "stopwatch",
@@ -287,6 +288,12 @@ struct LiveTestOperatorView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .softScrollEdge(.top)
+    }
+
+    private func panel() -> LiveFeedbackPanelModel {
+        LiveFeedbackPanelModel(live.status, mirror: live.feed.mirror(now: HostMonotonicClock.nowNanos()), model: live.model,
+                               protocolRecord: live.protocolRecord, threshold: live.policy.threshold,
+                               directions: live.feed.directions, truth: live.truth, aborted: live.aborted)
     }
 }
 

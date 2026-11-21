@@ -38,7 +38,10 @@ final class LiveFeedbackController {
     @ObservationIgnored private let runner: LiveInferenceRunner
     @ObservationIgnored private let writer: LiveRunWriter
     @ObservationIgnored private let store: ProjectStore
-    @ObservationIgnored private var tasks: [Task<Void, Never>] = []
+    /// Runner updates → feed, feed reports → `feedback.jsonl`, and the status poll.
+    @ObservationIgnored private var forwarding: Task<Void, Never>?
+    @ObservationIgnored private var reporting: Task<Void, Never>?
+    @ObservationIgnored private var polling: Task<Void, Never>?
     @ObservationIgnored private var stopping: Task<Void, Never>?
 
     private init(model: ModelRecord, protocolRecord: ProtocolRecord, policy: FeedbackPolicy, liveRunID: UUID, recordingID: UUID,
@@ -87,24 +90,24 @@ final class LiveFeedbackController {
 
     private func wire() {
         let (runner, feed) = (runner, feed)
-        tasks = [
-            Task.detached { for await u in runner.updates { feed.submit(u) } },
-            // One consumer, so feedback lines are logged in the order the frames showed them.
-            Task.detached {
-                for await r in feed.reports {
-                    await runner.presented(sequence: r.sequence, display: r.display, at: r.presentedAt, reason: r.reason, measured: r.measured)
-                }
-            },
-            Task { [weak self] in
-                while !Task.isCancelled {
-                    guard let self else { return }
-                    let s = runner.status
-                    if s != self.status { self.status = s }
-                    // 4 Hz is plenty for the operator and keeps view updates off a busy main thread.
-                    try? await Task.sleep(for: .milliseconds(250))
-                }
-            },
-        ]
+        // Neither stream task is ever cancelled: each ends when its stream finishes, so `stop`
+        // can wait for both and lose nothing (cancelling would end the loops mid-queue).
+        forwarding = Task.detached { for await u in runner.updates { feed.submit(u) } }
+        // One consumer, so feedback lines are logged in the order the frames showed them.
+        reporting = Task.detached {
+            for await r in feed.reports {
+                await runner.presented(sequence: r.sequence, display: r.display, at: r.presentedAt, reason: r.reason, measured: r.measured)
+            }
+        }
+        polling = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let s = runner.status
+                if s != self.status { self.status = s }
+                // 4 Hz is plenty for the words and tiles; the mirrored bar reads the feed itself.
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
     }
 
     /// The protocol's host with the cues routed to the runner: each cue reaches the runner
@@ -140,10 +143,17 @@ final class LiveFeedbackController {
 
     private func performStop(replay: Replay?) async {
         phase = .stopping
-        let (summary, latency) = await runner.stop(runIDs: runIDs, finishing: false)
+        // Order matters (feedback.jsonl must be complete before run.json is final): the runner
+        // publishes its last, hidden "stopped" update and ends its stream; the feed receives
+        // it; the feed adds the "stopped" record if the window never logged one and ends; every
+        // queued report is written; only then are the summaries taken and `run.json` written.
+        _ = await runner.stop(runIDs: runIDs, finishing: false)
+        await forwarding?.value
         feed.finish()
-        tasks.forEach { $0.cancel() }
-        tasks = []
+        await reporting?.value
+        polling?.cancel()
+        (forwarding, reporting, polling) = (nil, nil, nil)
+        let (summary, latency) = await runner.summaries()
         status = runner.status
         self.summary = summary
         self.latency = latency
@@ -174,6 +184,7 @@ final class LiveFeedbackController {
         let c = LiveFeedbackController(model: model, protocolRecord: protocolRecord, policy: FeedbackPolicy(), liveRunID: liveRunID, recordingID: recordingID,
                                        runner: runner, writer: writer, store: store, directions: [:])
         c.runIDs = ["run01"]
+        c.wire()
         return c
     }
 

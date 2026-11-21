@@ -15,6 +15,7 @@ enum LiveTestCopy {
     static let latencyNote = "Measured in the app: from the drain of the window's last sample to the prediction. Radio or USB transport and display delay are not measured."
     static let previewPlaceholder = "Debug preview: connect a source, then Start Run… on the acquisition screen runs the protocol with live feedback from the newest frozen model."
     static let noTrials = "No trials yet."
+    static let delayedDetail = "bar older than the stale limit when drawn"
     static let directionProblem = "Live feedback needs one class cued with a left arrow and the other with a right arrow, so the bar's sides match the cues."
 
     static func modelLine(_ m: ModelRecord, _ p: ProtocolRecord) -> String { "\(m.name) · \(StartRunCopy.protocolTitle(p))" }
@@ -51,12 +52,32 @@ struct LiveFeedbackPanelModel: Equatable {
     let trials: [TrialRow]
     let trialsSummary: String
 
-    init(_ s: LiveInferenceRunner.Status, model: ModelRecord, protocolRecord p: ProtocolRecord, threshold: Double,
-         directions: [String: Double], truth: [String: String], aborted: Set<String>) {
+    /// `mirror`: the feed's `mirror(now:)`, the participant's newest display under the same
+    /// 250 ms / stall rule (nil before the first update). The words and tiles come from `s`,
+    /// refreshed four times a second; the bar never comes from `s`, so the operator is never
+    /// shown a bar the participant sees as "Signal delayed". Stopped hides it for good.
+    init(_ s: LiveInferenceRunner.Status, mirror: FeedbackPolicy.Display?, model: ModelRecord, protocolRecord p: ProtocolRecord,
+         threshold: Double, directions: [String: Double], truth: [String: String], aborted: Set<String>) {
         func name(_ label: String) -> String { p.classes.first { $0.label == label }?.displayName ?? ClassDisplay.name(label) }
-        switch (s.validity, s.display) {
+        let delayedWords = FeedbackPolicy.words(.stale)
+        let shown: FeedbackPolicy.Display
+        if s.stopped {
+            shown = .hidden(words: nil)
+        } else if let mirror {
+            shown = mirror
+        } else if case .bar = s.display {
+            shown = .hidden(words: delayedWords)        // no update in the feed yet: not trusted
+        } else {
+            shown = s.display
+        }
+        let delayedHere = !s.stopped && shown == .hidden(words: delayedWords) && s.display != shown
+        switch (s.validity, shown) {
+        case _ where s.stopped:
+            (state, tone) = ("Stopped", .info)
+        case _ where delayedHere:
+            (state, tone) = (delayedWords, .warning)
         case (nil, _):
-            (state, tone) = (s.stopped ? "Stopped" : "Starting analysis…", .info)
+            (state, tone) = ("Starting analysis…", .info)
         case (_, .bar):
             (state, tone) = ("Showing feedback", .positive)
         case (.valid?, .hidden(nil)):
@@ -69,12 +90,12 @@ struct LiveFeedbackPanelModel: Equatable {
             case .disconnected, .workerUnavailable, .channelMismatch, .invalidInput: tone = .danger
             }
         }
-        detail = s.validity == .valid ? nil : s.detail
+        detail = delayedHere ? LiveTestCopy.delayedDetail : s.validity == .valid ? nil : s.detail
         let left = model.classLabels.first { (directions[$0] ?? 1) < 0 } ?? model.classLabels[0]
         let right = model.classLabels.first { $0 != left } ?? model.classLabels[1]
         leftEnd = "◀ " + name(left)
         rightEnd = name(right) + " ▶"
-        if case .bar(let side, let length) = s.display {
+        if case .bar(let side, let length) = shown {
             bar = Bar(direction: directions[side] ?? 1, length: length)
             barSide = name(side)
         } else {
