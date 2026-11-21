@@ -551,6 +551,15 @@ enum ExportNoticeText {
             parts.append(m == 1 ? "1 run plan file couldn't be read and was left out."
                                 : "\(m) run plan files couldn't be read and were left out.")
         }
+        func count(_ n: Int, _ one: String, _ many: String) { if n > 0 { parts.append(n == 1 ? one : "\(n) " + many) } }
+        count(s.unverifiedModels, "1 frozen model was left out because its model file is missing or changed since it was frozen.",
+              "frozen models were left out because their model files are missing or changed since they were frozen.")
+        count(s.unreadableModels, "1 frozen model folder couldn't be read and was left out.",
+              "frozen model folders couldn't be read and were left out.")
+        count(s.unverifiedLiveRuns, "1 live run was left out because its model couldn't be exported.",
+              "live runs were left out because their models couldn't be exported.")
+        count(s.unreadableLiveRuns, "1 live run folder couldn't be read and was left out.",
+              "live run folders couldn't be read and were left out.")
         return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 }

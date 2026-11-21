@@ -16,6 +16,12 @@ readable without the app: flat binary, JSON, JSON lines, and one `.npz` of plain
   ATTRIBUTION.md      dataset source, license and citations, built from the manifest
   runs/<runID>.plan.json            cued recordings only: each run's RunPlan, as stored
   protocols/<uuid>/protocol.json    cued recordings only: each protocol version a plan names
+  live.json                         projects with frozen models or live runs: the index below
+  models/<uuid>/model.json          each frozen model that belongs to the result (ModelRecord)
+  arrays/<sha256>.npz               each such model's fitted arrays, named by their SHA-256
+  live/<uuid>/run.json              each live run or replay that belongs (LiveRunRecord)
+  live/<uuid>/predictions.jsonl     its PredictionRecords, as stored
+  live/<uuid>/feedback.jsonl        live runs only: what the participant was shown, as stored
 ```
 
 ## Samples
@@ -112,6 +118,70 @@ library; run from `worker/src`):
 ```sh
 python -I -c "import json,sys;sys.path.insert(0,'.');from bciworkspace_worker.protocol_schedule import schedule;d,r=sys.argv[1:];p=json.load(open(f'{d}/runs/{r}.plan.json'));q=json.load(open(f'{d}/protocols/{p[\"protocolID\"]}/protocol.json'));t=q['timing'];print(schedule([c['label'] for c in q['classes']],q['trialsPerClass'],t['fixationMs'],t['cueMs'],t['restMinMs'],t['restMaxMs'],p['seed'],r)==p['trials'])" /path/to/export R1
 ```
+
+## Frozen models and live runs (brief 006)
+
+A project with a `models/` or `live/` folder gets a `live.json` index in every export; a
+project with neither has no `live.json`, so its export reads as before.
+
+**What belongs to a result.** The export takes:
+
+1. the models frozen from this result (its own fits, decision #38);
+2. the live runs and replays whose recording is the exported recording;
+3. the live runs and replays of the models in (1), wherever they ran; and
+4. every model a run in (2) or (3) used, even if it was frozen from another result.
+
+Nothing else from `models/` or `live/` is copied. A run from (3) on another recording says
+`"recordingIncluded": false`: its predictions name sample ranges in a recording whose
+samples are not in this folder (export a result on that recording to get them).
+
+**Bytes.** `model.json`, `run.json`, `predictions.jsonl` and `feedback.jsonl` are copied
+byte for byte from the project, each read once with a size cap (256 KB, 4 MB, 64 MB, 64 MB),
+never through a symbolic link, and validated; the validated bytes are what is written. A
+model's arrays are its source pipeline's `fitted.npz`, read once (4 MB cap) and written as
+`arrays/<fittedSHA256>.npz` only when those bytes still hash to the model's `fittedSHA256`.
+Two models of one evaluation's fit share a file.
+
+```json
+{
+  "models": [
+    {"file": "models/<uuid>/model.json", "modelID": "…", "name": "MI 2 s", "role": "reference",
+     "sourceResultID": "…", "sourceRecordingID": "…", "arrays": "arrays/<sha256>.npz",
+     "fittedSHA256": "…", "sha256": "…"}
+  ],
+  "liveRuns": [
+    {"liveRunID": "…", "kind": "live", "modelID": "…", "recordingID": "…", "recordingIncluded": true,
+     "run": {"file": "live/<uuid>/run.json", "sha256": "…"},
+     "predictions": {"file": "live/<uuid>/predictions.jsonl", "sha256": "…", "records": 812, "lastLineTruncated": false},
+     "feedback": {"file": "live/<uuid>/feedback.jsonl", "sha256": "…", "records": 95, "lastLineTruncated": false}}
+  ],
+  "unreadableModels": 0, "unverifiedModels": [],
+  "unreadableLiveRuns": 0, "unverifiedLiveRuns": []
+}
+```
+
+- `sha256` is over the exported file's bytes. Lists are sorted by id, and nothing time- or
+  machine-dependent is added, so two exports of the same project state are byte-identical.
+- A model that belongs but whose arrays are missing, over 4 MB or changed since it was
+  frozen is listed in `unverifiedModels` and not copied; a run whose model is not exported
+  (unverified, missing or unreadable) is listed in `unverifiedLiveRuns` and not copied.
+- `unreadableModels` / `unreadableLiveRuns` count UUID-named folders in the **whole
+  project** whose record or logs can't be read (a link, not a directory, over its cap, not
+  valid, or a `.jsonl` with a bad line before the last). They are counted project-wide
+  because an unreadable folder can't be attributed to a result. Neither stops the export,
+  and the app's export notice names every count that isn't zero.
+- A `.jsonl` whose last line was cut off mid-write (a crash) is copied as stored and flagged
+  `lastLineTruncated: true`; readers drop that line, as the app does. A replay has no
+  `feedback` entry.
+
+Check each model's arrays against their hash and count each run's complete prediction lines
+(numpy and the standard library; an export without `live.json` prints `0 models, 0 live runs`):
+
+```sh
+python -I -c "import json,os,sys,hashlib,numpy as np;d=sys.argv[1];p=d+'/live.json';e=json.load(open(p)) if os.path.exists(p) else {'models':[],'liveRuns':[]};[print(m['name'],hashlib.sha256(open(d+'/'+m['arrays'],'rb').read()).hexdigest()==m['fittedSHA256'],list(np.load(d+'/'+m['arrays'],allow_pickle=False).files)) for m in e['models']];[print(r['kind'],sum(1 for l in open(d+'/'+r['predictions']['file']) if l[-1:]==chr(10))) for r in e['liveRuns']];print(len(e['models']),'models,',len(e['liveRuns']),'live runs')" /path/to/export
+```
+
+`docs/data-contracts.md` describes the records' fields.
 
 ## Why `evaluation.json` is byte-identical
 
