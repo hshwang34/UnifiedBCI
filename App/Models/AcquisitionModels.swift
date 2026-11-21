@@ -330,3 +330,73 @@ enum RecordingEndModel {
         }
     }
 }
+
+/// The Connect sheet's own copy (brief 004 PR 5): headings, the source list, the tabs and
+/// the channel-map editor's messages. State words and buttons come from the models above.
+enum ConnectSheetModel {
+    static let title = "Connect a Board"
+    static let serialHeader = "Serial ports"
+    static let noHardwareHeader = "Without hardware"
+    static let noPorts = "No serial ports found. Plug in the dongle and choose Refresh."
+    static let refresh = "Refresh"
+    static let close = "Close"
+    static let closeHelp = "Close the sheet; a connected board is disconnected first."
+    static let demoMissing = "The Demo file isn't in this build (it is generated at build time with uv)."
+    static let connecting = "Opening the board, sending the channel settings and reading them back…"
+    static let pickSource = "Pick a source to connect."
+    static let identityHeader = "Identity"
+    static let configurationHeader = "Requested vs readback"
+    static let columns = ("Channel", "Requested", "Readback")
+    static let differs = "Readback differs from requested"
+    static let sectionPicker = "Section"
+    static let unknownVersion = "unknown"
+    static func channelName(_ n: Int) -> String { "Channel \(n)" }
+
+    enum Tab: String, CaseIterable, Identifiable {
+        case board = "Board", channelMap = "Channel map"
+        var id: String { rawValue }
+    }
+
+    /// The one problem or warning the configuration carries, worst first.
+    static func configurationAlert(_ c: RecordingManifest.BoardConfiguration, source: ConnectSource) -> (danger: Bool, text: String)? {
+        if let p = AcquisitionSession.problem(c, isDevice: source.isDevice) { return (true, ConfigurationModel.message(p)) }
+        return RecordGate.warning(source: source, configuration: c).map { (false, $0) }
+    }
+}
+
+/// The channel-map editor (decision #31): labels, reference, montage, saved maps.
+extension ChannelMapModel {
+    static let labelsHeader = "Labels"
+    static let reference = "Reference"
+    static let montage = "Montage"
+    static let montageDefault = "undeclared"
+    static let savedMaps = "Saved map"
+    static let noSavedMap = "None"
+    static let save = "Save Map"
+    static let saved = "Saved to this project."
+    static let edited = "Edited since you confirmed; confirm again to use the changes."
+
+    static func labelField(_ channel: Int) -> String { "Label for channel \(channel)" }
+
+    /// What the operator has decided so far, under the editor.
+    static func status(_ choice: ChannelMapChoice) -> String {
+        switch choice {
+        case .none: return undecided
+        case .confirmed(let m): return "Map confirmed: \(pickerTitle(m))."
+        case .withoutPositions: return "Recording without positions: BrainFlow's names, montage stored as \"undeclared\"."
+        }
+    }
+
+    /// Why the edited map can't be confirmed or saved.
+    static func invalid(_ problem: String) -> String { "This map can't be used: \(problem)." }
+    static func saveFailed(_ error: String) -> String { "Couldn't save the map: \(error)" }
+
+    /// The edited map: the board's defaults with the operator's labels, reference and montage.
+    static func edited(board: BoardDescription, labels: [String], reference: String, montage: String) -> ChannelMapRecord {
+        var map = ChannelMapRecord.defaults(for: board)
+        for i in map.channels.indices where i < labels.count { map.channels[i].label = labels[i].trimmingCharacters(in: .whitespaces) }
+        map.reference = reference.trimmingCharacters(in: .whitespaces)
+        map.montage = montage.trimmingCharacters(in: .whitespaces)
+        return map
+    }
+}

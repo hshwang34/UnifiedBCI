@@ -161,6 +161,9 @@ struct WorkspaceCommands: Commands {
         #if DEBUG
         CommandMenu("Debug") {
             Button("Phase 0 Feasibility Checks") { openWindow(id: "feasibility") }
+            // Brief 004 PR 5: the Connect sheet, until PR 6 wires New Recording… for real.
+            Button("New Recording…") { session?.showConnectSheet() }
+                .disabled(session == nil)
         }
         #endif
     }

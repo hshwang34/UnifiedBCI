@@ -111,6 +111,15 @@ final class ProjectSession: Identifiable {
     @ObservationIgnored private var qualityModels: [UUID: QualityModel] = [:]
     /// Results whose reruns the user folded away in the list (all start expanded).
     var collapsedResults: Set<UUID> = []
+    /// The open Connect sheet (brief 004 PR 5); Debug-only entry points until PR 6.
+    var connectSheet: ConnectController?
+
+    #if DEBUG
+    // Debug-only until PR 6 wires New Recording… and the welcome button.
+    func showConnectSheet() {
+        if connectSheet == nil { connectSheet = ConnectController(store: store, projectDirectory: url) }
+    }
+    #endif
 
     private var defaultsTask: Task<Void, Never>?
     private var resultLoad: Task<Void, Never>?
@@ -469,6 +478,7 @@ final class ProjectSession: Identifiable {
         resultLoad?.cancel()
         recipesTask?.cancel()
         isClosing = true
+        await connectSheet?.close()
         // The inspection worker stops alongside the evaluation, inside the same budget.
         async let inspection: Void = inspector.shutdown()
         await runner.stop(within: Self.stopLimit)

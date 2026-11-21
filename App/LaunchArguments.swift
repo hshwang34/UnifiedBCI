@@ -35,6 +35,10 @@ import Foundation
 ///     -BCIFrameLog /path/file.txt              append intro frame-interval stats there
 ///     -BCIOffscreenSnapshotDir /path/dir       render intro steps and montage presets with
 ///                                              ImageRenderer (works with the display asleep)
+///     -BCIConnectSheet YES                     open the Connect sheet in the opened project
+///                                              (brief 004 PR 5); snapshots "connect-picker"
+///     -BCIConnectSource demo|synthetic         then connect that source; snapshots
+///                                              "connect-connecting", "connect-ready", "connect-map"
 @MainActor
 enum LaunchArguments {
     private static var done = false
@@ -191,6 +195,10 @@ enum LaunchArguments {
             try? await Task.sleep(for: .milliseconds(500))
             NSApp.windows.first { $0.title == session.name }?.setContentSize(NSSize(width: size[0], height: size[1]))
         }
+        if defaults.bool(forKey: "BCIConnectSheet") {
+            await connectSheet(session, source: defaults.string(forKey: "BCIConnectSource"), snap: snap)
+            return
+        }
         await snap("recordings")
         if snapshots != nil {
             session.recordingTab = .events
@@ -263,6 +271,36 @@ enum LaunchArguments {
     }
 
     #if DEBUG
+    /// Opens the Connect sheet and walks it through its states for snapshots.
+    private static func connectSheet(_ session: ProjectSession, source: String?, snap: (String, Duration) async -> Void) async {
+        session.showConnectSheet()
+        guard let model = session.connectSheet else { return }
+        await model.refresh()
+        model.selectedID = source
+        await snap("connect-picker", .seconds(1.5))
+        guard model.selected != nil else { return }
+        let connect = Task { await model.perform(.connect) }
+        let deadline = ContinuousClock.now + .seconds(30)
+        while model.state != .connecting, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(5)) }
+        await snap("connect-connecting", .zero)
+        await connect.value
+        await snap("connect-ready", .seconds(1))
+        model.tab = .channelMap
+        await snap("connect-map", .seconds(1))
+        if model.labels.count > 2 {
+            model.labels[0] = "FC3"; model.labels[1] = "FC4"
+            model.montage = "10-20 motor strip"
+            model.confirmMap()
+            await snap("connect-map-confirmed", .seconds(1))
+        }
+        // AppKit refuses to quit while a sheet is open, so -BCIQuitWhenDone closes it first.
+        if UserDefaults.standard.bool(forKey: "BCIQuitWhenDone") {
+            await model.close()
+            session.connectSheet = nil
+            try? await Task.sleep(for: .seconds(1))          // let the sheet finish closing
+        }
+    }
+
     /// Captures every visible titled window of this app into `<name>-<n>-<title>.png`.
     /// Uses the window server's own-window capture (`CGWindowListCreateImage`, looked up at
     /// run time: it is deprecated, and this is debug-only tooling); an app may always image
@@ -272,7 +310,7 @@ enum LaunchArguments {
         typealias Capture = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
         guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { return }
         let capture = unsafeBitCast(sym, to: Capture.self)
-        let windows = NSApp.windows.filter { $0.isVisible && $0.styleMask.contains(.titled) }
+        let windows = NSApp.windows.filter { $0.isVisible && ($0.styleMask.contains(.titled) || $0.isSheet) }
         for (i, window) in windows.enumerated() {
             // .optionIncludingWindow = 1 << 3; .boundsIgnoreFraming = 1 << 0, .bestResolution = 1 << 3
             guard let image = capture(.null, 1 << 3, UInt32(window.windowNumber), (1 << 0) | (1 << 3))?.takeRetainedValue() else { continue }
