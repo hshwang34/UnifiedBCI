@@ -18,6 +18,11 @@ enum LiveTestCopy {
     static let delayedDetail = "The newest bar is older than the 250 ms stale limit, so neither window shows it."
     static let directionProblem = "Live feedback needs one class cued with a left arrow and the other with a right arrow, so the bar's sides match the cues."
 
+    static let betweenRunsState = "Between runs"
+    static let betweenRunsLine = "No feedback between runs. It returns when the next run's cues start."
+    static let sessionDoneState = "All runs done"
+    static let sessionDoneLine = "No feedback after the session's last run. Finish Session stops the recording."
+
     static func modelLine(_ m: ModelRecord, _ p: ProtocolRecord) -> String { "\(m.name) · \(StartRunCopy.protocolTitle(p))" }
 }
 
@@ -25,6 +30,9 @@ enum LiveTestCopy {
 /// from the tiles and trial rows (`LiveFeedbackPanelModel`, four times a second).
 struct LiveFeedbackStateModel: Equatable {
     enum Tone: Equatable { case positive, info, warning, danger }
+    /// No protocol run is in progress: the runner still scores the stream, but no cue can
+    /// come, so the card names the gap instead of a per-window state.
+    enum RunGap: Equatable { case betweenRuns, sessionDone }
     struct Bar: Equatable { let direction: Double; let length: Double }
 
     let state: String
@@ -40,12 +48,22 @@ struct LiveFeedbackStateModel: Equatable {
     let prediction: String
 
     /// `mirror`: the feed's `mirror(now:)`, the participant's newest display under the same
-    /// 250 ms / stall rule (nil before the first update). The words come from `s`, refreshed
-    /// four times a second; the bar never comes from `s`, so the operator is never shown a bar
-    /// the participant sees as "Signal delayed". Stopped hides it for good.
-    init(_ s: LiveInferenceRunner.Status, mirror: FeedbackPolicy.Display?, model: ModelRecord, protocolRecord p: ProtocolRecord,
-         directions: [String: Double]) {
+    /// 250 ms / stall rule (nil before the first update); `mirrored`: the update it was decided
+    /// from. The state, its detail and the confidence line all come from that one prediction
+    /// when the update carries it, never from the 4 Hz status, which can be a window ahead or
+    /// behind (the screenshot pass caught "Model unsure" beside "confidence 0.73" at a 0.60
+    /// threshold). The bar never comes from `s`, so the operator is never shown a bar the
+    /// participant sees as "Signal delayed". Stopped hides it for good.
+    init(_ s: LiveInferenceRunner.Status, mirror: FeedbackPolicy.Display?, mirrored: LiveInferenceRunner.Update? = nil, gap: RunGap? = nil,
+         model: ModelRecord, protocolRecord p: ProtocolRecord, directions: [String: Double]) {
         func name(_ label: String) -> String { p.classes.first { $0.label == label }?.displayName ?? ClassDisplay.name(label) }
+        // The prediction the words describe: the mirrored update when it carries one.
+        let source = mirrored.flatMap { $0.validity == nil ? nil : $0 }
+        let validity = source?.validity ?? s.validity
+        let validityDetail = source.map(\.detail) ?? s.detail
+        let score = source.map(\.score) ?? s.score
+        let confidence = source.map(\.confidence) ?? s.confidence
+        let runGap = s.stopped ? nil : gap
         let delayedWords = FeedbackPolicy.words(.stale)
         let shown: FeedbackPolicy.Display
         if s.stopped {
@@ -57,10 +75,13 @@ struct LiveFeedbackStateModel: Equatable {
         } else {
             shown = s.display
         }
-        let delayedHere = !s.stopped && shown == .hidden(words: delayedWords) && s.display != shown
-        switch (s.validity, shown) {
+        let delayedHere = !s.stopped && shown == .hidden(words: delayedWords) && (mirrored?.display ?? s.display) != shown
+        switch (validity, shown) {
         case _ where s.stopped:
             (state, tone) = ("Stopped", .info)
+        case _ where runGap != nil:
+            // After a run (or the last one) the per-window words would be stale news.
+            (state, tone) = (runGap == .betweenRuns ? LiveTestCopy.betweenRunsState : LiveTestCopy.sessionDoneState, .info)
         case _ where delayedHere:
             (state, tone) = (delayedWords, .warning)
         case (nil, _):
@@ -77,19 +98,21 @@ struct LiveFeedbackStateModel: Equatable {
             case .disconnected, .workerUnavailable, .channelMismatch, .invalidInput: tone = .danger
             }
         }
-        detail = delayedHere ? LiveTestCopy.delayedDetail : s.validity == .valid ? nil : s.detail
+        detail = runGap != nil ? nil : delayedHere ? LiveTestCopy.delayedDetail : validity == .valid ? nil : validityDetail
         let left = model.classLabels.first { (directions[$0] ?? 1) < 0 } ?? model.classLabels[0]
         let right = model.classLabels.first { $0 != left } ?? model.classLabels[1]
         leftEnd = "◀ " + name(left)
         rightEnd = name(right) + " ▶"
-        if case .bar(let side, let length) = shown {
+        if runGap == nil, case .bar(let side, let length) = shown {
             bar = Bar(direction: directions[side] ?? 1, length: length)
             barSide = name(side)
         } else {
             bar = nil
             barSide = nil
         }
-        if let c = s.confidence, let score = s.score {
+        if let gap = runGap {
+            prediction = gap == .betweenRuns ? LiveTestCopy.betweenRunsLine : LiveTestCopy.sessionDoneLine
+        } else if let c = confidence, let score {
             let label = model.classLabels[score > 0 ? 1 : 0]
             prediction = "\(name(label)) · model confidence \(Fmt.fixed(c)) · score \(Fmt.signed(score))"
         } else {

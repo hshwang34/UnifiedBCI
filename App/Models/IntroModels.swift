@@ -73,7 +73,7 @@ enum IntroModel {
     /// The head's view on each step; the stage orbits between them (snaps under Reduce Motion).
     static func orbit(for kind: IntroStep.Kind) -> Orbit {
         switch kind {
-        case .whatItDoes: return Orbit.default
+        case .whatItDoes: return Orbit(yaw: -38, pitch: 26)
         case .honestUncertainty: return Orbit(yaw: -72, pitch: 16)
         case .tryExample: return Orbit.Preset.top.orbit
         case .hardwarePhase2: return Orbit(yaw: 32, pitch: 8)

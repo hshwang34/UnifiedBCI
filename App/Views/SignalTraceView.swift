@@ -119,9 +119,14 @@ private struct TraceStack: View {
     static let laneHeight: CGFloat = 30
     static let labelWidth: CGFloat = 132
     static let axisHeight: CGFloat = 18
+    /// A strip above the lanes for the "warm-up" tag, so it never sits on a trace.
+    static let tagHeight: CGFloat = 14
+
+    private var top: CGFloat { model.warmup == nil ? 0 : Self.tagHeight }
 
     var body: some View {
         VStack(spacing: 0) {
+            Color.clear.frame(height: top).accessibilityHidden(true)
             ForEach(model.lanes) { lane in
                 HStack(spacing: 0) {
                     label(lane)
@@ -168,14 +173,16 @@ private struct TraceStack: View {
             func x(_ t: Double) -> CGFloat { x0 + CGFloat((t - model.startS) / span) * width }
             let plotHeight = Self.laneHeight * CGFloat(model.lanes.count)
             if let w = model.warmup {
-                let rect = CGRect(x: x(w.lowerBound), y: 0, width: max(1, x(w.upperBound) - x(w.lowerBound)), height: plotHeight)
+                // The tag sits in its own strip above the lanes, beside the dashed edge.
+                let rect = CGRect(x: x(w.lowerBound), y: top, width: max(1, x(w.upperBound) - x(w.lowerBound)), height: plotHeight)
                 ctx.fill(Path(rect), with: .color(Theme.textTertiary.opacity(0.16)))
                 var edge = Path()
-                edge.move(to: CGPoint(x: rect.maxX, y: 0)); edge.addLine(to: CGPoint(x: rect.maxX, y: plotHeight))
+                edge.move(to: CGPoint(x: rect.maxX, y: 0)); edge.addLine(to: CGPoint(x: rect.maxX, y: top + plotHeight))
                 ctx.stroke(edge, with: .color(Theme.textSecondary), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
                 ctx.draw(Text(TraceModel.warmupTag).font(.caption2).foregroundStyle(Theme.textSecondary),
-                         at: CGPoint(x: rect.maxX + 3, y: 2), anchor: .topLeading)
+                         at: CGPoint(x: rect.maxX + 3, y: top / 2), anchor: .leading)
             }
+            ctx.translateBy(x: 0, y: top)
             for t in model.ticks {
                 var grid = Path()
                 grid.move(to: CGPoint(x: x(t), y: 0)); grid.addLine(to: CGPoint(x: x(t), y: plotHeight))

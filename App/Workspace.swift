@@ -484,6 +484,7 @@ final class Workspace {
         panel.title = "Export Result"
         panel.message = "Writes a folder with the samples, events, channel map, pipeline, model arrays, evaluation and attribution."
         panel.prompt = "Export"
+        // A file-name stamp (sortable, UTC), not on-screen copy, so it stays ISO 8601.
         let stamp = meta.createdAt.formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false).timeSeparator(.omitted))
         panel.nameFieldStringValue = "\(session.name) result \(stamp)".replacingOccurrences(of: "/", with: "-")
         panel.directoryURL = Self.documents

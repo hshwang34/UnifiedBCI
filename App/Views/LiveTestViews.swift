@@ -39,7 +39,7 @@ struct LiveRunsList: View {
                 Section(LiveRunCopy.runsListTitle) {
                     ForEach(session.frozen.liveRuns) { run in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(run.startedAt.formatted(date: .abbreviated, time: .shortened))
+                            Text(Fmt.dateTime(run.startedAt))
                             Text(session.frozen.models.first { $0.modelID == run.modelID }?.name ?? "Model unavailable")
                                 .font(.caption).foregroundStyle(Theme.textSecondary).lineLimit(1)
                         }
@@ -300,8 +300,15 @@ struct LiveTestOperatorView: View {
 
     /// The stale-sensitive state and bar, rebuilt at 20 Hz without touching the trial rows.
     private func feedbackState() -> LiveFeedbackStateModel {
-        LiveFeedbackStateModel(live.status, mirror: live.feed.mirror(now: HostMonotonicClock.nowNanos()), model: live.model,
-                               protocolRecord: live.protocolRecord, directions: live.feed.directions)
+        let mirrored = live.feed.mirrored(now: HostMonotonicClock.nowNanos())
+        return LiveFeedbackStateModel(live.status, mirror: mirrored?.display, mirrored: mirrored?.update, gap: runGap(), model: live.model,
+                                      protocolRecord: live.protocolRecord, directions: live.feed.directions)
+    }
+
+    /// Between runs, or after the session's last one: no cue can come until a run starts.
+    private func runGap() -> LiveFeedbackStateModel.RunGap? {
+        guard let runs = session.runs, runs.runsStarted > 0, !runs.isRunActive else { return nil }
+        return runs.isFinished || runs.runsStarted >= runs.setup.runsPerSession ? .sessionDone : .betweenRuns
     }
 }
 

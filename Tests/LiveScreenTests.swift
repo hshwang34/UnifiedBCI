@@ -126,6 +126,11 @@ final class LiveScreenTests: XCTestCase {
         XCTAssertNil(model.warning, "decision #42: no playback / not-a-device banner on screen")
         XCTAssertEqual(model.sourceFields.first { $0.label == "Device" }?.value, "Demo")
         XCTAssertNil(model.sourceFields.first { $0.label == "Runs" }, "no raw run UUID")
+        // The rate is the recording's and pairs with Device; the dataset is what it was derived
+        // from, never a "Dataset" row beside "Sample rate 125 Hz" (the two-column grid pairs fields in order).
+        XCTAssertEqual(Array(model.sourceFields.map(\.label).prefix(2)), ["Sample rate", "Device"])
+        XCTAssertNil(model.sourceFields.first { $0.label == "Dataset" })
+        if m.source.dataset != nil { XCTAssertNotNil(model.sourceFields.first { $0.label == "Derived from" }) }
         let shown = ([model.title] + model.sourceFields.map(\.value)).joined(separator: " ").lowercased()
         XCTAssertFalse(shown.contains("playback"), shown)
         XCTAssertFalse(shown.contains("not a device") || shown.contains("not from a device"), shown)

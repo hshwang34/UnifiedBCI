@@ -103,7 +103,7 @@ struct Orbit: Equatable, Sendable {
             case .left: return Orbit(yaw: -90, pitch: 6)
             case .right: return Orbit(yaw: 90, pitch: 6)
             case .front: return Orbit(yaw: 0, pitch: 6)
-            case .reset: return Orbit(yaw: -38, pitch: 26)
+            case .reset: return Orbit(yaw: -38, pitch: 52)
             }
         }
     }
@@ -193,9 +193,13 @@ struct HeadCamera: Equatable, Sendable {
     }
 }
 
-/// Leader-line labels (the sketch's `drawLabels`): each label is pushed outward from the
-/// projected head centre and nudged (farther out, then a little round) until its box overlaps
-/// no label placed before it. Selected labels place first, back-facing ones last.
+/// Leader-line labels (the sketch's `drawLabels`): each label sits just off its own
+/// electrode, outward from the projected head centre when there is room, otherwise turned
+/// round it (up to the opposite side) and only then pushed farther out. A spot is taken only
+/// when its box overlaps no label placed before it and no front-facing cup, and when the
+/// label's centre is nearer its own electrode than any other, so a label never reads as
+/// another electrode's. Selected labels place first, then the outermost (they have the most
+/// room outward), back-facing ones last.
 enum LabelLayout {
     struct Item: Equatable {
         let id: String
@@ -214,10 +218,16 @@ enum LabelLayout {
         /// Where the leader line starts (just off the electrode) and ends (the box edge).
         let lineStart: CGPoint
         let lineEnd: CGPoint
+        /// Whether the box is far enough off its electrode to need a leader line.
+        var hasLeader: Bool { hypot(lineEnd.x - lineStart.x, lineEnd.y - lineStart.y) > 4 }
     }
 
-    static let distances: [CGFloat] = [20, 30, 42, 56, 72, 90, 110, 130, 150]
-    static let angles: [CGFloat] = [0, 0.26, -0.26, 0.52, -0.52, 0.8, -0.8, 1.1, -1.1]
+    /// Clear space between the cup's edge and the nearest edge of its label box, tried in turn.
+    static let gaps: [CGFloat] = [3, 7, 12, 20, 30, 44, 60, 80, 104, 130]
+    /// Turns away from straight outward (radians), tried in turn at each gap.
+    static let angles: [CGFloat] = [0, 0.3, -0.3, 0.6, -0.6, 0.95, -0.95, 1.3, -1.3, 1.5708, -1.5708, 2.0, -2.0, 2.5, -2.5, .pi]
+    /// The cup's on-screen radius: labels keep this far from their electrode's centre.
+    static let cupRadius: CGFloat = 8
     static let gap: CGFloat = 2
 
     /// `bounds`, when given, keeps every box inside it (inset 4 pt), so labels never clip at
@@ -225,34 +235,54 @@ enum LabelLayout {
     /// `obstacles` (e.g. the front-facing electrodes) are avoided like placed labels.
     static func place(_ items: [Item], centre: CGPoint, bounds: CGRect? = nil, obstacles: [CGRect] = []) -> [Placed] {
         let inner = bounds?.insetBy(dx: 4, dy: 4)
-        let order = items.sorted { ($0.dim ? 1 : 0, $0.strong ? 0 : 1, $0.id) < ($1.dim ? 1 : 0, $1.strong ? 0 : 1, $1.id) }
+        func reach(_ i: Item) -> CGFloat { hypot(i.anchor.x - centre.x, i.anchor.y - centre.y) }
+        let order = items.sorted {
+            ($0.dim ? 1 : 0, $0.strong ? 0 : 1, -reach($0), $0.id) < ($1.dim ? 1 : 0, $1.strong ? 0 : 1, -reach($1), $1.id)
+        }
+        // Front-facing anchors decide whose label a spot reads as.
+        let anchors = items.filter { !$0.dim }.map { ($0.id, $0.anchor) }
         var placed: [Placed] = []
         for item in order {
             var dx = item.anchor.x - centre.x, dy = item.anchor.y - centre.y
-            let len = max(hypot(dx, dy), 1)
-            dx /= len; dy /= len
-            var best: (CGRect, CGFloat, CGFloat, Int)?
-            search: for k in distances {
+            let len = hypot(dx, dy)
+            if len < 1 { dx = 0; dy = -1 } else { dx /= len; dy /= len }
+            let half = CGSize(width: item.size.width / 2, height: item.size.height / 2)
+            var best: (box: CGRect, ux: CGFloat, uy: CGFloat, cost: Int)?
+            search: for g in gaps {
                 for a in angles {
                     let ux: CGFloat = dx * cos(a) - dy * sin(a), uy: CGFloat = dx * sin(a) + dy * cos(a)
+                    // Distance from the box centre to its edge along u.
+                    let edge = min(abs(ux) > 1e-6 ? half.width / abs(ux) : .infinity, abs(uy) > 1e-6 ? half.height / abs(uy) : .infinity)
+                    let k = cupRadius + g + edge
                     let c = CGPoint(x: item.anchor.x + ux * k, y: item.anchor.y + uy * k)
-                    var box = CGRect(x: c.x - item.size.width / 2, y: c.y - item.size.height / 2, width: item.size.width, height: item.size.height)
+                    var box = CGRect(x: c.x - half.width, y: c.y - half.height, width: item.size.width, height: item.size.height)
                     if let inner {
                         box.origin.x = min(max(box.minX, inner.minX), inner.maxX - box.width)
                         box.origin.y = min(max(box.minY, inner.minY), inner.maxY - box.height)
                     }
                     let hits = placed.filter { $0.frame.insetBy(dx: -gap, dy: -gap).intersects(box) }.count
                         + obstacles.filter { $0.intersects(box) }.count
-                    if best == nil || hits < best!.3 { best = (box, ux, uy, hits) }
-                    if hits == 0 { break search }
+                    let mid = CGPoint(x: box.midX, y: box.midY)
+                    let own = hypot(mid.x - item.anchor.x, mid.y - item.anchor.y)
+                    let misread = item.dim ? false : anchors.contains { $0.0 != item.id && hypot(mid.x - $0.1.x, mid.y - $0.1.y) < own }
+                    let cost = hits * 2 + (misread ? 1 : 0)
+                    if best == nil || cost < best!.cost { best = (box, ux, uy, cost) }
+                    if cost == 0 { break search }
                 }
             }
             let (box, ux, uy, _) = best!
-            let start = CGPoint(x: item.anchor.x + ux * 8, y: item.anchor.y + uy * 8)
-            let end = CGPoint(x: box.midX - ux * (box.width / 2 - 2) * abs(ux), y: box.midY - uy * (box.height / 2) * abs(uy))
-            placed.append(Placed(id: item.id, anchor: item.anchor, frame: box, strong: item.strong, dim: item.dim, lineStart: start, lineEnd: end))
+            let start = CGPoint(x: item.anchor.x + ux * cupRadius, y: item.anchor.y + uy * cupRadius)
+            placed.append(Placed(id: item.id, anchor: item.anchor, frame: box, strong: item.strong, dim: item.dim,
+                                 lineStart: start, lineEnd: edgePoint(of: box, towards: item.anchor)))
         }
         return placed
+    }
+
+    /// Where the segment from a box's centre to `p` leaves the box (the leader line's end).
+    static func edgePoint(of box: CGRect, towards p: CGPoint) -> CGPoint {
+        let vx = p.x - box.midX, vy = p.y - box.midY
+        let t = min(abs(vx) > 1e-6 ? box.width / 2 / abs(vx) : .infinity, abs(vy) > 1e-6 ? box.height / 2 / abs(vy) : .infinity, 1)
+        return CGPoint(x: box.midX + vx * t, y: box.midY + vy * t)
     }
 
     /// The box a front-facing electrode occupies on screen, for `obstacles` (a cup of

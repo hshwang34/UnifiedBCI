@@ -16,7 +16,8 @@ import Foundation
 ///     -BCIRecordingTab quality                 then show that Recording tab (channels, segments,
 ///                                              events, quality); quality waits for the
 ///                                              inspection and snapshots "quality"
-///     -BCIQualityTrace YES                     with -BCIRecordingTab quality: scroll to the signal
+///     -BCIQualityTrace YES                     with -BCIRecordingTab quality: after "quality" (summary
+///                                              and flags), scroll to the signal
 ///                                              view, snapshot "quality-trace" (raw) and
 ///                                              "quality-trace-bandpassed"
 ///     -BCITraceStart 20                        the signal view's window start (s)
@@ -140,6 +141,15 @@ enum LaunchArguments {
         #endif
     }
 
+    /// `-BCISnapshotDir`: a Recording tab picked for a snapshot is brought into view.
+    static var snapshotting: Bool {
+        #if DEBUG
+        return UserDefaults.standard.string(forKey: "BCISnapshotDir") != nil
+        #else
+        return false
+        #endif
+    }
+
     static var qualityTrace: Bool {
         #if DEBUG
         return UserDefaults.standard.bool(forKey: "BCIQualityTrace")
@@ -257,8 +267,10 @@ enum LaunchArguments {
             session.recordingTab = tab
             if tab == .quality {
                 await session.awaitInspection()
+                // The summary and flags at the top; the signal view only for "quality-trace".
                 await snap("quality")
                 if qualityTrace, case .ready(let model) = session.qualityState, let first = model.sections.first {
+                    session.snapshotShowsTrace = true
                     session.traceStartS = defaults.double(forKey: "BCITraceStart")
                     _ = await session.traces.loadAndWait(.init(recordingID: session.selectedRecordingID!, segment: first.id, startS: session.traceStartS))
                     await snap("quality-trace")

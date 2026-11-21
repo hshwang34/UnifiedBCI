@@ -141,7 +141,7 @@ final class ProtocolScreenTests: XCTestCase {
                        "This project can't be written to, so the default protocol couldn't be added. Open a copy in a folder you can write to.")
     }
 
-    func testWholeNumberFields_nameEmptyOrInvalidInput_andTheCreatedTimeIsUTC() {
+    func testWholeNumberFields_nameEmptyOrInvalidInput_andTheCreatedTimeIsLocal() {
         let v1 = ProtocolRecord(draft: .grazDefault, parent: nil, createdAt: Date(timeIntervalSince1970: 1_800_000_000))
         let e = ProtocolEditor(base: v1, lineage: [v1], windowEndMs: 4000)
         e.trialsPerClass = ""
@@ -149,7 +149,8 @@ final class ProtocolScreenTests: XCTestCase {
         XCTAssertTrue(e.issues.map(\.text).contains("Trials per class must be a whole number."))
         XCTAssertTrue(e.issues.map(\.text).contains("Runs per session must be a whole number."))
         XCTAssertFalse(e.canSave)
-        XCTAssertEqual(ProtocolDetailModel.created(v1.createdAt), "2027-01-15 08:00 UTC")
+        XCTAssertEqual(ProtocolDetailModel.created(v1.createdAt, timeZone: TimeZone(identifier: "UTC")!), "2027-01-15 08:00")
+        XCTAssertEqual(ProtocolDetailModel.created(v1.createdAt, timeZone: TimeZone(identifier: "Asia/Seoul")!), "2027-01-15 17:00", "local time")
     }
 
     func testSession_listsTheDefault_savesANewVersionAndSelectsIt() async throws {

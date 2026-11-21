@@ -68,7 +68,9 @@ struct FreezeSheetModel: Equatable {
 
     static let suggestedWindowSeconds = 2.0
 
-    init(result: StoredResult, report: EvaluationReport?, role: ModelRole, sessions: [String?], cueLengthSeconds: Double?) {
+    /// `channelLabels`: channel id → the label the recording declares (`ChannelSpec.label`).
+    init(result: StoredResult, report: EvaluationReport?, role: ModelRole, sessions: [String?], cueLengthSeconds: Double?,
+         channelLabels: [String: String] = [:]) {
         let p = result.pipeline
         let c = p.configuration
         let offset = c["window_offset_s"].flatMap(Double.init)
@@ -84,7 +86,7 @@ struct FreezeSheetModel: Equatable {
         var rows = [
             Row(label: "Model", value: "\(recipe), the fit on the training runs of the result from \(date)"),
             Row(label: "Training runs", value: runs.isEmpty ? "not recorded" : "\(runs.joined(separator: ", ")) · \(sessionText)"),
-            Row(label: "Channels", value: "\(p.expectedChannelIDs.count), in this order: \(p.expectedChannelIDs.joined(separator: ", "))"),
+            Row(label: "Channels", value: Self.channels(p.expectedChannelIDs, labels: channelLabels)),
             Row(label: "Sample rate", value: Fmt.hertz(p.expectedSampleRateHz)),
         ]
         if let lo = c["bandpass_low_hz"].flatMap(Double.init), let hi = c["bandpass_high_hz"].flatMap(Double.init) {
@@ -141,6 +143,18 @@ struct FreezeSheetModel: Equatable {
         return "Feedback can show for \(Fmt.seconds(s)) of each \(Fmt.seconds(cue)) cue (only windows wholly inside the imagery period)."
     }
 
+    /// "16, in this order: FC3, FC1, …": the electrode labels the model was trained on, from
+    /// the recording's channel specs; a channel with no declared label keeps its id.
+    static func channels(_ ids: [String], labels: [String: String]) -> String {
+        let names = ids.map { id in labels[id].map { $0.trimmingCharacters(in: .whitespaces) }.flatMap { $0.isEmpty ? nil : $0 } ?? id }
+        return "\(ids.count), in this order: \(names.joined(separator: ", "))"
+    }
+
+    /// Channel id → declared label for one recording.
+    static func labels(_ channels: [ChannelSpec]) -> [String: String] {
+        Dictionary(channels.map { ($0.id, $0.label) }, uniquingKeysWith: { first, _ in first })
+    }
+
     static func recipeName(_ id: String) -> String {
         switch id {
         case "csp_rlda_v1": return "CSP + shrinkage LDA"
@@ -149,13 +163,8 @@ struct FreezeSheetModel: Equatable {
         }
     }
 
-    static func dateText(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(identifier: "UTC")
-        f.dateFormat = "yyyy-MM-dd HH:mm 'UTC'"
-        return f.string(from: date)
-    }
+    /// Local time, like the run and result lists (`Fmt.dateTime`).
+    static func dateText(_ date: Date, timeZone: TimeZone = .current) -> String { Fmt.dateTime(date, timeZone: timeZone) }
 }
 
 /// The parity view of one stored replay (brief 006 Replay parity criteria).
@@ -259,14 +268,15 @@ struct FrozenModelRowModel: Equatable, Identifiable {
         id = model.modelID
         name = model.name
         source = "\(FreezeSheetModel.recipeName(model.recipe)) · from the result of "
-            + (sourceResultDate.map(FreezeSheetModel.dateText) ?? "a result no longer in this project")
+            + (sourceResultDate.map { FreezeSheetModel.dateText($0) } ?? "a result no longer in this project")
         usage = liveRuns == 0 ? "Not used in a live run yet" : "Used in \(liveRuns) live run\(liveRuns == 1 ? "" : "s")"
     }
 
     /// The model's facts on its detail page.
-    static func facts(_ m: ModelRecord) -> [FreezeSheetModel.Row] {
+    /// `channelLabels`: from the model's source recording (empty when it is gone: ids then).
+    static func facts(_ m: ModelRecord, channelLabels: [String: String] = [:]) -> [FreezeSheetModel.Row] {
         [
-            .init(label: "Channels", value: "\(m.expectedChannelIDs.count), in this order: \(m.expectedChannelIDs.joined(separator: ", "))"),
+            .init(label: "Channels", value: FreezeSheetModel.channels(m.expectedChannelIDs, labels: channelLabels)),
             .init(label: "Sample rate", value: Fmt.hertz(m.expectedSampleRateHz)),
             .init(label: "Band-pass", value: "\(Fmt.fixed(m.bandpass.lowHz, 1))–\(Fmt.fixed(m.bandpass.highHz, 1)) Hz, causal, order \(m.bandpass.order)"),
             .init(label: "Window", value: "\(Fmt.seconds(m.window.lengthSeconds)) starting \(Fmt.seconds(m.window.offsetSeconds)) after the cue"),

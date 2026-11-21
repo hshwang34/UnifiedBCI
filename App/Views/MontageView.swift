@@ -22,7 +22,7 @@ struct MontageView: View {
     static let stageHeight: CGFloat = 340
     /// Framed on the dome, not the study's neck-inclusive framing, so labels have room.
     static let target = SIMD3<Double>(0, -6, 6)
-    static let distance = 820.0
+    static let distance = 640.0
 
     init(layout: MontageLayout, selected: Binding<String?>, hovered: Binding<String?>, initialOrbit: Orbit? = nil, flagged: Set<String> = [], onChoose: @escaping () -> Void = {}) {
         self.layout = layout

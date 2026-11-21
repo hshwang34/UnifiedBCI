@@ -220,11 +220,7 @@ extension RecordingDetailModel {
         case "playback": kind = m.source.sourceFiles?.first?.name == AcquisitionSource.demoFileName ? "Demo recording" : "Playback recording"
         default: return nil
         }
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = timeZone
-        f.dateFormat = "yyyy-MM-dd HH:mm"
-        return "\(kind) · \(f.string(from: m.createdAt))"
+        return "\(kind) · \(Fmt.dateTime(m.createdAt, timeZone: timeZone))"
     }
 }
 

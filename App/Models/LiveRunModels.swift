@@ -55,7 +55,7 @@ enum LiveRunCopy {
     }
 
     static func runTitle(_ r: LiveRunRecord) -> String {
-        "Live run · \(r.startedAt.formatted(date: .abbreviated, time: .shortened))"
+        "Live run · \(Fmt.dateTime(r.startedAt))"
     }
 
     /// Why the protocol can't be scored against the model: its classes must be the model's.

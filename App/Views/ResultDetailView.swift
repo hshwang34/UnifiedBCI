@@ -70,7 +70,7 @@ private struct ResultHero: View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
             figures(m)
             HStack {
-                Text("\(m.referenceName) · stored \(stored.meta.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                Text("\(m.referenceName) · stored \(Fmt.dateTime(stored.meta.createdAt))")
                     .font(.caption).foregroundStyle(Theme.textSecondary)
                 Spacer()
                 Button(ReplayCopy.freezeButton) { session.showFreeze(stored) }

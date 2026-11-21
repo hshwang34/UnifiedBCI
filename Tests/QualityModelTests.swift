@@ -150,7 +150,18 @@ final class QualityModelTests: XCTestCase {
     func testSummariesAreCountsOnly() throws {
         let tiny = try model("inspect_recording_tiny")
         XCTAssertEqual(tiny.sections.map(\.summary), ["Flags on 8 of 8 channels in segment 1", "Flags on 6 of 8 channels in segment 2", "Flags on 8 of 8 channels in segment 3"])
-        XCTAssertEqual(tiny.sections[0].title, "Segment 1 · S001R04 · 42 s at 160 Hz")
+        XCTAssertEqual(tiny.sections[0].title, "Segment 1 · S001R04 · 42 s at 160 Hz", "no stored start: duration only")
+        // Spans come from each segment's own stored start, never from summing durations.
+        let r = try Self.fixture("inspect_recording_tiny")
+        let placed = QualityModel(report: r, segmentStarts: [r.segments[0].index: 0, r.segments[1].index: 100])
+        XCTAssertEqual(placed.sections[0].title, "Segment 1 · S001R04 · 0:00–0:42 at 160 Hz")
+        XCTAssertTrue(placed.sections[1].title.contains(" · 1:40–"), placed.sections[1].title)
+        XCTAssertFalse(placed.sections[2].title.contains("–"), "segment 3 has no stored start")
+        // A live recording's run id is a UUID: never shown, the span names the segment.
+        XCTAssertEqual(QualityModel.segmentTitle(number: 1, runID: UUID().uuidString, start: 0, duration: 8.1, rateHz: 125), "Segment 1 · 0:00–0:08 at 125 Hz")
+        XCTAssertEqual(QualityModel.clock(3723), "1:02:03")
+        for bad in [Double.nan, .infinity, -.infinity, 1e300, -1e300] { XCTAssertEqual(QualityModel.clock(bad), "—", "\(bad)") }
+        XCTAssertEqual(QualityModel.segmentTitle(number: 2, runID: "r", start: .nan, duration: 8, rateHz: 125), "Segment 2 · r · —–— at 125 Hz")
         XCTAssertEqual(tiny.summary, tiny.sections.map(\.summary).joined(separator: "; "))
         XCTAssertEqual(try model("inspect_recording_faults").sections[0].summary, "Flags on 5 of 12 channels in segment 1")
     }

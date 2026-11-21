@@ -16,6 +16,19 @@ enum Fmt {
     static func hertz(_ value: Double) -> String {
         value == value.rounded() ? "\(Int(value)) Hz" : "\(fixed(value, 3)) Hz"
     }
+
+    /// "2026-11-21 13:17": local wall-clock time in one fixed, locale-independent shape. Every
+    /// screen names a stored time this way (model and run names, lists, created dates).
+    static func dateTime(_ date: Date, timeZone: TimeZone = .current) -> String {
+        date.formatted(Date.VerbatimFormatStyle(format: "\(year: .defaultDigits)-\(month: .twoDigits)-\(day: .twoDigits) \(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits)",
+                                                locale: Locale(identifier: "en_US_POSIX"), timeZone: timeZone, calendar: Calendar(identifier: .gregorian)))
+    }
+
+    /// "13:17", local, for lists whose rows are already grouped by day.
+    static func time(_ date: Date, timeZone: TimeZone = .current) -> String {
+        date.formatted(Date.VerbatimFormatStyle(format: "\(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits)",
+                                                locale: Locale(identifier: "en_US_POSIX"), timeZone: timeZone, calendar: Calendar(identifier: .gregorian)))
+    }
 }
 
 // MARK: - Welcome
@@ -227,15 +240,25 @@ struct RecordingDetailModel {
         warning = demo ? nil : s.warning ?? (isPublicDataset ? "Public recording (\(s.dataset ?? "public dataset")) — not recorded on your device." : nil)
 
         var fields: [Field] = []
-        if let dataset = s.dataset { fields.append(Field(label: "Dataset", value: dataset)) }
-        if let doi = s.doi { fields.append(Field(label: "DOI", value: doi)) }
-        if let subject = s.subject { fields.append(Field(label: "Subject", value: subject)) }
-        // A live run id is a UUID: not shown for the Demo, whose run is the app's own.
-        if !demo { fields.append(Field(label: "Runs", value: (s.runs ?? m.segments.map(\.runID)).joined(separator: ", "))) }
-        fields.append(Field(label: "Sample rate", value: Fmt.hertz(m.timing.nominalSampleRateHz)))
-        fields.append(Field(label: "Reference", value: Self.declared(m.reference) ?? Self.undeclared))
-        fields.append(Field(label: "Device", value: demo ? Self.demo : Self.declared(s.boardName) ?? Self.undeclared))
-        if let license = s.license { fields.append(Field(label: "License", value: license)) }
+        if demo {
+            // The Demo's rate is this recording's (the file it plays was resampled for the
+            // board), so it leads beside "Device", and the dataset reads as what the signal was
+            // derived from, never paired with that rate as if it were the dataset's own.
+            fields.append(Field(label: "Sample rate", value: Fmt.hertz(m.timing.nominalSampleRateHz)))
+            fields.append(Field(label: "Device", value: Self.demo))
+            fields.append(Field(label: "Reference", value: Self.declared(m.reference) ?? Self.undeclared))
+            if let dataset = s.dataset { fields.append(Field(label: Self.demoDerivedFrom, value: dataset)) }
+            if let license = s.license { fields.append(Field(label: "License", value: license)) }
+        } else {
+            if let dataset = s.dataset { fields.append(Field(label: "Dataset", value: dataset)) }
+            if let doi = s.doi { fields.append(Field(label: "DOI", value: doi)) }
+            if let subject = s.subject { fields.append(Field(label: "Subject", value: subject)) }
+            fields.append(Field(label: "Runs", value: (s.runs ?? m.segments.map(\.runID)).joined(separator: ", ")))
+            fields.append(Field(label: "Sample rate", value: Fmt.hertz(m.timing.nominalSampleRateHz)))
+            fields.append(Field(label: "Reference", value: Self.declared(m.reference) ?? Self.undeclared))
+            fields.append(Field(label: "Device", value: Self.declared(s.boardName) ?? Self.undeclared))
+            if let license = s.license { fields.append(Field(label: "License", value: license)) }
+        }
         sourceFields = fields
         citations = (s.attribution ?? []).map { Citation(text: $0.text, doi: $0.doi) }
         derivations = s.derivations ?? []
@@ -264,6 +287,7 @@ struct RecordingDetailModel {
     }
 
     static let demo = "Demo"
+    static let demoDerivedFrom = "Derived from"
 
     /// Recorded from the bundled Demo source: playback of the Demo file.
     static func isDemo(_ m: RecordingManifest) -> Bool {

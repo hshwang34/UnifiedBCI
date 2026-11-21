@@ -76,6 +76,13 @@ public struct FeedbackFrameState: Sendable, Equatable {
         return latest.display
     }
 
+    /// `mirror(now:)` with the update it was decided from, read together so the operator's
+    /// state words and its confidence line can never describe two different windows.
+    public func mirrored(now: Int64) -> (display: FeedbackPolicy.Display, update: LiveInferenceRunner.Update)? {
+        guard let latest, let display = mirror(now: now) else { return nil }
+        return (display, latest)
+    }
+
     private func isOld(_ u: LiveInferenceRunner.Update, at target: Int64?) -> Bool {
         guard let target, let e = u.emittedAt else { return true }
         return target - e > staleLimitNanos
@@ -116,6 +123,9 @@ public final class FeedbackFeed: Sendable {
         sink.yield(Report(sequence: s.sequence, display: s.display, presentedAt: at, reason: s.reason, measured: s.measured))
     }
     public func mirror(now: Int64) -> FeedbackPolicy.Display? { state.withLock { $0.mirror(now: now) } }
+    public func mirrored(now: Int64) -> (display: FeedbackPolicy.Display, update: LiveInferenceRunner.Update)? {
+        state.withLock { $0.mirrored(now: now) }
+    }
 
     /// Ends the reports: the final hidden "stopped" record goes out first when the window
     /// didn't log one (submit the runner's last update before calling this), so every live

@@ -80,7 +80,8 @@ struct OperatorPanel: View {
                     .accessibilityElement(children: .contain)
                 }
             }
-            Text(OperatorPanelModel.shortcuts(runs.status?.state ?? .instructions)).font(.caption).foregroundStyle(Theme.textSecondary)
+            Text(OperatorPanelModel.shortcuts(runs.status?.state ?? .instructions, moreRuns: runs.runsStarted < runs.setup.runsPerSession))
+                .font(.caption).foregroundStyle(Theme.textSecondary)
             if let problem = runs.resumeProblem { StatusChip(kind: .danger, text: problem) }
             ForEach(runs.summaries.reversed()) { TimingSummaryView(runIndex: $0.runIndex, model: $0.timing) }
         }

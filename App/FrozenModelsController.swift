@@ -14,13 +14,15 @@ final class FrozenModelsController {
         let report: EvaluationReport?
         let sessions: [String?]
         let cueLengthSeconds: Double?
+        var channelLabels: [String: String] = [:]
         var role: ModelRole = .reference
         var name: String
         var error: String?
         var isFreezing = false
 
         var sheet: FreezeSheetModel {
-            FreezeSheetModel(result: result, report: report, role: role, sessions: sessions, cueLengthSeconds: cueLengthSeconds)
+            FreezeSheetModel(result: result, report: report, role: role, sessions: sessions, cueLengthSeconds: cueLengthSeconds,
+                             channelLabels: channelLabels)
         }
     }
 
