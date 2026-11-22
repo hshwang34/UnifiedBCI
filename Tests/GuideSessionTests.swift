@@ -182,6 +182,8 @@ final class EvaluateReasonTests: XCTestCase {
         for (r, run, l, lr) in [(false, false, false, false), (true, true, false, false), (true, false, true, false), (true, false, false, true)] {
             XCTAssertNotEqual(reason(recording: r, running: run, live: l, liveRun: lr, enough: false), "RUNS")
         }
+    }
+}
 
 /// Fixes from the review of PRs 3 and 4 (brief 007).
 @MainActor
