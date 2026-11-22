@@ -229,6 +229,8 @@ final class ProjectSession: Identifiable {
     private(set) var startRunError: String?
     /// Why Start in the sheet didn't start; the sheet stays open and shows it.
     private(set) var startRunSheetError: String?
+    /// Brief 007: the control "Show me" rings.
+    let spotlight = GuideSpotlight()
     /// The protocol a recording's run plans name; absent for any other recording.
     private(set) var recordingProtocols: [UUID: ProtocolRecord] = [:]
 
@@ -1000,8 +1002,39 @@ final class ProjectSession: Identifiable {
     /// Debug `-BCIGuideGoal`: the goal without the picker (not saved as asked by the user).
     func setGuideGoalForSnapshot(_ goal: GuideGoal) { guide.choose(goal) }
 
-    /// "Show me": switches to the step's section and tab (the highlight ring is PR 4).
+    /// "Show me": switches to the step's section and tab, then rings its control.
     func showGuideTarget(_ step: GuideStep) {
+        navigate(to: step)
+        AccessibilityNotification.Announcement(GuideCopy.showMeAnnouncement(step)).post()
+        spotlight.highlight(step.target.anchor, after: showsConnectSheet ? .milliseconds(600) : .milliseconds(300))
+    }
+
+    /// Why the step's control can't be used now, as its tooltip says; nil when it can.
+    func guideDisabledReason(_ step: GuideStep.ID) -> String? {
+        switch step {
+        case .evaluate, .evaluateCued: return isRunning ? nil : evaluateDisabledReason
+        case .record: return hasLiveRow ? live?.recordDisabledReason : nil
+        case .recordRuns: return hasLiveRow && !(runs.map { !$0.isFinished } ?? false) ? startRunDisabledReason : nil
+        case .checkReplay:
+            if frozen.models.isEmpty { return LiveRunCopy.noModels }
+            return isLiveRunning ? LiveRunCopy.pausedDuringLive : nil
+        case .runLive: return liveFeedback.map { $0.phase != .ended } ?? false ? nil : liveStartDisabledReason
+        default: return nil
+        }
+    }
+
+    /// Why Evaluate is disabled (its tooltip), or nil when it can run.
+    var evaluateDisabledReason: String? {
+        guard !canEvaluate else { return nil }
+        if isLiveRunning { return LiveRunCopy.pausedDuringLive }
+        if isRunning { return GuideCopy.evaluating }
+        guard let handle = selectedRecording, !(liveShown && hasLiveRow) else { return GuideCopy.selectRecording }
+        return EvaluateInspectorModel(manifest: handle.manifest, events: eventsByRecording[handle.id] ?? [], latest: latestReport[handle.id],
+                                      defaults: workerDefaults, recipes: recipes, modelName: modelName,
+                                      protocol: recordingProtocols[handle.id], windowEndMs: evaluationWindowEndMs).runs
+    }
+
+    private func navigate(to step: GuideStep) {
         let t = step.target
         // The live screen when a board is up, else the Connect sheet that gets one.
         if t.showsLive || t.anchor == .newRecording {
@@ -1017,11 +1050,15 @@ final class ProjectSession: Identifiable {
             if let last = pool.last, selectedRecording.map({ r in !pool.contains { $0.id == r.id } }) ?? true { selectedRecordingID = last.id }
         }
         if let tab = t.recordingTab { recordingTab = tab }
+        if t.anchor == .evaluateButton { showInspector = true }
         if t.section == .results, selectedResultID == nil {
             let cued = Set(guideSnapshot.cuedRecordings.map(\.id))
             let pick = step.id == .readCuedResult ? results.last { cued.contains($0.recordingID) } : results.last
             selectedResultID = pick?.resultID
         }
+        if t.section == .pipelines, frozen.selectedModelID == nil { frozen.selectedModelID = frozen.models.first?.modelID }
+        // Live Test's setup holds Start; a selected live run's card would hide it.
+        if step.id == .runLive { selectedLiveRunID = nil }
         if t.section == .liveTest, step.id == .readLiveRun, selectedLiveRunID == nil { selectedLiveRunID = frozen.liveRuns.first?.liveRunID }
     }
 

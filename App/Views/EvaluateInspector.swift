@@ -36,7 +36,8 @@ struct EvaluateInspector: View {
                         .buttonBorderShape(.capsule)
                         .controlSize(.large)
                         .disabled(!session.canEvaluate)
-                        .help("Evaluate (⌘R)")
+                        .help(session.evaluateDisabledReason ?? "Evaluate (⌘R)")
+                        .guideAnchor(.evaluateButton)
                     }
                     section("What this changes") {
                         ForEach(model.changes, id: \.self) {

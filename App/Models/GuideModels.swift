@@ -382,6 +382,16 @@ enum GuideCopy {
     static let skipHelp = "Mark this step skipped and move on; it is not counted as done"
     static let hideHelp = "Hide the guide for this project (Help ▸ Show Guide brings it back)"
 
+    /// Evaluate's tooltip while an evaluation runs, or with no recording shown.
+    static let evaluating = "An evaluation is running."
+    static let selectRecording = "Select a recording in the Recordings list."
+
+    /// VoiceOver, after Show me moves the window.
+    static func showMeAnnouncement(_ step: GuideStep) -> String { "Showing: \(step.title)" }
+
+    /// The card's line when the step's control is disabled: the control's own tooltip.
+    static func unavailable(_ reason: String) -> String { "Not available yet: \(reason)" }
+
     static func finishedWithSkips(_ n: Int) -> String {
         "Guide finished, \(n) step\(n == 1 ? "" : "s") skipped."
     }
