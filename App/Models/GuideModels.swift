@@ -416,6 +416,30 @@ enum GuideCopy {
     static let skipHelp = "Mark this step skipped and move on; it is not counted as done"
     static let hideHelp = "Hide the guide for this project (Help ▸ Show Guide brings it back)"
 
+    /// Evaluate's tooltip while an evaluation runs, or with no recording shown.
+    static let evaluating = "An evaluation is running."
+    static let selectRecording = "Select a recording in the Recordings list."
+    /// Evaluate's tooltip while the live screen (not a stored recording) is shown.
+    static let liveScreenShown = "Select a stored recording in the Recordings list; Evaluate doesn't run on the live screen."
+
+    /// Evaluate's tooltip: one explicit reason per condition of `ProjectSession.canEvaluate`,
+    /// in its order; the run-count sentence only when runs are what's missing. Nil: enabled.
+    static func evaluateDisabledReason(hasRecording: Bool, isRunning: Bool, liveShown: Bool, isLiveRunning: Bool,
+                                       enoughRuns: Bool, runsText: () -> String) -> String? {
+        if !hasRecording { return selectRecording }
+        if isRunning { return evaluating }
+        if liveShown { return liveScreenShown }
+        if isLiveRunning { return LiveRunCopy.pausedDuringLive }
+        if !enoughRuns { return runsText() }
+        return nil
+    }
+
+    /// VoiceOver, after Show me moves the window.
+    static func showMeAnnouncement(_ step: GuideStep) -> String { "Showing: \(step.title)" }
+
+    /// The card's line when the step's control is disabled: the control's own tooltip.
+    static func unavailable(_ reason: String) -> String { "Not available yet: \(reason)" }
+
     static let undoSkip = "Undo skip"
     static func undoSkipOf(_ step: GuideStep) -> String { "Undo skip: \(step.title)" }
     static let showAllSteps = "Show all steps"

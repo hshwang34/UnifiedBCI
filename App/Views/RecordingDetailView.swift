@@ -56,7 +56,9 @@ struct RecordingDetailView: View {
                     if tab != .quality { tab = .channels }
                     session.markGuide(.montageViewed)
                 }
-                tablePicker.id(Self.tabsAnchor)
+                .guideAnchor(.montage)
+                .id(GuideAnchor.montage)
+                tablePicker.id(Self.tabsAnchor).guideAnchor(.qualityTab)
                 if tab == .quality {
                     QualityTabView(session: session, segment: $qualitySegment, selected: $selectedChannel)
                 } else {
@@ -74,6 +76,14 @@ struct RecordingDetailView: View {
             }
             .padding(Theme.Space.pageMargin)
             .frame(width: geo.size.width, alignment: .leading)
+        }
+        // Brief 007 "Show me": bring the ringed montage or tabs into view.
+        .onChange(of: session.spotlight.token) {
+            switch session.spotlight.anchor {
+            case .montage: withAnimation { proxy.scrollTo(GuideAnchor.montage, anchor: .top) }
+            case .qualityTab: withAnimation { proxy.scrollTo(Self.tabsAnchor, anchor: .top) }
+            default: break
+            }
         }
         // Debug `-BCIRecordingTab`: bring the tabs to the top for snapshots.
         .onChange(of: [tab.rawValue, "\(flaggedChannels.count)", "\(session.snapshotShowsTrace)"], initial: true) {

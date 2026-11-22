@@ -78,6 +78,9 @@ import Foundation
 ///                                              "guide" at the end of the run (the sidebar card)
 ///     -BCIGuidePicker YES                      show the goal picker in the opened project; snapshots
 ///                                              "guide-picker", then closes it ("Not now")
+///     -BCIGuideShowMe YES                      with -BCIGuideGoal: after "guide", press Show me on the
+///                                              current step; snapshots "guide-showme" mid-ring (add
+///                                              -BCIReduceMotion YES for the static ring)
 ///     The picker never opens on its own while -BCISnapshotDir or -BCIGuideGoal is set.
 @MainActor
 enum LaunchArguments {
@@ -368,6 +371,11 @@ enum LaunchArguments {
         if guideGoal != nil, snapshots != nil {
             session.section = .recordings
             await snap("guide")
+            if defaults.bool(forKey: "BCIGuideShowMe"), let step = session.guideProgress?.current?.step {
+                session.showGuideTarget(step)
+                await snap("guide-showme", settle: .milliseconds(1300))
+                await session.spotlight.awaitHighlight()
+            }
         }
         if let raw = defaults.string(forKey: "BCISection"), let section = SidebarSection(rawValue: raw) {
             session.section = section

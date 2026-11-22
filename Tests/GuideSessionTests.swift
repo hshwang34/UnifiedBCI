@@ -90,6 +90,101 @@ final class GuideSessionTests: XCTestCase {
     }
 }
 
+/// Brief 007 PR 4: Show me rings the step's control for about 2 s, and the card gives the
+/// disabled control's own reason.
+@MainActor
+final class GuideShowMeTests: XCTestCase {
+    func testSpotlight_ringsThenClears() async {
+        let s = GuideSpotlight()
+        s.duration = .milliseconds(50)
+        s.highlight(.recordButton, after: .zero)
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(s.anchor, .recordButton)
+        let first = s.token
+        await s.awaitHighlight()
+        XCTAssertNil(s.anchor)
+        s.highlight(.recordButton, after: .zero)
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertGreaterThan(s.token, first, "ringing the same control again restarts the ring")
+        s.clear()
+        XCTAssertNil(s.anchor)
+        XCTAssertEqual(GuideSpotlight.duration, .seconds(2))
+    }
+
+    func testEveryAnchor_isSomeStepsTarget() {
+        let used = Set(GuideStep.ID.allCases.map { GuideStep.step($0).target.anchor })
+        XCTAssertEqual(used, Set(GuideAnchor.allCases))
+    }
+
+    func testShowMe_ringsAndOpensTheInspectorForEvaluate() async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("bci-showme-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let project = scratch.appendingPathComponent("tiny.bciproj")
+        let store = try ProjectStore.importBundledExample(from: try ProjectStoreTests.tinyFixtureURL(), into: project)
+        let s = await ProjectSession.adopt(store, url: project, launch: nil)
+        defer { Task { await s.shutdown() } }
+        s.spotlight.duration = .seconds(1)
+        s.showInspector = false
+        s.section = .results
+        s.showGuideTarget(GuideStep.step(.evaluate))
+        XCTAssertEqual(s.section, .recordings)
+        XCTAssertTrue(s.showInspector)
+        try? await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(s.spotlight.anchor, .evaluateButton, "rung after the navigation delay")
+        await s.spotlight.awaitHighlight()
+        XCTAssertNil(s.spotlight.anchor, "cleared after the duration")
+    }
+
+    func testDisabledReason_isTheControlsTooltip() async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("bci-showme-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let project = scratch.appendingPathComponent("tiny.bciproj")
+        let store = try ProjectStore.importBundledExample(from: try ProjectStoreTests.tinyFixtureURL(), into: project)
+        let s = await ProjectSession.adopt(store, url: project, launch: nil)
+        defer { Task { await s.shutdown() } }
+        // Nothing frozen: Replay's reason is Live Test's "no models" line.
+        XCTAssertEqual(s.guideDisabledReason(.checkReplay), LiveRunCopy.noModels)
+        XCTAssertEqual(s.guideDisabledReason(.runLive), s.liveStartDisabledReason)
+        XCTAssertNotNil(s.guideDisabledReason(.runLive))
+        // No board: Record isn't on screen, so the card claims no reason for it.
+        XCTAssertNil(s.guideDisabledReason(.record))
+        // The fixture has enough runs: Evaluate can run.
+        XCTAssertTrue(s.canEvaluate)
+        XCTAssertNil(s.guideDisabledReason(.evaluate))
+        s.liveShown = true   // the Live row selected, even with no board (no live row)
+        XCTAssertEqual(s.guideDisabledReason(.evaluate), GuideCopy.liveScreenShown)
+        s.liveShown = false
+        s.selectedRecordingID = nil
+        XCTAssertEqual(s.guideDisabledReason(.evaluate), GuideCopy.selectRecording)
+        XCTAssertEqual(s.evaluateDisabledReason, GuideCopy.selectRecording)
+    }
+}
+
+/// Review of PR 4: Evaluate's disabled reason names the actual condition, branch by branch.
+final class EvaluateReasonTests: XCTestCase {
+    private func reason(recording: Bool = true, running: Bool = false, live: Bool = false, liveRun: Bool = false, enough: Bool = true) -> String? {
+        GuideCopy.evaluateDisabledReason(hasRecording: recording, isRunning: running, liveShown: live, isLiveRunning: liveRun,
+                                         enoughRuns: enough) { "RUNS" }
+    }
+
+    func testEachBranchHasItsOwnReason() {
+        XCTAssertNil(reason())
+        XCTAssertEqual(reason(recording: false), GuideCopy.selectRecording)
+        XCTAssertEqual(reason(running: true), "An evaluation is running.")
+        XCTAssertEqual(reason(live: true), GuideCopy.liveScreenShown)
+        XCTAssertEqual(reason(liveRun: true), LiveRunCopy.pausedDuringLive)
+        XCTAssertEqual(reason(enough: false), "RUNS")
+    }
+
+    func testRunCountSentenceOnlyWhenRunsAreMissing() {
+        for (r, run, l, lr) in [(false, false, false, false), (true, true, false, false), (true, false, true, false), (true, false, false, true)] {
+            XCTAssertNotEqual(reason(recording: r, running: run, live: l, liveRun: lr, enough: false), "RUNS")
+        }
+    }
+}
+
 /// Fixes from the review of PRs 3 and 4 (brief 007).
 @MainActor
 final class GuideReviewFixTests: XCTestCase {

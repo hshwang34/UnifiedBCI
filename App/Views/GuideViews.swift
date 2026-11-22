@@ -79,6 +79,8 @@ private struct GoalRow: View {
 /// current step's instruction with Show me and Skip step, or the all-done state.
 struct GuideCard: View {
     let progress: GuideProgress
+    /// The current step's control is disabled: its tooltip's reason.
+    var disabledReason: String? = nil
     let collapsed: Bool
     /// The step Skip step last skipped: the card offers "Undo skip" for it.
     var lastSkipped: GuideStep.ID? = nil
@@ -99,6 +101,11 @@ struct GuideCard: View {
                     Text(current.step.instruction)
                         .font(.caption).foregroundStyle(Theme.textPrimary)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    if let disabledReason {
+                        Label(GuideCopy.unavailable(disabledReason), systemImage: "info.circle")
+                            .font(.caption).foregroundStyle(Theme.textSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     HStack(spacing: Theme.Space.s) {
                         Button(GuideCopy.showMe) { showMe(current.step) }
                             .buttonStyle(.borderedProminent).controlSize(.small)

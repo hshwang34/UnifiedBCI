@@ -97,7 +97,7 @@ struct ProjectWindow: View {
                         .labelStyle(.titleAndIcon)
                         .buttonStyle(.borderedProminent)
                         .disabled(!session.canEvaluate)
-                        .help(session.isLiveRunning ? LiveRunCopy.pausedDuringLive : "Evaluate the selected recording (⌘R)")
+                        .help(session.evaluateDisabledReason ?? "Evaluate the selected recording (⌘R)")
                 }
             }
             FixedToolbarSpacer()
@@ -117,6 +117,8 @@ struct ProjectWindow: View {
             }
         }
         .focusedSceneValue(\.projectSession, session)
+        // Brief 007: "Show me" rings the control a step's anchor names, sheets included.
+        .environment(session.spotlight)
         // Brief 004: New Recording… / Connect hardware. Escape and Close go through the
         // controller, so a board that never streamed is released.
         .sheet(isPresented: $session.showsConnectSheet, onDismiss: { session.connectSheetClosed() }) {
@@ -194,7 +196,8 @@ private struct ProjectSidebar: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 if session.showsGuideCard, let progress = session.guideProgress {
-                    GuideCard(progress: progress, collapsed: session.guide.collapsed,
+                    GuideCard(progress: progress, disabledReason: progress.current.flatMap { session.guideDisabledReason($0.id) },
+                              collapsed: session.guide.collapsed,
                               lastSkipped: session.lastSkippedGuideStep,
                               toggleCollapsed: session.toggleGuideCollapsed, hide: session.hideGuide,
                               changeGoal: session.presentGuidePicker, skip: session.skipGuideStep,
@@ -297,9 +300,10 @@ private struct ContentColumn: View {
                         }
                     }
                 }
+                .guideAnchor(.recordingList)
             }
         case .protocols:
-            ProtocolsList(session: session)
+            ProtocolsList(session: session).guideAnchor(.protocolList)
         case .liveTest:
             LiveRunsList(session: session)
         case .pipelines:
