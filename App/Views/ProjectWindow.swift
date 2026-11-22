@@ -769,9 +769,16 @@ struct ParametersPopover: View {
     var body: some View {
         let d = session.workerDefaults?.params
         VStack(alignment: .leading, spacing: Theme.Space.l) {
-            HStack(spacing: Theme.Space.xs) {
+            // No "?" popover inside this popover: a caption, and the topic inline on request.
+            VStack(alignment: .leading, spacing: Theme.Space.xs) {
                 Text(HelpTopic.evaluationParameters.title).font(Theme.Fonts.sectionHeader).accessibilityAddTraits(.isHeader)
-                HelpButton(topic: .evaluationParameters)
+                Text(HelpCopy.parametersCaption).font(.caption).foregroundStyle(Theme.textSecondary)
+                DisclosureGroup(HelpCopy.aboutTheseSettings) {
+                    Text(HelpTopic.evaluationParameters.text).font(.caption).foregroundStyle(Theme.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .font(.caption)
             }
             switch session.defaults {
             case .loading:

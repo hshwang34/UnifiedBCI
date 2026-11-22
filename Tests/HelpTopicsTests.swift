@@ -19,7 +19,13 @@ final class HelpTopicsTests: XCTestCase {
     }
 
     func testTheBriefsSpotsExactly() {
-        XCTAssertEqual(HelpTopic.allCases.count, 13)
+        // 13 spots; "signal trace / lane height" is one topic per place (live preview, recorded trace).
+        XCTAssertEqual(HelpTopic.allCases.count, 14)
+        XCTAssertTrue(HelpTopic.livePreview.text.contains("mean removed"))
+        XCTAssertTrue(HelpTopic.livePreview.text.contains("Auto"))
+        XCTAssertTrue(HelpTopic.recordedTrace.text.contains("10-second window"))
+        XCTAssertTrue(HelpTopic.recordedTrace.text.contains("share one lane height"))
+        XCTAssertFalse(HelpTopic.recordedTrace.text.contains("Auto"), "the recorded trace has no lane-height picker")
         XCTAssertEqual(HelpTopic.streamHealth.accessibilityLabel, "Help: Stream health")
     }
 

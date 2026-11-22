@@ -6,8 +6,16 @@ import Foundation
 // accuracy is, nothing is overclaimed, and model confidence is the model's own uncalibrated
 // estimate.
 
+/// Help copy that isn't a "?" topic.
+enum HelpCopy {
+    /// The Parameters… popover's one-line caption (a popover can't open a "?" popover).
+    static let parametersCaption = "Changes apply to the next evaluation only; every value used is stored with its result."
+    static let aboutTheseSettings = "About these settings"
+}
+
 enum HelpTopic: String, CaseIterable, Identifiable, Sendable {
-    case streamHealth, channelMap, qualityChecks, signalTrace, headMontage, trialTiming
+    // The brief's "signal trace / lane height" spot is two topics, one per place, so each is exact.
+    case streamHealth, channelMap, qualityChecks, livePreview, recordedTrace, headMontage, trialTiming
     case heldOutAccuracy, chanceAndBaseline, evaluationParameters, freeze, replayParity
     case modelConfidence, liveRunInterval
 
@@ -18,7 +26,8 @@ enum HelpTopic: String, CaseIterable, Identifiable, Sendable {
         case .streamHealth: return "Stream health"
         case .channelMap: return "Channel map"
         case .qualityChecks: return "Quality checks"
-        case .signalTrace: return "Signal trace and lane height"
+        case .livePreview: return "Live preview and lane height"
+        case .recordedTrace: return "Signal trace"
         case .headMontage: return "Head montage"
         case .trialTiming: return "Trial timing"
         case .heldOutAccuracy: return "Held-out accuracy"
@@ -46,10 +55,14 @@ enum HelpTopic: String, CaseIterable, Identifiable, Sendable {
             return ["The quality checks run six rules on every channel: flatline, pinned at a limit, large deflections, mains line noise, outlier amplitude and outlier high-frequency power.",
                     "A usable recording has few or no flags on the channels you plan to analyse.",
                     "If many channels are flagged, check electrode contact and the reference, then record again. The checks describe the data and never change it, and passing them doesn't prove a signal comes from the brain."]
-        case .signalTrace:
-            return ["The trace shows a few seconds of every channel; each lane is centred on the channel's mean, and lane height is the microvolt range one lane spans.",
-                    "Clean EEG looks like small, irregular waves; on Auto the lane height is picked so a typical channel fills its lane, and rare peaks clip at the lane edge.",
-                    "A flat line, a steady large wave or sudden steps usually mean a loose electrode. Changing the lane height only changes the drawing, never the data."]
+        case .livePreview:
+            return ["The live preview draws the last 10 seconds of every channel in microvolts, with each channel's mean removed for display only.",
+                    "Lane height is the microvolt range one lane spans; on Auto it is picked so a typical channel fills its lane, and rare peaks clip at the lane edge.",
+                    "Clean EEG looks like small, irregular waves; a flat line, a steady large wave or sudden steps usually mean a loose electrode, and changing the lane height only changes the drawing, never the recording."]
+        case .recordedTrace:
+            return ["The signal trace shows a 10-second window of every channel from the stored recording, raw or band-passed, with each lane centred on that channel's typical level.",
+                    "All channels share one lane height, set from the typical channel's range, so a flat channel looks flat and a noisy one looks noisy.",
+                    "Flagged lanes carry their quality flags; if a lane is flat or full of steps, check that electrode before the next recording, because stored data never changes."]
         case .headMontage:
             return ["The head shows where each channel's electrode sits, taken from the declared channel map; drag to turn it and click a sensor to find its channel.",
                     "Ringed sensors have at least one quality flag in the selected segment, and channels without a declared position are listed rather than placed.",
@@ -79,7 +92,7 @@ enum HelpTopic: String, CaseIterable, Identifiable, Sendable {
                     "Passing means the live path computes the same numbers as the offline analysis, within the tolerances listed.",
                     "If it fails, don't run live with this model: the mismatch is a bug in the app, not a property of your data."]
         case .modelConfidence:
-            return ["Model confidence is the model's own estimate of how sure it is about each window. It is uncalibrated: 0.8 does not mean the model is right 80 % of the time.",
+            return ["Model confidence is the model's own estimate of how sure it is about each window, and it is uncalibrated: 0.8 does not mean the model is right 80 % of the time.",
                     "When confidence is below the threshold (0.6 by default), the feedback abstains: the participant's bar is hidden and \"Model unsure\" is shown instead of a guess.",
                     "If it abstains on most windows, the model isn't separating the classes in this session; check the signal or record new training runs."]
         case .liveRunInterval:

@@ -164,7 +164,7 @@ private struct PreviewCard: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(LivePreviewModel.title).font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
                     .accessibilityAddTraits(.isHeader)
-                HelpButton(topic: .signalTrace)
+                HelpButton(topic: .livePreview)
                 if live.isRecording {
                     Label(LiveScreenModel.recordingBadge, systemImage: "record.circle.fill")
                         .font(.callout.weight(.semibold)).foregroundStyle(Theme.danger)
