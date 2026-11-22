@@ -54,6 +54,7 @@ struct RecordingDetailView: View {
                 // Decision #16: the montage head sits above the channel table.
                 MontageView(layout: model.montageLayout, selected: $selectedChannel, hovered: $hoveredChannel, flagged: flaggedChannels) {
                     if tab != .quality { tab = .channels }
+                    session.markGuide(.montageViewed)
                 }
                 tablePicker.id(Self.tabsAnchor)
                 if tab == .quality {

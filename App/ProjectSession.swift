@@ -103,6 +103,7 @@ final class ProjectSession: Identifiable {
             if section != oldValue, let n = notice, !n.isPersistent { notice = nil }
             if section == .protocols, section != oldValue { loadProtocols(addingDefault: true) }
             if section == .pipelines, section != oldValue { frozen.reloadInBackground() }
+            noteGuideVisit()
         }
     }
 
@@ -116,10 +117,10 @@ final class ProjectSession: Identifiable {
     var protocolEditor: ProtocolEditor?
     @ObservationIgnored private var protocolsTask: Task<Void, Never>?
     var selectedRecordingID: UUID? {
-        didSet { if selectedRecordingID != oldValue { traceStartS = 0; inspectIfFirstShown() } }
+        didSet { if selectedRecordingID != oldValue { traceStartS = 0; inspectIfFirstShown(); noteGuideVisit() } }
     }
     var selectedResultID: UUID? {
-        didSet { if selectedResultID != oldValue { loadSelectedResult() } }
+        didSet { if selectedResultID != oldValue { loadSelectedResult(); noteGuideVisit() } }
     }
     var parameters = Parameters() {
         didSet { if parameters.cspComponents != oldValue.cspComponents { refreshRecipes() } }
@@ -129,7 +130,7 @@ final class ProjectSession: Identifiable {
     @ObservationIgnored private var recipesTask: Task<Void, Never>?
     var showInspector = true
     var recordingTab: RecordingTab = .channels {
-        didSet { if recordingTab != oldValue { inspectIfFirstShown() } }
+        didSet { if recordingTab != oldValue { inspectIfFirstShown(); noteGuideVisit() } }
     }
     /// Recordings whose Quality tab has been shown: inspection starts on its own only the
     /// first time, so a cancel or a failure is not undone by switching tabs.
@@ -145,7 +146,10 @@ final class ProjectSession: Identifiable {
     var showsConnectSheet = false
     /// The Recordings list's Live row is selected (the acquisition screen is the detail).
     var liveShown = false {
-        didSet { if liveShown, let n = notice, !n.isPersistent { notice = nil } }
+        didSet {
+            if liveShown, let n = notice, !n.isPersistent { notice = nil }
+            noteGuideVisit()
+        }
     }
 
     /// The Live row exists while a board is connected or connecting through the screen.
@@ -181,6 +185,14 @@ final class ProjectSession: Identifiable {
             self.showsConnectSheet = false
             self.section = .recordings
             self.liveShown = true
+        }
+        // Brief 007: "Check the live signal" is done once a stream has run 10 s.
+        c.onStreamingBegan = { [weak self, weak c] in
+            Task { [weak self, weak c] in
+                try? await Task.sleep(for: .seconds(GuideStep.previewSeconds))
+                guard let self, let c, let since = c.streamingSince, Date().timeIntervalSince(since) >= GuideStep.previewSeconds - 0.5 else { return }
+                self.markGuide(.previewWatched)
+            }
         }
         c.onRecordingEnded = { [weak self] _ in
             guard let self else { return }
@@ -271,7 +283,7 @@ final class ProjectSession: Identifiable {
     /// From Start until its replay check is stored: Evaluate and Replay are paused.
     var isLiveRunning: Bool { liveFeedback.map { $0.phase != .ended } ?? false }
     /// The Live Test list's selection: a live run, or nil for the setup.
-    var selectedLiveRunID: UUID?
+    var selectedLiveRunID: UUID? { didSet { noteGuideVisit() } }
     /// Live Test setup: the protocol run's form (protocol, seed, display) and the live part.
     var liveRunForm: StartRunForm?
     var liveTestForm = LiveTestForm()
@@ -412,7 +424,7 @@ final class ProjectSession: Identifiable {
     private var defaultsTask: Task<Void, Never>?
     private var resultLoad: Task<Void, Never>?
 
-    init(store: ProjectStore, url: URL, launch: WorkerLaunch?, name: String) {
+    init(store: ProjectStore, url: URL, launch: WorkerLaunch?, name: String, created: Date? = nil) {
         self.url = url
         self.store = store
         self.runner = EvaluationRunner(store: store, launch: launch)
@@ -421,6 +433,9 @@ final class ProjectSession: Identifiable {
         self.frozen = FrozenModelsController(store: store, launch: launch)
         self.launch = launch
         self.name = name
+        guideKey = created.map { GuideStore.projectKey(name: name, created: $0) } ?? url.path
+        guideStore = GuideStore(defaults: Self.guideDefaults)
+        guide = guideStore.load(guideKey)
     }
 
     /// Opens the project at `url` (already canonical) without blocking the main actor:
@@ -432,7 +447,8 @@ final class ProjectSession: Identifiable {
 
     /// Wraps a store that is already open (a project just created or imported).
     static func adopt(_ store: ProjectStore, url: URL, launch: WorkerLaunch?) async -> ProjectSession {
-        let session = ProjectSession(store: store, url: url, launch: launch, name: await store.manifest.name)
+        let manifest = await store.manifest
+        let session = ProjectSession(store: store, url: url, launch: launch, name: manifest.name, created: manifest.created)
         await session.reload()
         session.loadDefaults()
         return session
@@ -451,7 +467,9 @@ final class ProjectSession: Identifiable {
                 events[id] = try await store.events(for: id)
             }
             var protocols: [UUID: ProtocolRecord] = [:]
-            if let known = try? await store.protocols().protocols, !known.isEmpty {
+            let known = (try? await store.protocols().protocols) ?? []
+            knownProtocolCount = known.count
+            if !known.isEmpty {
                 for id in ids {
                     guard let plan = try? await store.runPlans(recording: id).plans.first else { continue }
                     protocols[id] = known.first { $0.protocolID == plan.protocolID }
@@ -891,6 +909,120 @@ final class ProjectSession: Identifiable {
             notice = .exportFailed("\(error)")
         }
         announce(noticeText(notice!))
+    }
+
+    // MARK: Guide (brief 007)
+
+    /// Guide state is per-user app state (UserDefaults), never part of the project.
+    /// Under XCTest a throwaway suite, so tests never write into the app's own defaults.
+    static let guideDefaults: UserDefaults = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+        ? .standard : UserDefaults(suiteName: "bci-tests-guide") ?? .standard
+    @ObservationIgnored private let guideStore: GuideStore
+    @ObservationIgnored let guideKey: String
+    private(set) var guide: GuideState {
+        didSet { if guide != oldValue { guideStore.save(guide, for: guideKey) } }
+    }
+    /// The goal picker sheet is up.
+    var showsGuidePicker = false
+    /// Protocols the store holds (from the last reload), before Protocols is first opened.
+    private(set) var knownProtocolCount = 0
+
+    func markGuide(_ mark: GuideMark) {
+        if !guide.marks.contains(mark) { guide.marks.insert(mark) }
+    }
+
+    /// Records what is on screen now as a visited mark (decision #45).
+    private func noteGuideVisit() {
+        switch section {
+        case .recordings:
+            guard !(liveShown && hasLiveRow), let id = selectedRecordingID else { return }
+            markGuide(.recordingOpened)
+            if recordingTab == .quality { markGuide(.quality(id)) }
+        case .results:
+            if let id = selectedResultID { markGuide(.result(id)) }
+        case .liveTest:
+            if let id = selectedLiveRunID, liveFeedback.map({ $0.phase == .ended }) ?? true { markGuide(.liveRunCard(id)) }
+        default: break
+        }
+    }
+
+    var guideSnapshot: GuideSnapshot {
+        let streaming = live?.state == .streaming
+        return GuideSnapshot(
+            recordings: recordings.map { .init(id: $0.id, isLive: $0.manifest.source.kind != "public_dataset", isCued: recordingProtocols[$0.id] != nil) },
+            resultRecordings: Dictionary(results.map { ($0.resultID, $0.recordingID) }, uniquingKeysWith: { a, _ in a }),
+            protocolCount: max(knownProtocolCount, protocolList?.protocols.count ?? 0),
+            frozenModelCount: frozen.models.count,
+            replayParityPassed: frozen.replays.contains { $0.parity?.passed == true },
+            liveRunIDs: frozen.liveRuns.map(\.liveRunID),
+            streaming: streaming,
+            mapDeclared: (live?.choice ?? ChannelMapChoice.none) != ChannelMapChoice.none,
+            streamingSeconds: streaming ? (live?.streamingSince.map { Date().timeIntervalSince($0) } ?? 0) : 0)
+    }
+
+    /// The card's content, or nil with no goal chosen.
+    var guideProgress: GuideProgress? {
+        guide.goal.map { GuideProgress(goal: $0, snapshot: guideSnapshot, marks: guide.marks, skipped: guide.skipped) }
+    }
+
+    /// The card is on screen: a goal is chosen and the card isn't hidden.
+    var showsGuideCard: Bool { guide.goal != nil && !guide.hidden }
+
+    /// Opens the picker the first time a project opens without a goal; never again after.
+    func askForGuideGoalIfNeeded() {
+        guard guide.shouldAsk, !isClosing else { return }
+        guide.askedOnce = true
+        showsGuidePicker = true
+    }
+
+    /// Help ▸ Guide…, "Change goal…", "Choose another goal".
+    func presentGuidePicker() {
+        guide.askedOnce = true
+        showsGuidePicker = true
+    }
+
+    func chooseGuideGoal(_ goal: GuideGoal) {
+        guide.choose(goal)
+        showsGuidePicker = false
+    }
+
+    func guideNotNow() { showsGuidePicker = false }
+
+    /// Help ▸ Show Guide: the card back, or the picker when no goal was ever chosen.
+    func showGuide() {
+        if guide.goal == nil { presentGuidePicker() } else { guide.hidden = false; guide.collapsed = false }
+    }
+
+    func hideGuide() { guide.hidden = true }
+    func toggleGuideCollapsed() { guide.collapsed.toggle() }
+    func skipGuideStep(_ id: GuideStep.ID) { guide.skipped.insert(id) }
+
+    /// Debug `-BCIGuideGoal`: the goal without the picker (not saved as asked by the user).
+    func setGuideGoalForSnapshot(_ goal: GuideGoal) { guide.choose(goal) }
+
+    /// "Show me": switches to the step's section and tab (the highlight ring is PR 4).
+    func showGuideTarget(_ step: GuideStep) {
+        let t = step.target
+        // The live screen when a board is up, else the Connect sheet that gets one.
+        if t.showsLive || t.anchor == .newRecording {
+            if hasLiveRow { section = .recordings; liveShown = true } else { showConnectSheet() }
+            return
+        }
+        section = t.section
+        if t.section == .recordings {
+            liveShown = false
+            // The step's own kind of recording: a live one to review, a cued one to evaluate.
+            let snap = guideSnapshot
+            let pool = step.id == .reviewQuality ? snap.liveRecordings : step.id == .evaluateCued ? snap.cuedRecordings : []
+            if let last = pool.last, selectedRecording.map({ r in !pool.contains { $0.id == r.id } }) ?? true { selectedRecordingID = last.id }
+        }
+        if let tab = t.recordingTab { recordingTab = tab }
+        if t.section == .results, selectedResultID == nil {
+            let cued = Set(guideSnapshot.cuedRecordings.map(\.id))
+            let pick = step.id == .readCuedResult ? results.last { cued.contains($0.recordingID) } : results.last
+            selectedResultID = pick?.resultID
+        }
+        if t.section == .liveTest, step.id == .readLiveRun, selectedLiveRunID == nil { selectedLiveRunID = frozen.liveRuns.first?.liveRunID }
     }
 
     /// Set as `shutdown()` begins: nothing starts an inspection afterwards.

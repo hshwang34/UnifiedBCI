@@ -140,6 +140,17 @@ struct ProjectWindow: View {
                 }
             }
         }
+        // Brief 007: the goal picker, once per project, never over the first-run intro or
+        // another sheet, and not in Debug runs that drive the app (unless they ask).
+        .sheet(isPresented: $session.showsGuidePicker) {
+            GuidePickerSheet(current: session.guide.goal, choose: session.chooseGuideGoal, notNow: session.guideNotNow)
+        }
+        .task(id: workspace.welcomeFlow.isIntro) {
+            guard !workspace.welcomeFlow.isIntro, !LaunchArguments.suppressesGuidePicker else { return }
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled, !session.showsConnectSheet, session.protocolEditor == nil, session.frozen.sheet == nil else { return }
+            session.askForGuideGoalIfNeeded()
+        }
         .frame(minWidth: 1100, minHeight: 640)
     }
 
@@ -178,27 +189,42 @@ private struct ProjectSidebar: View {
             }
         }
         .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom) {
-            // Plain text on the sidebar: no glass on glass.
-            let status = statusLines
-            HStack(alignment: .top, spacing: Theme.Space.s) {
-                Image(systemName: status.symbol)
-                    .font(.callout)
-                    .foregroundStyle(status.recording ? Theme.danger : Theme.textSecondary)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(status.first).foregroundStyle(status.live ? Theme.textPrimary : Theme.textSecondary)
-                    Text(status.second).foregroundStyle(Theme.textSecondary)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                if session.showsGuideCard, let progress = session.guideProgress {
+                    GuideCard(progress: progress, collapsed: session.guide.collapsed,
+                              toggleCollapsed: session.toggleGuideCollapsed, hide: session.hideGuide,
+                              changeGoal: session.presentGuidePicker, skip: session.skipGuideStep,
+                              showMe: session.showGuideTarget)
+                        .padding(.horizontal, Theme.Space.s)
+                        .padding(.top, Theme.Space.xs)
                 }
-                .font(.caption)
-                .fixedSize(horizontal: false, vertical: true)
+                status
             }
-            .padding(Theme.Space.m)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(status.accessibility)
-            .accessibilityAddTraits(.updatesFrequently)
         }
+    }
+
+    /// Plain text on the sidebar: no glass on glass.
+    private var status: some View {
+        let status = statusLines
+        return HStack(alignment: .top, spacing: Theme.Space.s) {
+            Image(systemName: status.symbol)
+                .font(.callout)
+                .foregroundStyle(status.recording ? Theme.danger : Theme.textSecondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(status.first).foregroundStyle(status.live ? Theme.textPrimary : Theme.textSecondary)
+                Text(status.second).foregroundStyle(Theme.textSecondary)
+            }
+            .font(.caption)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, Theme.Space.m)
+        .padding(.vertical, session.showsGuideCard ? Theme.Space.s : Theme.Space.m)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(status.accessibility)
+        .accessibilityAddTraits(.updatesFrequently)
     }
 
     /// The session state in words while a board is connected (brief 004), else replay mode.
