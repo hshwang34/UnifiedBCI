@@ -28,7 +28,10 @@ struct FreezeSheet: View {
     var body: some View {
         let m = draft.sheet
         VStack(alignment: .leading, spacing: Theme.Space.l) {
-            Text(m.title).font(Theme.Fonts.title).accessibilityAddTraits(.isHeader)
+            HStack(spacing: Theme.Space.xs) {
+                Text(m.title).font(Theme.Fonts.title).accessibilityAddTraits(.isHeader)
+                HelpButton(topic: .freeze)
+            }
             Picker("Fit", selection: $draft.role) {
                 Text("Model").tag(ModelRole.reference)
                 Text("Baseline").tag(ModelRole.baseline)
@@ -203,7 +206,10 @@ struct ParityView: View {
     var body: some View {
         let m = model
         VStack(alignment: .leading, spacing: Theme.Space.m) {
-            StatusChip(kind: m.passed ? .positive : .warning, text: m.headline, symbol: m.symbol)
+            HStack(spacing: Theme.Space.s) {
+                StatusChip(kind: m.passed ? .positive : .warning, text: m.headline, symbol: m.symbol)
+                HelpButton(topic: .replayParity)
+            }
             Text("Largest difference per quantity").font(Theme.Fonts.sectionHeader).accessibilityAddTraits(.isHeader)
             ForEach(m.tolerances) { line in
                 Label {

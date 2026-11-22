@@ -88,7 +88,7 @@ struct ProtocolDetailView: View {
                 VStack(alignment: .leading, spacing: Theme.Space.l) {
                     header
                     ForEach(model.warnings, id: \.self) { StatusChip(kind: .warning, text: $0) }
-                    card("Timing") { fields(model.timing) }
+                    card("Timing", help: .trialTiming) { fields(model.timing) }
                     card("Classes") { classes }
                     card("Participant instructions") {
                         Text(model.instructions).font(.body).foregroundStyle(Theme.textPrimary)
@@ -127,10 +127,13 @@ struct ProtocolDetailView: View {
         }
     }
 
-    private func card<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    private func card<Content: View>(_ title: String, help: HelpTopic? = nil, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
-            Text(title).font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
-                .accessibilityAddTraits(.isHeader)
+            HStack(spacing: Theme.Space.xs) {
+                Text(title).font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
+                    .accessibilityAddTraits(.isHeader)
+                if let help { HelpButton(topic: help) }
+            }
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)

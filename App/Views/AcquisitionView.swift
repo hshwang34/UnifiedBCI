@@ -164,6 +164,7 @@ private struct PreviewCard: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(LivePreviewModel.title).font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
                     .accessibilityAddTraits(.isHeader)
+                HelpButton(topic: .signalTrace)
                 if live.isRecording {
                     Label(LiveScreenModel.recordingBadge, systemImage: "record.circle.fill")
                         .font(.callout.weight(.semibold)).foregroundStyle(Theme.danger)
@@ -306,6 +307,7 @@ private struct HealthCard: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(LiveScreenModel.healthHeader).font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
                     .accessibilityAddTraits(.isHeader)
+                HelpButton(topic: .streamHealth)
                 Spacer()
             }
             ViewThatFits(in: .horizontal) {

@@ -43,8 +43,8 @@ struct SignalTraceCard: View {
         }
         .pickerStyle(.segmented).labelsHidden().fixedSize()
         return ViewThatFits(in: .horizontal) {
-            HStack { title; Spacer(minLength: Theme.Space.m); toggle }
-            VStack(alignment: .leading, spacing: Theme.Space.s) { title; toggle }
+            HStack { title; HelpButton(topic: .signalTrace); Spacer(minLength: Theme.Space.m); toggle }
+            VStack(alignment: .leading, spacing: Theme.Space.s) { HStack { title; HelpButton(topic: .signalTrace) }; toggle }
         }
     }
 

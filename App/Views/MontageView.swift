@@ -42,11 +42,15 @@ struct MontageView: View {
             ViewThatFits(in: .horizontal) {
                 HStack {
                     Text("Montage").font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
+                    HelpButton(topic: .headMontage)
                     Spacer(minLength: Theme.Space.m)
                     presetButtons.fixedSize()
                 }
                 VStack(alignment: .leading, spacing: Theme.Space.s) {
-                    Text("Montage").font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
+                    HStack {
+                        Text("Montage").font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
+                        HelpButton(topic: .headMontage)
+                    }
                     presetButtons.fixedSize()
                 }
             }

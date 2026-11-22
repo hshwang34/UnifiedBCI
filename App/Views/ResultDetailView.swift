@@ -89,7 +89,10 @@ private struct ResultHero: View {
     private func figures(_ m: ResultDetailModel) -> some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
             VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-                Text("Balanced accuracy").font(Theme.Fonts.heroLabel).foregroundStyle(Theme.textSecondary)
+                HStack(spacing: Theme.Space.xs) {
+                    Text("Balanced accuracy").font(Theme.Fonts.heroLabel).foregroundStyle(Theme.textSecondary)
+                    HelpButton(topic: .heldOutAccuracy)
+                }
                 Text(m.headline.balancedAccuracyValue).font(Theme.Fonts.display(size: displaySize)).foregroundStyle(Theme.textPrimary)
             }
             // The BA bar carries only the run-level interval; with one held-out run it is dashed.
@@ -149,8 +152,12 @@ private struct ReproductionChip: View {
 
 private struct CardTitle: View {
     let text: String
+    var help: HelpTopic? = nil
     var body: some View {
-        Text(text).font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary).accessibilityAddTraits(.isHeader)
+        HStack(spacing: Theme.Space.xs) {
+            Text(text).font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary).accessibilityAddTraits(.isHeader)
+            if let help { HelpButton(topic: help) }
+        }
     }
 }
 
@@ -269,7 +276,7 @@ private struct BaselineCard: View {
     var body: some View {
         let m = model
         VStack(alignment: .leading, spacing: Theme.Space.m) {
-            CardTitle(text: "Baseline comparison")
+            CardTitle(text: "Baseline comparison", help: .chanceAndBaseline)
             ValueBar(label: m.referenceName, value: m.referenceBalancedAccuracy, fill: Theme.accentInk)
             ValueBar(label: m.baselineName, value: m.baselineBalancedAccuracy, fill: Theme.textSecondary)
             Text(m.differenceLine).font(.callout).foregroundStyle(Theme.textPrimary).monospacedDigit().fixedSize(horizontal: false, vertical: true)

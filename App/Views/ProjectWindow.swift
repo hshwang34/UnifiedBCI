@@ -769,6 +769,10 @@ struct ParametersPopover: View {
     var body: some View {
         let d = session.workerDefaults?.params
         VStack(alignment: .leading, spacing: Theme.Space.l) {
+            HStack(spacing: Theme.Space.xs) {
+                Text(HelpTopic.evaluationParameters.title).font(Theme.Fonts.sectionHeader).accessibilityAddTraits(.isHeader)
+                HelpButton(topic: .evaluationParameters)
+            }
             switch session.defaults {
             case .loading:
                 StatusChip(kind: .info, text: "Loading defaults from the analysis worker…")
