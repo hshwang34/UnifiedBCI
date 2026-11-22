@@ -73,6 +73,12 @@ import Foundation
 ///                                              under Pipelines ("pipelines-models"), Replay… over its
 ///                                              recording ("replay-sheet") and the parity view
 ///                                              ("replay-parity", "replay-parity-full"); brief 006 PR 5
+///     -BCIGuideGoal example|record|train|live  set the opened project's guide goal (brief 007; never
+///                                              shows the picker); with -BCISnapshotDir snapshots
+///                                              "guide" at the end of the run (the sidebar card)
+///     -BCIGuidePicker YES                      show the goal picker in the opened project; snapshots
+///                                              "guide-picker", then closes it ("Not now")
+///     The picker never opens on its own while -BCISnapshotDir or -BCIGuideGoal is set.
 @MainActor
 enum LaunchArguments {
     private static var done = false
@@ -145,6 +151,24 @@ enum LaunchArguments {
     static var snapshotting: Bool {
         #if DEBUG
         return UserDefaults.standard.string(forKey: "BCISnapshotDir") != nil
+        #else
+        return false
+        #endif
+    }
+
+    /// `-BCIGuideGoal`: the guide goal snapshots start with.
+    static var guideGoal: GuideGoal? {
+        #if DEBUG
+        return UserDefaults.standard.string(forKey: "BCIGuideGoal").flatMap(GuideGoal.init(rawValue:))
+        #else
+        return nil
+        #endif
+    }
+
+    /// Debug runs that drive the app keep the goal picker away unless they ask for it.
+    static var suppressesGuidePicker: Bool {
+        #if DEBUG
+        return snapshotting || guideGoal != nil || UserDefaults.standard.bool(forKey: "BCIGuidePicker")
         #else
         return false
         #endif
@@ -247,6 +271,13 @@ enum LaunchArguments {
             try? await Task.sleep(for: .milliseconds(500))
             NSApp.windows.first { $0.title == session.name }?.setContentSize(NSSize(width: size[0], height: size[1]))
         }
+        if let goal = guideGoal { session.setGuideGoalForSnapshot(goal) }
+        if defaults.bool(forKey: "BCIGuidePicker") {
+            session.presentGuidePicker()
+            await snap("guide-picker")
+            session.guideNotNow()
+            try? await Task.sleep(for: .milliseconds(600))
+        }
         if defaults.bool(forKey: "BCIConnectSheet") {
             await connectSheet(session, source: defaults.string(forKey: "BCIConnectSource"), snap: snap)
             return
@@ -324,6 +355,10 @@ enum LaunchArguments {
         if snapshots != nil {
             session.section = .recordings
             await snap("recordings-after")
+        }
+        if guideGoal != nil, snapshots != nil {
+            session.section = .recordings
+            await snap("guide")
         }
         if let raw = defaults.string(forKey: "BCISection"), let section = SidebarSection(rawValue: raw) {
             session.section = section

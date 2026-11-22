@@ -172,6 +172,12 @@ struct WorkspaceCommands: Commands {
         // Brief 003: the app has no help book, so the Help item is the tour.
         CommandGroup(replacing: .help) {
             Button("Show Welcome Tour") { workspace.showWelcomeTour(open: openWindow) }
+            Divider()
+            // Brief 007: the goal picker and the sidebar Guide card of the key project.
+            Button(GuideCopy.menuGuide) { session?.presentGuidePicker() }
+                .disabled(session == nil)
+            Button(GuideCopy.menuShowGuide) { session?.showGuide() }
+                .disabled(session == nil || session?.showsGuideCard == true)
         }
         #if DEBUG
         CommandMenu("Debug") {

@@ -15,6 +15,8 @@ final class ConnectController: Identifiable {
     private(set) var source: ConnectSource?
     private(set) var snapshot = AcquisitionSession.Snapshot()
     private(set) var hasStreamed = false
+    /// When the current stream started streaming (nil while not streaming), for the guide.
+    private(set) var streamingSince: Date?
     /// A Connect is in flight (its button is disabled until it returns).
     private(set) var isConnecting = false
     /// Set by `close()`; a Connect still in flight then releases what it opened.
@@ -47,6 +49,8 @@ final class ConnectController: Identifiable {
     /// whenever a recording ends (the project reloads its list).
     @ObservationIgnored var onStreamStarted: (() -> Void)?
     @ObservationIgnored var onRecordingEnded: ((UUID) -> Void)?
+    /// Called each time the board enters streaming (first stream and every reconnect).
+    @ObservationIgnored var onStreamingBegan: (() -> Void)?
     @ObservationIgnored private var previewTask: Task<Void, Never>?
     private var watchedRecordingID: UUID?
     /// `lastRecordingEnd` when the watched recording started: the writer publishes a new
@@ -264,6 +268,8 @@ final class ConnectController: Identifiable {
         let firstStream = next.state == .streaming && !hasStreamed
         snapshot = next
         if next.state == .streaming { hasStreamed = true }
+        let beganStreaming = next.state == .streaming && streamingSince == nil
+        if next.state != .streaming { streamingSince = nil } else if beganStreaming { streamingSince = Date() }
         if boardArrived, let board = next.board {
             resetMap(to: declaredMap ?? .defaults(for: board))
             startPreview(session, board: board)
@@ -273,6 +279,7 @@ final class ConnectController: Identifiable {
             recordingEnded(id, status: next.lastRecordingEnd)
         }
         if firstStream { onStreamStarted?() }
+        if beganStreaming { onStreamingBegan?() }
     }
 
     /// A recording ended: by Stop, by Disconnect, or by itself (disk full, error, retries out).
