@@ -103,27 +103,20 @@ struct GuideCard: View {
                         Button(GuideCopy.showMe) { showMe(current.step) }
                             .buttonStyle(.borderedProminent).controlSize(.small)
                             .help(GuideCopy.showMeHelp)
-                        if let undo = undoable {
-                            Button(GuideCopy.undoSkip) { unskip(undo) }
-                                .buttonStyle(.borderless).controlSize(.small)
-                        } else {
-                            Button(GuideCopy.skipStep) { skip(current.id) }
-                                .buttonStyle(.borderless).controlSize(.small)
-                                .help(GuideCopy.skipHelp)
-                        }
+                        Button(GuideCopy.skipStep) { skip(current.id) }
+                            .buttonStyle(.borderless).controlSize(.small)
+                            .help(GuideCopy.skipHelp)
                     }
+                    undoLine
                 } else {
                     Text(progress.finishedMessage)
                         .font(.caption).foregroundStyle(Theme.textPrimary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     HStack(spacing: Theme.Space.s) {
                         Button(GuideCopy.chooseAnother, action: changeGoal).controlSize(.small)
-                        if let undo = undoable {
-                            Button(GuideCopy.undoSkip) { unskip(undo) }.buttonStyle(.borderless).controlSize(.small)
-                        } else {
-                            Button(GuideCopy.hideGuide, action: hide).buttonStyle(.borderless).controlSize(.small)
-                        }
+                        Button(GuideCopy.hideGuide, action: hide).buttonStyle(.borderless).controlSize(.small)
                     }
+                    undoLine
                 }
             }
         }
@@ -139,10 +132,13 @@ struct GuideCard: View {
         .accessibilityLabel(GuideCopy.cardAccessibility(progress))
     }
 
-    /// The last skipped step while it is still skipped.
-    private var undoable: GuideStep.ID? {
-        guard let lastSkipped, progress.rows.contains(where: { $0.id == lastSkipped && $0.state == .skipped }) else { return nil }
-        return lastSkipped
+    /// "Undo skip" as a small text button of its own, only for the step just skipped
+    /// (the session clears it once the current step changes).
+    @ViewBuilder private var undoLine: some View {
+        if let lastSkipped, progress.rows.contains(where: { $0.id == lastSkipped && $0.state == .skipped }) {
+            Button(GuideCopy.undoSkipOf(GuideStep.step(lastSkipped))) { unskip(lastSkipped) }
+                .buttonStyle(.link).font(.caption2)
+        }
     }
 
     private var header: some View {
@@ -184,11 +180,13 @@ struct GuideCard: View {
                 }
                 .buttonStyle(.plain)
                 .help(GuideCopy.showAllSteps)
+                .accessibilityHint(GuideCopy.showAllSteps)
                 .contextMenu {
                     ForEach(window.foldedSkipped, id: \.self) { id in
-                        Button("\(GuideCopy.undoSkip): \(GuideStep.step(id).title)") { unskip(id) }
+                        Button(GuideCopy.undoSkipOf(GuideStep.step(id))) { unskip(id) }
                     }
                 }
+                .modifier(UndoSkipActions(skipped: window.foldedSkipped, unskip: unskip))
             }
             ForEach(window.rows) { row in
                 line(symbol: row.state.symbol, tint: tint(row.state), text: row.step.title,
@@ -226,6 +224,18 @@ struct GuideCard: View {
         case .done: return Theme.positive
         case .current: return Theme.accentInk
         case .skipped, .todo: return Theme.textSecondary
+        }
+    }
+}
+
+/// VoiceOver actions on the folded line: one "Undo skip: <step>" per folded skipped step.
+private struct UndoSkipActions: ViewModifier {
+    let skipped: [GuideStep.ID]
+    let unskip: (GuideStep.ID) -> Void
+
+    func body(content: Content) -> some View {
+        skipped.reduce(AnyView(content)) { view, id in
+            AnyView(view.accessibilityAction(named: Text(GuideCopy.undoSkipOf(GuideStep.step(id)))) { unskip(id) })
         }
     }
 }

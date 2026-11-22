@@ -313,7 +313,9 @@ final class ProjectSession: Identifiable {
     }
 
     /// This project's window (the operator's display for the setup's display list).
-    var projectWindow: NSWindow? { NSApp.windows.first { $0.title == name && $0.styleMask.contains(.titled) } }
+    var projectWindow: NSWindow? { windowProvider() }
+    /// The NSWindow `Workspace.attach` registered for this project (set by the workspace).
+    @ObservationIgnored var windowProvider: () -> NSWindow? = { nil }
 
     var liveSetupModel: ModelRecord? { frozen.models.first { $0.modelID == liveTestForm.modelID } }
 
@@ -436,7 +438,10 @@ final class ProjectSession: Identifiable {
         guideKey = created.map { GuideStore.projectKey(name: name, created: $0) } ?? url.path
         guideStore = GuideStore(defaults: Self.guideDefaults)
         guide = guideStore.load(guideKey)
-        guideWindowIsKey = { [weak self] in self?.projectWindow?.isKeyWindow ?? false }
+        guideWindowState = { [weak self] in
+            guard let window = self?.projectWindow, window.isVisible else { return .gone }
+            return window.isKeyWindow ? .key : .notKey
+        }
     }
 
     /// Opens the project at `url` (already canonical) without blocking the main actor:
@@ -591,6 +596,7 @@ final class ProjectSession: Identifiable {
 
     func newProtocolVersion(of base: ProtocolRecord) {
         guard let list = protocolList, !list.mislinked.contains(base.protocolID) else { return }
+        markGuide(.protocolsVisited)
         let lineage = list.protocols.filter { list.lineage(of: $0) == list.lineage(of: base) }
         protocolEditor = ProtocolEditor(base: base, lineage: lineage, windowEndMs: evaluationWindowEndMs)
     }
@@ -923,8 +929,9 @@ final class ProjectSession: Identifiable {
     /// How long a result or a live-run card must be on screen in the key window to count
     /// as read, unless the user selected it themselves.
     static var guideDwell: Duration = .seconds(3)
-    /// Whether this project's window is the key window (tests replace it).
-    @ObservationIgnored var guideWindowIsKey: () -> Bool = { false }
+    enum GuideWindowState { case key, notKey, gone }
+    /// This project's window: key, open but not key, or gone (tests replace it).
+    @ObservationIgnored var guideWindowState: () -> GuideWindowState = { .gone }
     @ObservationIgnored private var guideDwellTask: Task<Void, Never>?
     @ObservationIgnored private let guideStore: GuideStore
     @ObservationIgnored let guideKey: String
@@ -933,8 +940,16 @@ final class ProjectSession: Identifiable {
     }
     /// The goal picker sheet is up.
     var showsGuidePicker = false
-    /// The step "Skip step" last skipped, for the card's "Undo skip".
-    private(set) var lastSkippedGuideStep: GuideStep.ID?
+    /// The step "Skip step" last skipped and the step that became current then.
+    private var guideSkipUndo: (skipped: GuideStep.ID, currentAfter: GuideStep.ID?)?
+    /// The step "Undo skip" puts back: only the step just skipped, and only until the
+    /// current step changes (another skip, a step ticking off, a goal change).
+    var lastSkippedGuideStep: GuideStep.ID? {
+        guard let u = guideSkipUndo, guide.skipped.contains(u.skipped), guideProgress?.current?.id == u.currentAfter else { return nil }
+        return u.skipped
+    }
+    /// The goal and done steps last announced from (nil until the first settled snapshot).
+    @ObservationIgnored private var guideAnnounced: (goal: GuideGoal, done: Set<GuideStep.ID>)?
 
     func markGuide(_ mark: GuideMark) {
         if !guide.marks.contains(mark) { guide.marks.insert(mark) }
@@ -947,9 +962,7 @@ final class ProjectSession: Identifiable {
             guard !(liveShown && hasLiveRow), let id = selectedRecordingID else { return }
             markGuide(.recordingOpened)
             if recordingTab == .quality { markGuide(.quality(id)) }
-        case .protocols:
-            markGuide(.protocolsVisited)
-        case .results, .liveTest:
+        case .protocols, .results, .liveTest:
             // Auto-navigation (after Evaluate, a live run, Show me) doesn't count as reading:
             // only time on screen in the key window, or the user's own selection.
             if let mark = guideReadableOnScreen { dwell(on: mark) }
@@ -957,9 +970,10 @@ final class ProjectSession: Identifiable {
         }
     }
 
-    /// The result or live-run card on screen now, as the mark reading it would set.
+    /// The result, live-run card or Protocols on screen now, as the mark reading it would set.
     private var guideReadableOnScreen: GuideMark? {
         switch section {
+        case .protocols: return .protocolsVisited
         case .results: return selectedResultID.map(GuideMark.result)
         case .liveTest:
             guard liveFeedback.map({ $0.phase == .ended }) ?? true else { return nil }
@@ -976,8 +990,12 @@ final class ProjectSession: Identifiable {
             var seen = Duration.zero
             while seen < Self.guideDwell {
                 try? await Task.sleep(for: tick)
-                guard let self, !Task.isCancelled, self.guideReadableOnScreen == mark else { return }
-                if self.guideWindowIsKey() { seen += tick }
+                guard let self, !Task.isCancelled, !self.isClosing, self.guideReadableOnScreen == mark else { return }
+                switch self.guideWindowState() {
+                case .key: seen += tick
+                case .notKey: break
+                case .gone: return
+                }
             }
             self?.markGuide(mark)
         }
@@ -993,6 +1011,21 @@ final class ProjectSession: Identifiable {
     func userSelectedLiveRun(_ id: UUID?) {
         selectedLiveRunID = id
         if let id, liveFeedback.map({ $0.phase == .ended }) ?? true { markGuide(.liveRunCard(id)) }
+    }
+
+    /// Protocols: the user picked a protocol or opened its editor.
+    func userSelectedProtocol(_ id: UUID?) {
+        selectedProtocolID = id
+        markGuide(.protocolsVisited)
+    }
+
+    /// The steps to announce as done: none for the first settled snapshot of a goal (a
+    /// project load or a goal change), then each step that newly ticks off.
+    func guideStepsNewlyDone() -> [GuideStep] {
+        guard showsGuideCard, let progress = guideProgress else { guideAnnounced = nil; return [] }
+        defer { guideAnnounced = (progress.goal, progress.doneIDs) }
+        guard let before = guideAnnounced, before.goal == progress.goal else { return [] }
+        return progress.newlyDone(since: before.done)
     }
 
     /// Waits for the current read timer (tests).
@@ -1037,7 +1070,7 @@ final class ProjectSession: Identifiable {
     }
 
     func chooseGuideGoal(_ goal: GuideGoal) {
-        if goal != guide.goal { lastSkippedGuideStep = nil }
+        if goal != guide.goal { guideSkipUndo = nil }
         guide.choose(goal)
         showsGuidePicker = false
     }
@@ -1057,12 +1090,12 @@ final class ProjectSession: Identifiable {
     func toggleGuideCollapsed() { guide.collapsed.toggle() }
     func skipGuideStep(_ id: GuideStep.ID) {
         guide.skipped.insert(id)
-        lastSkippedGuideStep = id
+        guideSkipUndo = (id, guideProgress?.current?.id)
     }
 
     func unskipGuideStep(_ id: GuideStep.ID) {
         guide.unskip(id)
-        if lastSkippedGuideStep == id { lastSkippedGuideStep = nil }
+        if guideSkipUndo?.skipped == id { guideSkipUndo = nil }
     }
 
     /// Debug `-BCIGuideGoal`: the goal without the picker (not saved as asked by the user).
@@ -1103,6 +1136,7 @@ final class ProjectSession: Identifiable {
     /// it to end — a run that is storing its result finishes the commit first — then
     /// stops the worker for good. Called when the window closes and when the app quits.
     func shutdown() async {
+        guideDwellTask?.cancel()
         defaultsTask?.cancel()
         resultLoad?.cancel()
         recipesTask?.cancel()

@@ -206,9 +206,9 @@ private struct ProjectSidebar: View {
             }
         }
         // "Step done: …" for VoiceOver as steps tick off.
-        .onChange(of: session.showsGuideCard ? session.guideProgress?.doneIDs : nil) { old, new in
-            guard let old, new != nil, let progress = session.guideProgress else { return }
-            for step in progress.newlyDone(since: old) { AccessibilityNotification.Announcement(GuideCopy.stepDone(step)).post() }
+        // Not on load or a goal change: only steps that tick off within the same goal.
+        .onChange(of: session.showsGuideCard ? session.guideProgress?.doneIDs : nil, initial: true) {
+            for step in session.guideStepsNewlyDone() { AccessibilityNotification.Announcement(GuideCopy.stepDone(step)).post() }
         }
     }
 

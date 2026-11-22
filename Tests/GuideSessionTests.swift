@@ -133,8 +133,50 @@ final class GuideReviewFixTests: XCTestCase {
         defer { Task { await s.shutdown() } }
         s.chooseGuideGoal(.train)
         XCTAssertFalse(GuideRules.isDone(.chooseProtocol, s.guideSnapshot, marks: s.guide.marks))
+        // Show me or a restored section: on screen, but not yet seen.
+        ProjectSession.guideDwell = .milliseconds(500)
+        var key = false
+        s.guideWindowState = { key ? .key : .notKey }
+        s.showGuideTarget(GuideStep.step(.chooseProtocol))
+        XCTAssertEqual(s.section, .protocols)
+        XCTAssertFalse(s.guide.marks.contains(.protocolsVisited))
+        key = true
+        await s.awaitGuideDwell()
+        XCTAssertTrue(GuideRules.isDone(.chooseProtocol, s.guideSnapshot, marks: s.guide.marks), "3 s (here 0.5 s) in the key window")
+    }
+
+    func testChooseProtocol_userSelectionCountsAtOnce() async throws {
+        let s = try await tiny()
+        defer { Task { await s.shutdown() } }
         s.section = .protocols
-        XCTAssertTrue(GuideRules.isDone(.chooseProtocol, s.guideSnapshot, marks: s.guide.marks))
+        XCTAssertFalse(s.guide.marks.contains(.protocolsVisited))
+        s.userSelectedProtocol(nil)
+        XCTAssertTrue(s.guide.marks.contains(.protocolsVisited))
+    }
+
+    func testDwell_stopsWhenTheWindowIsGoneOrTheSessionCloses() async throws {
+        ProjectSession.guideDwell = .seconds(60)
+        let s = try await tiny()
+        s.guideWindowState = { .gone }
+        s.section = .results
+        s.selectedResultID = UUID()
+        await s.awaitGuideDwell()   // returns at once: no window, no endless polling
+        s.guideWindowState = { .notKey }
+        s.selectedResultID = UUID()
+        await s.shutdown()
+        await s.awaitGuideDwell()   // shutdown cancels it
+    }
+
+    func testStepDone_notAnnouncedOnLoadOrGoalChange() async throws {
+        let s = try await tiny()
+        defer { Task { await s.shutdown() } }
+        s.chooseGuideGoal(.example)   // "Open a recording" is already done on load
+        XCTAssertEqual(s.guideStepsNewlyDone(), [], "the first settled snapshot announces nothing")
+        s.recordingTab = .quality
+        XCTAssertEqual(s.guideStepsNewlyDone().map(\.id), [.checkSignal])
+        XCTAssertEqual(s.guideStepsNewlyDone(), [])
+        s.chooseGuideGoal(.record)
+        XCTAssertEqual(s.guideStepsNewlyDone(), [], "a goal change is a new baseline")
     }
 
     func testReadResult_notOnAutoNavigation_onlyAfterDwellInKeyWindowOrUserSelection() async throws {
@@ -143,7 +185,7 @@ final class GuideReviewFixTests: XCTestCase {
         defer { Task { await s.shutdown() } }
         let a = UUID(), b = UUID()
         var key = false
-        s.guideWindowIsKey = { key }
+        s.guideWindowState = { key ? .key : .notKey }
         // Auto-navigation (as after Evaluate): no mark while the window isn't key.
         s.section = .results
         s.selectedResultID = a
@@ -192,5 +234,21 @@ final class GuideReviewFixTests: XCTestCase {
         s.chooseGuideGoal(.record)
         XCTAssertEqual(s.guide.skipped, [])
         XCTAssertNil(s.lastSkippedGuideStep)
+    }
+
+    func testSkipThenSkip_onlyTheLastIsUndoable() async throws {
+        let s = try await tiny()
+        defer { Task { await s.shutdown() } }
+        s.chooseGuideGoal(.record)
+        s.skipGuideStep(.connect)
+        XCTAssertEqual(s.lastSkippedGuideStep, .connect)
+        s.skipGuideStep(.confirmMap)
+        XCTAssertEqual(s.lastSkippedGuideStep, .confirmMap, "skip A then skip B: only B can be undone from the card")
+        XCTAssertEqual(s.guide.skipped, [.connect, .confirmMap])
+        // The current step changing for any other reason also ends the undo.
+        s.unskipGuideStep(.confirmMap)
+        s.skipGuideStep(.confirmMap)
+        s.chooseGuideGoal(.record)
+        XCTAssertEqual(s.lastSkippedGuideStep, .confirmMap, "same goal: still the current step after the skip")
     }
 }

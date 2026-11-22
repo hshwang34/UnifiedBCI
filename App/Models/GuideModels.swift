@@ -417,6 +417,7 @@ enum GuideCopy {
     static let hideHelp = "Hide the guide for this project (Help ▸ Show Guide brings it back)"
 
     static let undoSkip = "Undo skip"
+    static func undoSkipOf(_ step: GuideStep) -> String { "Undo skip: \(step.title)" }
     static let showAllSteps = "Show all steps"
     static let showFewerSteps = "Show fewer steps"
     static let expandedValue = "expanded"
