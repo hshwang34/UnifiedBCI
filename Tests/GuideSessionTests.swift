@@ -147,8 +147,34 @@ final class GuideShowMeTests: XCTestCase {
         // The fixture has enough runs: Evaluate can run.
         XCTAssertTrue(s.canEvaluate)
         XCTAssertNil(s.guideDisabledReason(.evaluate))
+        s.liveShown = true   // the Live row selected, even with no board (no live row)
+        XCTAssertEqual(s.guideDisabledReason(.evaluate), GuideCopy.liveScreenShown)
+        s.liveShown = false
         s.selectedRecordingID = nil
         XCTAssertEqual(s.guideDisabledReason(.evaluate), GuideCopy.selectRecording)
         XCTAssertEqual(s.evaluateDisabledReason, GuideCopy.selectRecording)
+    }
+}
+
+/// Review of PR 4: Evaluate's disabled reason names the actual condition, branch by branch.
+final class EvaluateReasonTests: XCTestCase {
+    private func reason(recording: Bool = true, running: Bool = false, live: Bool = false, liveRun: Bool = false, enough: Bool = true) -> String? {
+        GuideCopy.evaluateDisabledReason(hasRecording: recording, isRunning: running, liveShown: live, isLiveRunning: liveRun,
+                                         enoughRuns: enough) { "RUNS" }
+    }
+
+    func testEachBranchHasItsOwnReason() {
+        XCTAssertNil(reason())
+        XCTAssertEqual(reason(recording: false), GuideCopy.selectRecording)
+        XCTAssertEqual(reason(running: true), "An evaluation is running.")
+        XCTAssertEqual(reason(live: true), GuideCopy.liveScreenShown)
+        XCTAssertEqual(reason(liveRun: true), LiveRunCopy.pausedDuringLive)
+        XCTAssertEqual(reason(enough: false), "RUNS")
+    }
+
+    func testRunCountSentenceOnlyWhenRunsAreMissing() {
+        for (r, run, l, lr) in [(false, false, false, false), (true, true, false, false), (true, false, true, false), (true, false, false, true)] {
+            XCTAssertNotEqual(reason(recording: r, running: run, live: l, liveRun: lr, enough: false), "RUNS")
+        }
     }
 }

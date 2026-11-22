@@ -1012,7 +1012,7 @@ final class ProjectSession: Identifiable {
     /// Why the step's control can't be used now, as its tooltip says; nil when it can.
     func guideDisabledReason(_ step: GuideStep.ID) -> String? {
         switch step {
-        case .evaluate, .evaluateCued: return isRunning ? nil : evaluateDisabledReason
+        case .evaluate, .evaluateCued: return evaluateDisabledReason
         case .record: return hasLiveRow ? live?.recordDisabledReason : nil
         case .recordRuns: return hasLiveRow && !(runs.map { !$0.isFinished } ?? false) ? startRunDisabledReason : nil
         case .checkReplay:
@@ -1024,18 +1024,29 @@ final class ProjectSession: Identifiable {
     }
 
     /// Why Evaluate is disabled (its tooltip), or nil when it can run.
+    /// One explicit reason per condition of `canEvaluate`, in its order.
     var evaluateDisabledReason: String? {
-        guard !canEvaluate else { return nil }
-        if isLiveRunning { return LiveRunCopy.pausedDuringLive }
-        if isRunning { return GuideCopy.evaluating }
-        guard let handle = selectedRecording, !(liveShown && hasLiveRow) else { return GuideCopy.selectRecording }
-        return EvaluateInspectorModel(manifest: handle.manifest, events: eventsByRecording[handle.id] ?? [], latest: latestReport[handle.id],
-                                      defaults: workerDefaults, recipes: recipes, modelName: modelName,
-                                      protocol: recordingProtocols[handle.id], windowEndMs: evaluationWindowEndMs).runs
+        let handle = selectedRecording
+        let enough = handle.map { RunCountModel.evaluableRuns(eventsByRecording[$0.id] ?? []) >= RunCountModel.minimumRuns } ?? false
+        return GuideCopy.evaluateDisabledReason(hasRecording: handle != nil, isRunning: isRunning, liveShown: liveShown,
+                                                isLiveRunning: isLiveRunning, enoughRuns: enough) {
+            handle.map { h in
+                EvaluateInspectorModel(manifest: h.manifest, events: eventsByRecording[h.id] ?? [], latest: latestReport[h.id],
+                                       defaults: workerDefaults, recipes: recipes, modelName: modelName,
+                                       protocol: recordingProtocols[h.id], windowEndMs: evaluationWindowEndMs).runs
+            } ?? GuideCopy.selectRecording
+        }
     }
 
     private func navigate(to step: GuideStep) {
         let t = step.target
+        // The channel map is confirmed in the Connect sheet (its Confirm map is the anchor),
+        // on the map tab once a board is connected.
+        if t.anchor == .channelMap {
+            if let live, live.snapshot.board != nil { live.tab = .channelMap }
+            showConnectSheet()
+            return
+        }
         // The live screen when a board is up, else the Connect sheet that gets one.
         if t.showsLive || t.anchor == .newRecording {
             if hasLiveRow { section = .recordings; liveShown = true } else { showConnectSheet() }

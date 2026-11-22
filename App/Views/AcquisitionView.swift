@@ -74,7 +74,6 @@ struct AcquisitionView: View {
             Button(LiveScreenModel.channelMap) { session.showConnectSheet() }
                 .help(LiveScreenModel.channelMapHelp)
                 .disabled(live.isRecording)
-                .guideAnchor(.channelMap)
             Button(AcquisitionAction.disconnect.rawValue) {
                 if live.isRecordingNow { confirmDisconnect = true } else { Task { await session.endLive() } }
             }

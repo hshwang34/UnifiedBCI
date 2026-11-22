@@ -267,7 +267,6 @@ private struct ContentColumn: View {
                 } actions: {
                     Button(LiveScreenModel.newRecording) { session.showConnectSheet() }
                         .help(LiveScreenModel.newRecordingHelp)
-                        .guideAnchor(.newRecording)
                 }
             } else {
                 List(selection: recordingSelection) {

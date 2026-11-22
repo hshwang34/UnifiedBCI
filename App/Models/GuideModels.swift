@@ -385,6 +385,20 @@ enum GuideCopy {
     /// Evaluate's tooltip while an evaluation runs, or with no recording shown.
     static let evaluating = "An evaluation is running."
     static let selectRecording = "Select a recording in the Recordings list."
+    /// Evaluate's tooltip while the live screen (not a stored recording) is shown.
+    static let liveScreenShown = "Select a stored recording in the Recordings list; Evaluate doesn't run on the live screen."
+
+    /// Evaluate's tooltip: one explicit reason per condition of `ProjectSession.canEvaluate`,
+    /// in its order; the run-count sentence only when runs are what's missing. Nil: enabled.
+    static func evaluateDisabledReason(hasRecording: Bool, isRunning: Bool, liveShown: Bool, isLiveRunning: Bool,
+                                       enoughRuns: Bool, runsText: () -> String) -> String? {
+        if !hasRecording { return selectRecording }
+        if isRunning { return evaluating }
+        if liveShown { return liveScreenShown }
+        if isLiveRunning { return LiveRunCopy.pausedDuringLive }
+        if !enoughRuns { return runsText() }
+        return nil
+    }
 
     /// VoiceOver, after Show me moves the window.
     static func showMeAnnouncement(_ step: GuideStep) -> String { "Showing: \(step.title)" }
