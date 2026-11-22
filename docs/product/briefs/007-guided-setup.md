@@ -54,7 +54,7 @@ becoming a mandatory wizard. Today that path isn't in the app.
 |---|---|
 | Example | Open a recording (one is selected) → Check its signal (Quality tab opened) → Look at the head montage (Channels tab with the montage opened) → Evaluate (a result exists) → Read the result (a result opened in Results) |
 | Record | Connect a source (streaming) → Confirm the channel map (map declared, or "without positions") → Check the live signal (preview streamed ≥ 10 s) → Record (a live recording saved) → Review its quality (that recording's Quality tab opened) |
-| Train | Connect → Choose a protocol (one exists) → Record cued runs (≥ 1 saved protocol run; the step's text recommends 4, decision #37) → Evaluate (a result on a cued recording) → Read the result |
+| Train | Connect → Choose a protocol (Protocols opened, or a cued recording exists) → Record cued runs (≥ 1 saved protocol run; the step's text recommends 4, decision #37) → Evaluate (a result on a cued recording) → Read the result |
 | Live feedback | the Train steps → Freeze a model (a frozen model exists) → Check replay (a replay run whose parity passed) → Run a live test (a live run saved) → Read the live results (a live-run card opened) |
 
 **"?" help (decision #46)**
@@ -95,6 +95,17 @@ becoming a mandatory wizard. Today that path isn't in the app.
 ## Engineering decisions (filled in by the lead while building)
 - Guide state is per-user app state, not experiment data. It goes in `UserDefaults`, keyed by the
   project's stable id, so it never touches the `.bciproj` format or its immutability rules.
+- The stable id is the project's name plus its creation instant written exactly as `project.json`
+  stores it (millisecond ISO-8601), so a just-created project and its reopen share the key. A
+  Finder duplicate shares its original's guide state; accepted.
+- "Choose a protocol" is done when Protocols has been opened or a cued recording exists, not when
+  a protocol exists: every new project is created with the default protocol, so "one exists"
+  would be true from the start (review of PR 3).
+- "Read the result" and "Read the live results" count only when the user selects the result or
+  live-run card, or it stays on screen for 3 s in the key window. Being taken there by Evaluate,
+  a live run or Show me doesn't count by itself.
+- Debug-driven runs (snapshots, `-BCIGuideGoal`) keep guide state in memory only. Stored state
+  carries a version, and ids an older build doesn't know are kept and written back.
 
 ## Risks / what could go wrong for users
 - A step that ticks off wrongly would mislead. Every rule comes from real state and is

@@ -175,7 +175,7 @@ struct WorkspaceCommands: Commands {
             Divider()
             // Brief 007: the goal picker and the sidebar Guide card of the key project.
             Button(GuideCopy.menuGuide) { session?.presentGuidePicker() }
-                .disabled(session == nil)
+                .disabled(session == nil || session?.isSheetUp == true || workspace.welcomeFlow.isIntro)
             Button(GuideCopy.menuShowGuide) { session?.showGuide() }
                 .disabled(session == nil || session?.showsGuideCard == true)
         }

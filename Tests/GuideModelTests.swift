@@ -75,15 +75,13 @@ final class GuideModelTests: XCTestCase {
         s.streaming = true
         XCTAssertEqual(states(.record, s), [.done, .current, .todo, .todo, .todo])
         s.mapDeclared = true
-        s.streamingSeconds = 9.9
-        XCTAssertEqual(states(.record, s), [.done, .done, .current, .todo, .todo])
-        s.streamingSeconds = 10
-        XCTAssertEqual(states(.record, s), [.done, .done, .done, .current, .todo])
+        XCTAssertEqual(states(.record, s), [.done, .done, .current, .todo, .todo], "10 s of preview is a mark, set by the session")
+        XCTAssertEqual(states(.record, s, marks: [.previewWatched]), [.done, .done, .done, .current, .todo])
     }
 
     func testRecord_neverDoneUnlessTrue() {
-        // A declared map or a long stream count only while streaming.
-        let s = S(mapDeclared: true, streamingSeconds: 60)
+        // A declared map counts only while streaming.
+        let s = S(mapDeclared: true)
         XCTAssertEqual(states(.record, s), [.current, .todo, .todo, .todo, .todo])
         // Quality opened on imported data doesn't review a live recording.
         let s2 = S(recordings: [rec(imported), rec(live, live: true)])
@@ -102,8 +100,8 @@ final class GuideModelTests: XCTestCase {
         XCTAssertEqual(states(.train, s, marks: [.result(importedResult)]), [.current, .todo, .todo, .todo, .todo],
                        "a result on imported data doesn't train a cued decoder")
         s.streaming = true
-        s.protocolCount = 1
-        XCTAssertEqual(states(.train, s), [.done, .done, .current, .todo, .todo])
+        XCTAssertEqual(states(.train, s), [.done, .current, .todo, .todo, .todo], "the default protocol always exists; that isn't choosing one")
+        XCTAssertEqual(states(.train, s, marks: [.protocolsVisited]), [.done, .done, .current, .todo, .todo])
         s.recordings.append(rec(cued, cued: true))
         XCTAssertEqual(states(.train, s), [.done, .done, .done, .current, .todo])
         s.resultRecordings[cuedResult] = cued
@@ -114,7 +112,7 @@ final class GuideModelTests: XCTestCase {
     // MARK: Live feedback
 
     func testLive_freezeReplayLiveRun() {
-        var s = S(recordings: [rec(cued, cued: true)], resultRecordings: [cuedResult: cued], protocolCount: 1)
+        var s = S(recordings: [rec(cued, cued: true)], resultRecordings: [cuedResult: cued])
         let marks: Set<GuideMark> = [.result(cuedResult)]
         XCTAssertEqual(states(.live, s, marks: marks).suffix(4), [.current, .todo, .todo, .todo])
         s.frozenModelCount = 1
@@ -190,23 +188,94 @@ final class GuideModelTests: XCTestCase {
         XCTAssertNil(state.goal)
     }
 
-    func testStore_unknownValuesAreDroppedNotFatal() throws {
+    func testStore_unknownValuesAreKeptNotFatal() throws {
         let (store, cleanup) = store()
         defer { cleanup() }
-        let json = #"{"goal":"compare","skipped":["freeze","teleport"],"hidden":true,"marks":["quality:not-a-uuid","montage","x:y"]}"#
-        store.defaults.set(Data(json.utf8), forKey: GuideStore.keyPrefix + "p")
-        let s = store.load("p")
+        let defaults = try XCTUnwrap(store.defaults)
+        let json = #"{"version":2,"goal":"compare","skipped":["freeze","teleport"],"hidden":true,"marks":["quality:not-a-uuid","montage","x:y"]}"#
+        defaults.set(Data(json.utf8), forKey: GuideStore.keyPrefix + "p")
+        var s = store.load("p")
         XCTAssertNil(s.goal)
         XCTAssertEqual(s.skipped, [.freeze])
         XCTAssertTrue(s.hidden)
         XCTAssertEqual(s.marks, [.montageViewed])
-        store.defaults.set("garbage", forKey: GuideStore.keyPrefix + "q")
+        // An older build writes back what it didn't understand (and a newer version number).
+        s.marks.insert(.recordingOpened)
+        store.save(s, for: "p")
+        let raw = try JSONSerialization.jsonObject(with: try XCTUnwrap(defaults.data(forKey: GuideStore.keyPrefix + "p"))) as? [String: Any]
+        XCTAssertEqual(raw?["goal"] as? String, "compare")
+        XCTAssertEqual(raw?["version"] as? Int, 2)
+        XCTAssertEqual(raw?["skipped"] as? [String], ["freeze", "teleport"])
+        XCTAssertEqual(Set(raw?["marks"] as? [String] ?? []), ["quality:not-a-uuid", "montage", "x:y", "recording"])
+        defaults.set("garbage", forKey: GuideStore.keyPrefix + "q")
         XCTAssertEqual(store.load("q"), GuideState())
+    }
+
+    func testStore_withoutDefaultsIsMemoryOnly() {
+        let store = GuideStore(defaults: nil)
+        var s = GuideState()
+        s.choose(.train)
+        store.save(s, for: "p")
+        XCTAssertEqual(store.load("p"), GuideState())
+    }
+
+    func testProjectKey_isTheStoredMillisecondInstant() throws {
+        // `ProjectStore.create` holds the raw Date(); project.json stores it to the millisecond.
+        let raw = Date(timeIntervalSinceReferenceDate: 785_000_000.123_456_7)
+        let stored = try ContractJSON.decoder().decode(Date.self, from: ContractJSON.encoder().encode(raw))
+        XCTAssertNotEqual(raw, stored)
+        XCTAssertEqual(GuideStore.projectKey(name: "P", created: raw), GuideStore.projectKey(name: "P", created: stored))
+    }
+
+    func testChoosingAnotherGoal_clearsSkips() {
+        var s = GuideState()
+        s.choose(.example)
+        s.skipped = [.checkSignal]
+        s.choose(.example)
+        XCTAssertEqual(s.skipped, [.checkSignal], "the same goal keeps its skips")
+        s.choose(.record)
+        XCTAssertEqual(s.skipped, [])
+        s.skipped = [.connect]
+        s.unskip(.connect)
+        XCTAssertEqual(s.skipped, [])
+    }
+
+    // MARK: The card's step window
+
+    func testWindow_foldsDoneThenCurrentAndNextTwo() {
+        let s = S(recordings: [rec(cued, cued: true)], resultRecordings: [cuedResult: cued])
+        let p = GuideProgress(goal: .live, snapshot: s, marks: [.protocolsVisited, .result(cuedResult)], skipped: [])
+        let w = p.window(showsAll: false)
+        XCTAssertEqual(w.foldedDone, 5)
+        XCTAssertEqual(w.rows.map(\.id), [.freeze, .checkReplay, .runLive])
+        XCTAssertEqual(w.more, 1)
+        XCTAssertEqual(GuideCopy.folded(done: w.foldedDone, skipped: 0), "5 done")
+        XCTAssertEqual(p.window(showsAll: true).rows.count, 9)
+        XCTAssertFalse(p.window(showsAll: true).hasFold)
+    }
+
+    func testWindow_foldsSkipsAndFinishedFoldsAll() {
+        let p = GuideProgress(goal: .example, snapshot: S(recordings: [rec(imported)]), marks: [.recordingOpened], skipped: [.checkSignal])
+        let w = p.window(showsAll: false)
+        XCTAssertEqual(w.foldedDone, 1)
+        XCTAssertEqual(w.foldedSkipped, [.checkSignal])
+        XCTAssertEqual(w.rows.first?.state, .current)
+        XCTAssertEqual(GuideCopy.folded(done: 1, skipped: 1), "1 done · 1 skipped")
+        let done = GuideProgress(goal: .record, snapshot: S(), marks: [], skipped: Set(GuideGoal.record.steps))
+        XCTAssertEqual(done.window(showsAll: false).rows, [])
+        XCTAssertEqual(done.window(showsAll: false).foldedSkipped.count, 5)
+    }
+
+    func testNewlyDone_listsStepsThatTickedOff() {
+        let before = GuideProgress(goal: .example, snapshot: S(recordings: [rec(imported)]), marks: [.recordingOpened], skipped: [])
+        let after = GuideProgress(goal: .example, snapshot: S(recordings: [rec(imported)]), marks: [.recordingOpened, .quality(imported)], skipped: [])
+        XCTAssertEqual(after.newlyDone(since: before.doneIDs).map(\.id), [.checkSignal])
+        XCTAssertEqual(GuideCopy.stepDone(GuideStep.step(.checkSignal)), "Step done: Check its signal")
     }
 
     func testMarks_rawValuesRoundTrip() {
         let id = UUID()
-        for m in [GuideMark.recordingOpened, .montageViewed, .previewWatched, .quality(id), .result(id), .liveRunCard(id)] {
+        for m in [GuideMark.recordingOpened, .montageViewed, .previewWatched, .protocolsVisited, .quality(id), .result(id), .liveRunCard(id)] {
             XCTAssertEqual(GuideMark(rawValue: m.rawValue), m)
         }
     }
