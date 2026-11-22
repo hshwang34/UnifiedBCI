@@ -177,6 +177,15 @@ enum LaunchArguments {
         #endif
     }
 
+    /// Debug-driven runs keep guide state in memory only (never in the app's defaults).
+    static var guideIsVolatile: Bool {
+        #if DEBUG
+        return suppressesGuidePicker
+        #else
+        return false
+        #endif
+    }
+
     static var qualityTrace: Bool {
         #if DEBUG
         return UserDefaults.standard.bool(forKey: "BCIQualityTrace")

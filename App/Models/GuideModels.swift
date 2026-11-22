@@ -176,6 +176,9 @@ enum GuideMark: Hashable, Sendable {
     case montageViewed
     /// The live preview streamed for `GuideStep.previewSeconds`.
     case previewWatched
+    /// The Protocols section was opened (a project always holds the default protocol, so
+    /// "one exists" would be true from the start).
+    case protocolsVisited
     /// A recording's Quality tab was opened.
     case quality(UUID)
     /// A result was opened in Results.
@@ -188,6 +191,7 @@ enum GuideMark: Hashable, Sendable {
         case .recordingOpened: return "recording"
         case .montageViewed: return "montage"
         case .previewWatched: return "preview"
+        case .protocolsVisited: return "protocols"
         case .quality(let id): return "quality:\(id.uuidString)"
         case .result(let id): return "result:\(id.uuidString)"
         case .liveRunCard(let id): return "liveRun:\(id.uuidString)"
@@ -199,6 +203,7 @@ enum GuideMark: Hashable, Sendable {
         case "recording": self = .recordingOpened; return
         case "montage": self = .montageViewed; return
         case "preview": self = .previewWatched; return
+        case "protocols": self = .protocolsVisited; return
         default: break
         }
         let parts = rawValue.split(separator: ":", maxSplits: 1).map(String.init)
@@ -228,7 +233,6 @@ struct GuideSnapshot: Equatable, Sendable {
     var recordings: [Recording] = []
     /// Each stored result's recording.
     var resultRecordings: [UUID: UUID] = [:]
-    var protocolCount = 0
     var frozenModelCount = 0
     /// Some stored replay's parity check passed.
     var replayParityPassed = false
@@ -237,8 +241,6 @@ struct GuideSnapshot: Equatable, Sendable {
     var streaming = false
     /// The connected board's channel map is confirmed, or "Record without positions" chosen.
     var mapDeclared = false
-    /// How long the current stream has been streaming, 0 when not streaming.
-    var streamingSeconds: Double = 0
 
     var liveRecordings: [Recording] { recordings.filter(\.isLive) }
     var cuedRecordings: [Recording] { recordings.filter(\.isCued) }
@@ -269,13 +271,14 @@ enum GuideRules {
             // Record needs a declared map, so a saved live recording had one.
             return (s.streaming && s.mapDeclared) || !s.liveRecordings.isEmpty
         case .checkLiveSignal:
-            return (s.streaming && s.streamingSeconds >= GuideStep.previewSeconds) || marks.contains(.previewWatched)
+            // Set once a stream has run `GuideStep.previewSeconds` (ProjectSession).
+            return marks.contains(.previewWatched)
         case .record:
             return !s.liveRecordings.isEmpty
         case .reviewQuality:
             return s.liveRecordings.contains { marks.contains(.quality($0.id)) }
         case .chooseProtocol:
-            return s.protocolCount > 0 || !cued.isEmpty
+            return marks.contains(.protocolsVisited) || !cued.isEmpty
         case .recordRuns:
             return !cued.isEmpty
         case .evaluateCued:
@@ -356,6 +359,37 @@ struct GuideProgress: Equatable {
         return "Step \(k + 1) of \(n)"
     }
 
+    /// The steps done now (for "Step done" announcements).
+    var doneIDs: Set<GuideStep.ID> { Set(rows.filter { $0.state == .done }.map(\.id)) }
+
+    /// Steps that became done since `before`, in step order.
+    func newlyDone(since before: Set<GuideStep.ID>) -> [GuideStep] {
+        rows.filter { $0.state == .done && !before.contains($0.id) }.map(\.step)
+    }
+
+    /// What the card lists when not showing every step: the steps before the current one
+    /// (all done or skipped) folded into one line, then the current step and the next two.
+    struct Window: Equatable {
+        var foldedDone = 0
+        var foldedSkipped: [GuideStep.ID] = []
+        var rows: [Row] = []
+        /// Steps after the window.
+        var more = 0
+        var hasFold: Bool { foldedDone + foldedSkipped.count > 0 }
+    }
+
+    static let windowAfterCurrent = 2
+
+    func window(showsAll: Bool) -> Window {
+        if showsAll { return Window(rows: rows) }
+        let start = current.flatMap { rows.firstIndex(of: $0) } ?? rows.count
+        let folded = rows[..<start]
+        let end = min(rows.count, start + 1 + Self.windowAfterCurrent)
+        return Window(foldedDone: folded.filter { $0.state == .done }.count,
+                      foldedSkipped: folded.filter { $0.state == .skipped }.map(\.id),
+                      rows: Array(rows[start..<end]), more: rows.count - end)
+    }
+
     var finishedMessage: String {
         skippedCount == 0 ? GuideCopy.allDone : GuideCopy.finishedWithSkips(skippedCount)
     }
@@ -406,6 +440,27 @@ enum GuideCopy {
     /// The card's line when the step's control is disabled: the control's own tooltip.
     static func unavailable(_ reason: String) -> String { "Not available yet: \(reason)" }
 
+    static let undoSkip = "Undo skip"
+    static func undoSkipOf(_ step: GuideStep) -> String { "Undo skip: \(step.title)" }
+    static let showAllSteps = "Show all steps"
+    static let showFewerSteps = "Show fewer steps"
+    static let expandedValue = "expanded"
+    static let collapsedValue = "collapsed"
+
+    /// VoiceOver, when a step ticks off.
+    static func stepDone(_ step: GuideStep) -> String { "Step done: \(step.title)" }
+
+    /// The folded line for the steps before the current one.
+    static func folded(done: Int, skipped: Int) -> String {
+        switch (done, skipped) {
+        case (_, 0): return "\(done) done"
+        case (0, _): return "\(skipped) skipped"
+        default: return "\(done) done · \(skipped) skipped"
+        }
+    }
+
+    static func more(_ n: Int) -> String { "\(n) more" }
+
     static func finishedWithSkips(_ n: Int) -> String {
         "Guide finished, \(n) step\(n == 1 ? "" : "s") skipped."
     }
@@ -421,6 +476,8 @@ enum GuideCopy {
 
 /// Guide state for one project, as the user left it.
 struct GuideState: Equatable, Codable, Sendable {
+    static let currentVersion = 1
+    var version = GuideState.currentVersion
     var goal: GuideGoal?
     var skipped: Set<GuideStep.ID> = []
     var hidden = false
@@ -428,6 +485,11 @@ struct GuideState: Equatable, Codable, Sendable {
     /// The goal picker has been shown (or answered) for this project; it never asks again.
     var askedOnce = false
     var marks: Set<GuideMark> = []
+    /// What another build of the app stored that this one doesn't know: kept and written
+    /// back, so an older build never wipes a newer build's guide state.
+    var unknownGoal: String?
+    var unknownSkipped: [String] = []
+    var unknownMarks: [String] = []
 
     init(goal: GuideGoal? = nil, skipped: Set<GuideStep.ID> = [], hidden: Bool = false, collapsed: Bool = false,
          askedOnce: Bool = false, marks: Set<GuideMark> = []) {
@@ -435,60 +497,78 @@ struct GuideState: Equatable, Codable, Sendable {
         self.askedOnce = askedOnce; self.marks = marks
     }
 
-    private enum CodingKeys: String, CodingKey { case goal, skipped, hidden, collapsed, askedOnce, marks }
+    private enum CodingKeys: String, CodingKey { case version, goal, skipped, hidden, collapsed, askedOnce, marks }
 
-    // Unknown goals, steps or marks (a newer or older app) are dropped, never fatal.
+    // Unknown goals, steps or marks (a newer or older app) are kept aside, never fatal.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        goal = (try? c.decodeIfPresent(String.self, forKey: .goal)).flatMap(GuideGoal.init(rawValue:))
-        skipped = Set(((try? c.decodeIfPresent([String].self, forKey: .skipped)) ?? []).compactMap(GuideStep.ID.init(rawValue:)))
+        version = (try? c.decodeIfPresent(Int.self, forKey: .version)) ?? Self.currentVersion
+        let rawGoal = try? c.decodeIfPresent(String.self, forKey: .goal)
+        goal = rawGoal.flatMap(GuideGoal.init(rawValue:))
+        unknownGoal = goal == nil ? rawGoal : nil
+        let rawSkipped = (try? c.decodeIfPresent([String].self, forKey: .skipped)) ?? []
+        skipped = Set(rawSkipped.compactMap(GuideStep.ID.init(rawValue:)))
+        unknownSkipped = rawSkipped.filter { GuideStep.ID(rawValue: $0) == nil }
         hidden = (try? c.decodeIfPresent(Bool.self, forKey: .hidden)) ?? false
         collapsed = (try? c.decodeIfPresent(Bool.self, forKey: .collapsed)) ?? false
         askedOnce = (try? c.decodeIfPresent(Bool.self, forKey: .askedOnce)) ?? false
-        marks = Set(((try? c.decodeIfPresent([String].self, forKey: .marks)) ?? []).compactMap(GuideMark.init(rawValue:)))
+        let rawMarks = (try? c.decodeIfPresent([String].self, forKey: .marks)) ?? []
+        marks = Set(rawMarks.compactMap(GuideMark.init(rawValue:)))
+        unknownMarks = rawMarks.filter { GuideMark(rawValue: $0) == nil }
     }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encodeIfPresent(goal?.rawValue, forKey: .goal)
-        try c.encode(skipped.map(\.rawValue).sorted(), forKey: .skipped)
+        try c.encode(max(version, Self.currentVersion), forKey: .version)
+        try c.encodeIfPresent(goal?.rawValue ?? unknownGoal, forKey: .goal)
+        try c.encode((skipped.map(\.rawValue) + unknownSkipped).sorted(), forKey: .skipped)
         try c.encode(hidden, forKey: .hidden)
         try c.encode(collapsed, forKey: .collapsed)
         try c.encode(askedOnce, forKey: .askedOnce)
-        try c.encode(marks.map(\.rawValue).sorted(), forKey: .marks)
+        try c.encode((marks.map(\.rawValue) + unknownMarks).sorted(), forKey: .marks)
     }
 
     /// Whether the picker should open now: no goal, never asked.
     var shouldAsk: Bool { goal == nil && !askedOnce }
 
+    /// A new goal starts with no skipped steps; choosing the same goal again keeps them.
     mutating func choose(_ g: GuideGoal) {
+        if goal != g { skipped = []; unknownSkipped = [] }
         goal = g
+        unknownGoal = nil
         askedOnce = true
         hidden = false
         collapsed = false
     }
+
+    mutating func unskip(_ id: GuideStep.ID) { skipped.remove(id) }
 }
 
-/// Reads and writes `GuideState` in UserDefaults under the project's stable id.
+/// Reads and writes `GuideState` in UserDefaults under the project's stable id. With no
+/// defaults (Debug-driven runs) the state lives only in memory.
 struct GuideStore {
     static let keyPrefix = "BCIGuide."
-    let defaults: UserDefaults
+    let defaults: UserDefaults?
 
     /// The project's stable id: its name and creation instant from `project.json`. Both are
     /// fixed when the project is made (the example import stamps its own), so the id survives
-    /// moving or renaming the package; a Finder duplicate shares it.
+    /// moving or renaming the package; a Finder duplicate shares it (accepted). The instant is
+    /// written exactly as `project.json` stores it (ContractJSON, millisecond ISO-8601): a
+    /// just-created store still holds the unrounded `Date()`, and a reopen reads the rounded one.
     static func projectKey(name: String, created: Date) -> String {
-        "\(name)|\(created.timeIntervalSinceReferenceDate)"
+        let stamp = (try? ContractJSON.encoder().encode(created)).map { String(decoding: $0, as: UTF8.self) }
+            ?? "\(created.timeIntervalSinceReferenceDate)"
+        return "\(name)|\(stamp.trimmingCharacters(in: CharacterSet(charactersIn: "\"")))"
     }
 
     func load(_ projectKey: String) -> GuideState {
-        guard let data = defaults.data(forKey: Self.keyPrefix + projectKey),
+        guard let data = defaults?.data(forKey: Self.keyPrefix + projectKey),
               let state = try? JSONDecoder().decode(GuideState.self, from: data) else { return GuideState() }
         return state
     }
 
     func save(_ state: GuideState, for projectKey: String) {
-        guard let data = try? JSONEncoder().encode(state) else { return }
+        guard let defaults, let data = try? JSONEncoder().encode(state) else { return }
         defaults.set(data, forKey: Self.keyPrefix + projectKey)
     }
 }

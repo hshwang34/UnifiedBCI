@@ -33,7 +33,7 @@ struct LiveRunsList: View {
 
     var body: some View {
         List(selection: Binding(get: { session.selectedLiveRunID ?? LiveRunsList.setupID },
-                                set: { session.selectedLiveRunID = $0 == LiveRunsList.setupID ? nil : $0 })) {
+                                set: { session.userSelectedLiveRun($0 == LiveRunsList.setupID ? nil : $0) })) {
             Label(LiveRunCopy.newRunRow, systemImage: "plus.circle").tag(LiveRunsList.setupID)
             if !session.frozen.liveRuns.isEmpty {
                 Section(LiveRunCopy.runsListTitle) {
