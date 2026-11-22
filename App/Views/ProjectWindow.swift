@@ -57,6 +57,7 @@ struct ProjectWindow: View {
     @Environment(Workspace.self) private var workspace
     @State private var showParameters = false
     @State private var columns: NavigationSplitViewVisibility = .all
+    @Environment(\.controlActiveState) private var activeState
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columns) {
@@ -142,11 +143,12 @@ struct ProjectWindow: View {
         }
         // Brief 007: the goal picker, once per project, never over the first-run intro or
         // another sheet, and not in Debug runs that drive the app (unless they ask).
-        .sheet(isPresented: $session.showsGuidePicker) {
+        .sheet(isPresented: $session.showsGuidePicker, onDismiss: { if !session.guide.askedOnce { session.guideNotNow() } }) {
             GuidePickerSheet(current: session.guide.goal, choose: session.chooseGuideGoal, notNow: session.guideNotNow)
         }
-        .task(id: workspace.welcomeFlow.isIntro) {
-            guard !workspace.welcomeFlow.isIntro, !LaunchArguments.suppressesGuidePicker else { return }
+        // Only the key window asks, and only once the intro has gone.
+        .task(id: [workspace.welcomeFlow.isIntro, activeState == .key]) {
+            guard !workspace.welcomeFlow.isIntro, activeState == .key, !LaunchArguments.suppressesGuidePicker else { return }
             try? await Task.sleep(for: .milliseconds(700))
             guard !Task.isCancelled, !session.showsConnectSheet, session.protocolEditor == nil, session.frozen.sheet == nil else { return }
             session.askForGuideGoalIfNeeded()
@@ -193,14 +195,20 @@ private struct ProjectSidebar: View {
             VStack(spacing: 0) {
                 if session.showsGuideCard, let progress = session.guideProgress {
                     GuideCard(progress: progress, collapsed: session.guide.collapsed,
+                              lastSkipped: session.lastSkippedGuideStep,
                               toggleCollapsed: session.toggleGuideCollapsed, hide: session.hideGuide,
                               changeGoal: session.presentGuidePicker, skip: session.skipGuideStep,
-                              showMe: session.showGuideTarget)
+                              unskip: session.unskipGuideStep, showMe: session.showGuideTarget)
                         .padding(.horizontal, Theme.Space.s)
                         .padding(.top, Theme.Space.xs)
                 }
                 status
             }
+        }
+        // "Step done: …" for VoiceOver as steps tick off.
+        .onChange(of: session.showsGuideCard ? session.guideProgress?.doneIDs : nil) { old, new in
+            guard let old, new != nil, let progress = session.guideProgress else { return }
+            for step in progress.newlyDone(since: old) { AccessibilityNotification.Announcement(GuideCopy.stepDone(step)).post() }
         }
     }
 
@@ -306,7 +314,7 @@ private struct ContentColumn: View {
             } else {
                 // Originals with their reruns as children, expanded unless the user folds
                 // them, so a new reproduction is visible as soon as it is selected.
-                List(selection: $session.selectedResultID) {
+                List(selection: Binding(get: { session.selectedResultID }, set: { session.userSelectedResult($0) })) {
                     ForEach(session.resultTree) { node in
                         if let children = node.children {
                             DisclosureGroup(isExpanded: expanded(node.id)) {
