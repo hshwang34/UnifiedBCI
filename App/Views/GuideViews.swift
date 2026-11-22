@@ -8,6 +8,8 @@ struct GuidePickerSheet: View {
     let current: GuideGoal?
     let choose: (GuideGoal) -> Void
     let notNow: () -> Void
+    /// The first goal has focus when the sheet opens, and Return chooses the focused goal.
+    @FocusState private var focused: GuideGoal?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.l) {
@@ -19,8 +21,11 @@ struct GuidePickerSheet: View {
             VStack(spacing: Theme.Space.s) {
                 ForEach(GuideGoal.allCases) { goal in
                     GoalRow(goal: goal, isCurrent: goal == current) { choose(goal) }
+                        .focused($focused, equals: goal)
+                        .keyboardShortcut(goal == (focused ?? GuideGoal.allCases[0]) ? .defaultAction : nil)
                 }
             }
+            .defaultFocus($focused, GuideGoal.allCases[0])
             HStack {
                 Spacer()
                 Button(GuideCopy.notNow, action: notNow).keyboardShortcut(.cancelAction)
@@ -69,16 +74,23 @@ private struct GoalRow: View {
     }
 }
 
-/// The sidebar's Guide card (decision #44): goal, "Step k of n", the steps, the current
-/// step's instruction and Show me, or the all-done state.
+/// The sidebar's Guide card (decision #44): goal, "Step k of n", the steps (done ones folded
+/// into one line, then the current step and the next two; all on "Show all steps"), the
+/// current step's instruction with Show me and Skip step, or the all-done state.
 struct GuideCard: View {
     let progress: GuideProgress
+    /// The current step's control is disabled: its tooltip's reason.
+    var disabledReason: String? = nil
     let collapsed: Bool
+    /// The step Skip step last skipped: the card offers "Undo skip" for it.
+    var lastSkipped: GuideStep.ID? = nil
     let toggleCollapsed: () -> Void
     let hide: () -> Void
     let changeGoal: () -> Void
     let skip: (GuideStep.ID) -> Void
+    let unskip: (GuideStep.ID) -> Void
     let showMe: (GuideStep) -> Void
+    @State private var showsAll = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xs + 2) {
@@ -89,6 +101,11 @@ struct GuideCard: View {
                     Text(current.step.instruction)
                         .font(.caption).foregroundStyle(Theme.textPrimary)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    if let disabledReason {
+                        Label(GuideCopy.unavailable(disabledReason), systemImage: "info.circle")
+                            .font(.caption).foregroundStyle(Theme.textSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     HStack(spacing: Theme.Space.s) {
                         Button(GuideCopy.showMe) { showMe(current.step) }
                             .buttonStyle(.borderedProminent).controlSize(.small)
@@ -97,6 +114,7 @@ struct GuideCard: View {
                             .buttonStyle(.borderless).controlSize(.small)
                             .help(GuideCopy.skipHelp)
                     }
+                    undoLine
                 } else {
                     Text(progress.finishedMessage)
                         .font(.caption).foregroundStyle(Theme.textPrimary)
@@ -105,6 +123,7 @@ struct GuideCard: View {
                         Button(GuideCopy.chooseAnother, action: changeGoal).controlSize(.small)
                         Button(GuideCopy.hideGuide, action: hide).buttonStyle(.borderless).controlSize(.small)
                     }
+                    undoLine
                 }
             }
         }
@@ -118,6 +137,15 @@ struct GuideCard: View {
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.cell).strokeBorder(Theme.hairline))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(GuideCopy.cardAccessibility(progress))
+    }
+
+    /// "Undo skip" as a small text button of its own, only for the step just skipped
+    /// (the session clears it once the current step changes).
+    @ViewBuilder private var undoLine: some View {
+        if let lastSkipped, progress.rows.contains(where: { $0.id == lastSkipped && $0.state == .skipped }) {
+            Button(GuideCopy.undoSkipOf(GuideStep.step(lastSkipped))) { unskip(lastSkipped) }
+                .buttonStyle(.link).font(.caption2)
+        }
     }
 
     private var header: some View {
@@ -142,29 +170,60 @@ struct GuideCard: View {
                 Image(systemName: collapsed ? "chevron.up" : "chevron.down")
             }
             .buttonStyle(.borderless)
-            .accessibilityLabel(collapsed ? GuideCopy.expand : GuideCopy.collapse)
+            .accessibilityLabel(GuideCopy.cardTitle)
+            .accessibilityValue(collapsed ? GuideCopy.collapsedValue : GuideCopy.expandedValue)
+            .accessibilityHint(collapsed ? GuideCopy.expand : GuideCopy.collapse)
             .help(collapsed ? GuideCopy.expand : GuideCopy.collapse)
         }
     }
 
     private var steps: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            ForEach(progress.rows) { row in
-                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
-                    Image(systemName: row.state.symbol)
-                        .foregroundStyle(tint(row.state))
-                        .frame(width: 14)
-                    Text(row.step.title)
-                        .fontWeight(row.state == .current ? .semibold : .regular)
-                        .foregroundStyle(row.state == .todo || row.state == .skipped ? Theme.textSecondary : Theme.textPrimary)
-                        .strikethrough(row.state == .skipped, color: Theme.textSecondary)
-                        .lineLimit(2)
+        let window = progress.window(showsAll: showsAll)
+        return VStack(alignment: .leading, spacing: 1) {
+            if window.hasFold {
+                Button { showsAll = true } label: {
+                    line(symbol: GuideProgress.StepState.done.symbol, tint: Theme.positive,
+                         text: GuideCopy.folded(done: window.foldedDone, skipped: window.foldedSkipped.count), primary: false)
                 }
-                .font(.caption)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(row.accessibilityLabel)
+                .buttonStyle(.plain)
+                .help(GuideCopy.showAllSteps)
+                .accessibilityHint(GuideCopy.showAllSteps)
+                .contextMenu {
+                    ForEach(window.foldedSkipped, id: \.self) { id in
+                        Button(GuideCopy.undoSkipOf(GuideStep.step(id))) { unskip(id) }
+                    }
+                }
+                .modifier(UndoSkipActions(skipped: window.foldedSkipped, unskip: unskip))
+            }
+            ForEach(window.rows) { row in
+                line(symbol: row.state.symbol, tint: tint(row.state), text: row.step.title,
+                     primary: row.state == .done || row.state == .current, bold: row.state == .current, struck: row.state == .skipped)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(row.accessibilityLabel)
+                    .contextMenu {
+                        if row.state == .skipped { Button(GuideCopy.undoSkip) { unskip(row.id) } }
+                    }
+            }
+            if window.more > 0 || showsAll {
+                Button(showsAll ? GuideCopy.showFewerSteps : GuideCopy.more(window.more)) { showsAll.toggle() }
+                    .buttonStyle(.link).font(.caption2)
+                    .padding(.leading, 18)
             }
         }
+    }
+
+    private func line(symbol: String, tint: Color, text: String, primary: Bool, bold: Bool = false, struck: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
+            Image(systemName: symbol).foregroundStyle(tint).frame(width: 14).accessibilityHidden(true)
+            Text(text)
+                .fontWeight(bold ? .semibold : .regular)
+                .foregroundStyle(primary ? Theme.textPrimary : Theme.textSecondary)
+                .strikethrough(struck, color: Theme.textSecondary)
+                .lineLimit(2)
+        }
+        .font(.caption)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(.rect)
     }
 
     private func tint(_ s: GuideProgress.StepState) -> Color {
@@ -172,6 +231,18 @@ struct GuideCard: View {
         case .done: return Theme.positive
         case .current: return Theme.accentInk
         case .skipped, .todo: return Theme.textSecondary
+        }
+    }
+}
+
+/// VoiceOver actions on the folded line: one "Undo skip: <step>" per folded skipped step.
+private struct UndoSkipActions: ViewModifier {
+    let skipped: [GuideStep.ID]
+    let unskip: (GuideStep.ID) -> Void
+
+    func body(content: Content) -> some View {
+        skipped.reduce(AnyView(content)) { view, id in
+            AnyView(view.accessibilityAction(named: Text(GuideCopy.undoSkipOf(GuideStep.step(id)))) { unskip(id) })
         }
     }
 }

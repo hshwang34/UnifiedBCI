@@ -81,6 +81,9 @@ import Foundation
 ///     -BCIHelpTopic streamHealth|heldOutAccuracy|…  open that "?" popover wherever it appears
 ///                                              (HelpTopic ids, brief 007 PR 5); with -BCIGuideGoal
 ///                                              absent, -BCISection then snapshots "help"
+///     -BCIGuideShowMe YES                      with -BCIGuideGoal: after "guide", press Show me on the
+///                                              current step; snapshots "guide-showme" mid-ring (add
+///                                              -BCIReduceMotion YES for the static ring)
 ///     The picker never opens on its own while -BCISnapshotDir or -BCIGuideGoal is set.
 @MainActor
 enum LaunchArguments {
@@ -183,6 +186,15 @@ enum LaunchArguments {
         return UserDefaults.standard.string(forKey: "BCIHelpTopic").flatMap(HelpTopic.init(rawValue:))
         #else
         return nil
+        #endif
+    }
+
+    /// Debug-driven runs keep guide state in memory only (never in the app's defaults).
+    static var guideIsVolatile: Bool {
+        #if DEBUG
+        return suppressesGuidePicker
+        #else
+        return false
         #endif
     }
 
@@ -371,6 +383,11 @@ enum LaunchArguments {
         if guideGoal != nil, snapshots != nil {
             session.section = .recordings
             await snap("guide")
+            if defaults.bool(forKey: "BCIGuideShowMe"), let step = session.guideProgress?.current?.step {
+                session.showGuideTarget(step)
+                await snap("guide-showme", settle: .milliseconds(1300))
+                await session.spotlight.awaitHighlight()
+            }
         }
         if let raw = defaults.string(forKey: "BCISection"), let section = SidebarSection(rawValue: raw) {
             session.section = section

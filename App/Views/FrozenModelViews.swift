@@ -157,6 +157,7 @@ struct FrozenModelDetailView: View {
                         Button(ReplayCopy.replayButton) { session.showReplay(model: model.modelID) }
                             .disabled(session.isLiveRunning)
                             .help(session.isLiveRunning ? LiveRunCopy.pausedDuringLive : ReplayCopy.replayHelp)
+                            .guideAnchor(.replayButton)
                     }
                     Text(FreezeSheetModel.recipeName(model.recipe)).font(.callout).foregroundStyle(Theme.textSecondary)
                     FactRows(rows: FrozenModelRowModel.facts(model, channelLabels: FreezeSheetModel.labels(

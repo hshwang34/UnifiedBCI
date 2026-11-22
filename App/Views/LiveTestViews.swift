@@ -13,7 +13,7 @@ struct LiveTestDetail: View {
         } else if let id = session.selectedLiveRunID, let run = session.frozen.liveRuns.first(where: { $0.liveRunID == id }) {
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Space.cardGap) {
-                    LiveRunCard(session: session, run: run, showsSource: true)
+                    LiveRunCard(session: session, run: run, showsSource: true).guideAnchor(.liveRunCard)
                     Button(LiveRunCopy.setupTitle + "…") { session.selectedLiveRunID = nil }
                 }
                 .padding(Theme.Space.pageMargin)
@@ -33,7 +33,7 @@ struct LiveRunsList: View {
 
     var body: some View {
         List(selection: Binding(get: { session.selectedLiveRunID ?? LiveRunsList.setupID },
-                                set: { session.selectedLiveRunID = $0 == LiveRunsList.setupID ? nil : $0 })) {
+                                set: { session.userSelectedLiveRun($0 == LiveRunsList.setupID ? nil : $0) })) {
             Label(LiveRunCopy.newRunRow, systemImage: "plus.circle").tag(LiveRunsList.setupID)
             if !session.frozen.liveRuns.isEmpty {
                 Section(LiveRunCopy.runsListTitle) {
@@ -131,6 +131,8 @@ struct LiveTestSetupView: View {
                         .appProminentButton()
                         .keyboardShortcut(.defaultAction)
                         .disabled(session.liveStartDisabledReason != nil)
+                        .help(session.liveStartDisabledReason ?? LiveRunCopy.start)
+                        .guideAnchor(.liveStart)
                 }
             }
             .padding(Theme.Space.pageMargin)

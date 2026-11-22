@@ -15,7 +15,7 @@ struct ProtocolsList: View {
                     Text(session.protocolsError ?? model.footnote ?? ProtocolCopy.emptyDescription).foregroundStyle(Theme.textSecondary)
                 }
             } else {
-                List(selection: $session.selectedProtocolID) {
+                List(selection: Binding(get: { session.selectedProtocolID }, set: { session.userSelectedProtocol($0) })) {
                     ForEach(model.groups) { group in
                         Section(group.title) {
                             ForEach(group.rows) { row in

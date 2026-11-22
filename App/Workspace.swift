@@ -118,6 +118,7 @@ final class Workspace {
             defer { self.opening[key] = nil }
             let session = try await ProjectSession.open(at: key, launch: launch)
             self.sessions[key] = session
+            session.windowProvider = { [weak self] in self?.windows[key]?.window }
             return session
         }
         opening[key] = task
@@ -156,6 +157,7 @@ final class Workspace {
             defer { self.adopting[key] = nil }
             let session = await ProjectSession.adopt(store, url: key, launch: launch)
             self.sessions[key] = session
+            session.windowProvider = { [weak self] in self?.windows[key]?.window }
             return session
         }
         adopting[key] = task

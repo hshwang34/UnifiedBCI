@@ -16,7 +16,7 @@ struct AcquisitionView: View {
                 if let runs = session.runs {
                     OperatorPanel(session: session, runs: runs, streaming: live.state == .streaming)
                 }
-                PreviewCard(live: live)
+                PreviewCard(live: live).guideAnchor(.livePreview)
                 HealthCard(live: live)
             }
             .padding(Theme.Space.pageMargin)
@@ -91,6 +91,7 @@ struct AcquisitionView: View {
                 }
                 .help(session.startRunDisabledReason ?? StartRunCopy.buttonHelp)
                 .disabled(session.startRunDisabledReason != nil)
+                .guideAnchor(.startRun)
             }
             if runsOpen {
                 EmptyView()
@@ -110,6 +111,7 @@ struct AcquisitionView: View {
                 .keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(live.recordDisabledReason != nil || live.isStartingRecording || live.isFinishingRecording)
                 .help(live.recordDisabledReason ?? LiveScreenModel.recordHelp)
+                .guideAnchor(.recordButton)
             }
         }
         .controlSize(.large)

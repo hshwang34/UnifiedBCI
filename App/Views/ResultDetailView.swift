@@ -76,6 +76,7 @@ private struct ResultHero: View {
                 Button(ReplayCopy.freezeButton) { session.showFreeze(stored) }
                     .buttonStyle(.bordered)
                     .help(ReplayCopy.freezeHelp)
+                    .guideAnchor(.freezeButton)
                 Button { workspace.exportPanel(for: session) } label: { Label("Export…", systemImage: "square.and.arrow.up") }
                     .buttonStyle(.bordered)
             }
@@ -83,6 +84,7 @@ private struct ResultHero: View {
         .padding(Theme.Space.heroPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassSurface(cornerRadius: Theme.Radius.hero, style: .hero)
+        .guideAnchor(.resultDetail)
     }
 
     /// The numbers and their uncertainty; one VoiceOver element reading the whole statement.

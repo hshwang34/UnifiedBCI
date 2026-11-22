@@ -57,6 +57,7 @@ struct ProjectWindow: View {
     @Environment(Workspace.self) private var workspace
     @State private var showParameters = false
     @State private var columns: NavigationSplitViewVisibility = .all
+    @Environment(\.controlActiveState) private var activeState
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columns) {
@@ -96,7 +97,7 @@ struct ProjectWindow: View {
                         .labelStyle(.titleAndIcon)
                         .buttonStyle(.borderedProminent)
                         .disabled(!session.canEvaluate)
-                        .help(session.isLiveRunning ? LiveRunCopy.pausedDuringLive : "Evaluate the selected recording (⌘R)")
+                        .help(session.evaluateDisabledReason ?? "Evaluate the selected recording (⌘R)")
                 }
             }
             FixedToolbarSpacer()
@@ -116,6 +117,8 @@ struct ProjectWindow: View {
             }
         }
         .focusedSceneValue(\.projectSession, session)
+        // Brief 007: "Show me" rings the control a step's anchor names, sheets included.
+        .environment(session.spotlight)
         // Brief 004: New Recording… / Connect hardware. Escape and Close go through the
         // controller, so a board that never streamed is released.
         .sheet(isPresented: $session.showsConnectSheet, onDismiss: { session.connectSheetClosed() }) {
@@ -142,11 +145,12 @@ struct ProjectWindow: View {
         }
         // Brief 007: the goal picker, once per project, never over the first-run intro or
         // another sheet, and not in Debug runs that drive the app (unless they ask).
-        .sheet(isPresented: $session.showsGuidePicker) {
+        .sheet(isPresented: $session.showsGuidePicker, onDismiss: { if !session.guide.askedOnce { session.guideNotNow() } }) {
             GuidePickerSheet(current: session.guide.goal, choose: session.chooseGuideGoal, notNow: session.guideNotNow)
         }
-        .task(id: workspace.welcomeFlow.isIntro) {
-            guard !workspace.welcomeFlow.isIntro, !LaunchArguments.suppressesGuidePicker else { return }
+        // Only the key window asks, and only once the intro has gone.
+        .task(id: [workspace.welcomeFlow.isIntro, activeState == .key]) {
+            guard !workspace.welcomeFlow.isIntro, activeState == .key, !LaunchArguments.suppressesGuidePicker else { return }
             try? await Task.sleep(for: .milliseconds(700))
             guard !Task.isCancelled, !session.showsConnectSheet, session.protocolEditor == nil, session.frozen.sheet == nil else { return }
             session.askForGuideGoalIfNeeded()
@@ -192,15 +196,22 @@ private struct ProjectSidebar: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 if session.showsGuideCard, let progress = session.guideProgress {
-                    GuideCard(progress: progress, collapsed: session.guide.collapsed,
+                    GuideCard(progress: progress, disabledReason: progress.current.flatMap { session.guideDisabledReason($0.id) },
+                              collapsed: session.guide.collapsed,
+                              lastSkipped: session.lastSkippedGuideStep,
                               toggleCollapsed: session.toggleGuideCollapsed, hide: session.hideGuide,
                               changeGoal: session.presentGuidePicker, skip: session.skipGuideStep,
-                              showMe: session.showGuideTarget)
+                              unskip: session.unskipGuideStep, showMe: session.showGuideTarget)
                         .padding(.horizontal, Theme.Space.s)
                         .padding(.top, Theme.Space.xs)
                 }
                 status
             }
+        }
+        // "Step done: …" for VoiceOver as steps tick off.
+        // Not on load or a goal change: only steps that tick off within the same goal.
+        .onChange(of: session.showsGuideCard ? session.guideProgress?.doneIDs : nil, initial: true) {
+            for step in session.guideStepsNewlyDone() { AccessibilityNotification.Announcement(GuideCopy.stepDone(step)).post() }
         }
     }
 
@@ -289,9 +300,10 @@ private struct ContentColumn: View {
                         }
                     }
                 }
+                .guideAnchor(.recordingList)
             }
         case .protocols:
-            ProtocolsList(session: session)
+            ProtocolsList(session: session).guideAnchor(.protocolList)
         case .liveTest:
             LiveRunsList(session: session)
         case .pipelines:
@@ -306,7 +318,7 @@ private struct ContentColumn: View {
             } else {
                 // Originals with their reruns as children, expanded unless the user folds
                 // them, so a new reproduction is visible as soon as it is selected.
-                List(selection: $session.selectedResultID) {
+                List(selection: Binding(get: { session.selectedResultID }, set: { session.userSelectedResult($0) })) {
                     ForEach(session.resultTree) { node in
                         if let children = node.children {
                             DisclosureGroup(isExpanded: expanded(node.id)) {

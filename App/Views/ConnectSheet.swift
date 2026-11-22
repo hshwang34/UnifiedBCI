@@ -70,6 +70,7 @@ struct ConnectSheet: View {
                 Button(action.rawValue) { Task { await model.perform(action) } }
                     .disabled(action == .connect && (model.isConnecting || !(model.selected.map(model.isAvailable) ?? false)))
                     .keyboardShortcut(primary ? .defaultAction : nil)
+                    .guideAnchor(action == .connect ? .newRecording : .none)
             }
         }
         .controlSize(.large)
@@ -259,7 +260,7 @@ private struct ChannelMapEditor: View {
                     .help(ChannelMapModel.withoutPositionsCaption)
                 Spacer()
                 Button(ChannelMapModel.save) { Task { await model.saveMap() } }
-                Button(ChannelMapModel.confirm) { model.confirmMap() }
+                Button(ChannelMapModel.confirm) { model.confirmMap() }.guideAnchor(.channelMap)
             }
         }
     }
