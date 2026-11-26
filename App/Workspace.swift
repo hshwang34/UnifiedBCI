@@ -191,6 +191,20 @@ final class Workspace {
 
     var isClosingAny: Bool { !closing.isEmpty }
 
+    /// Closes a project's window (agent control's `project.close`), then its session, as
+    /// the person closing the window would. A session without a window just closes.
+    func closeWindow(of url: URL) async {
+        let key = Self.canonical(url)
+        if let window = windows[key]?.window {
+            window.close()
+            let deadline = ContinuousClock.now + .seconds(10)
+            while sessions[key] != nil || closing[key] != nil, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(50)) }
+            if sessions[key] != nil { await close(key) }
+        } else {
+            await close(key)
+        }
+    }
+
     /// Closes every project at once (quit): sessions still open and teardowns already
     /// under way, concurrently, so N projects take one shutdown's time, not N. A window
     /// closed mid-commit is waited for here too, so quitting never cuts a store short.

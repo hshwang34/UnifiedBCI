@@ -34,6 +34,11 @@ struct BCIWorkspaceApp: App {
         .restorationBehavior(.disabled)
         .commandsRemoved()
 
+        // Brief 008: Settings ▸ Agent Control (⌘,).
+        Settings {
+            AgentControlSettingsView()
+        }
+
         #if DEBUG
         // Phase-0 feasibility checks: developer tooling, not in Release builds.
         Window("Phase 0 Feasibility", id: "feasibility") {
@@ -55,9 +60,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.init(workspace: Workspace(recents: SystemRecentDocuments(), launch: LaunchArguments.workerLaunch(default: WorkerLaunch.locate())))
     }
 
+    /// Brief 008: the local control server for coding agents (off unless the person turns it on).
+    private(set) lazy var agentControl = AgentControl(workspace: workspace)
+
     init(workspace: Workspace) {
         self.workspace = workspace
         super.init()
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Never under XCTest: tests drive the router directly.
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+        agentControl.start()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        agentControl.stop()
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -81,9 +99,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Finder double-click / "Open With" on a `.bciproj`: through `Workspace.open`, so the
     /// one-window-per-project rule and recents apply exactly as for Open….
     func application(_ application: NSApplication, open urls: [URL]) {
+        // `bciworkspace://enable-control` (`bci enable`, brief 008) is not a document.
+        let control = urls.filter { $0.scheme == ControlProtocol.urlScheme }
+        for url in control { agentControl.handle(url: url) }
+        let documents = urls.filter { $0.isFileURL }
+        guard !documents.isEmpty else { return }
         // A first launch by "Open With" skips the intro this launch (flag left unset).
         workspace.openingDocuments()
-        Task { await route(urls) }
+        Task { await route(documents) }
     }
 
     func route(_ urls: [URL]) async {

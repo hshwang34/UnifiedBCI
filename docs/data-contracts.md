@@ -32,7 +32,15 @@ MyExperiment.bciproj/
     run.json                   LiveRunRecord: a live run or a stored replay (kind live | replay)
     predictions.jsonl          PredictionRecord per line, append-only
     feedback.jsonl             FeedbackRecord per line, append-only (live runs only)
+  logs/
+    agent-actions.jsonl        agent control log (brief 008): not a contract record
 ```
+
+`logs/agent-actions.jsonl` (decision #49) is the only file outside the contract. It is
+written only while agent control is on, with one JSON object per agent call:
+`{ts, client, method, params, outcome, job}`. Nothing reads it back, open neither sweeps
+it nor validates it, and export never copies it. It is a log for the person, not
+provenance. A result's provenance stays in `result.meta.json` and the records above.
 
 **Index: none. The directory scan is the truth.** A recording, pipeline or result exists
 iff its UUID-named directory holds its manifest (`recording.json`, `pipeline.json`,
