@@ -190,6 +190,7 @@ final class ControlRouter {
         if let s = workspace.sessions[Workspace.canonical(url)] { return s }
         do {
             let s = try await workspace.session(for: url)
+            s.openedByAgent = true
             workspace.noteRecent(s.url)
             workspace.show(s.url)
             return s

@@ -147,6 +147,15 @@ final class ControlRouterTests: XCTestCase {
         XCTAssertEqual(done["state"], "disconnected")
     }
 
+    func testAgentOpenedProjectNeverShowsTheGoalPicker() async throws {
+        _ = try await result("project.show", ["project": p])
+        let session = try XCTUnwrap(workspace.sessions[Workspace.canonical(project)])
+        XCTAssertTrue(session.openedByAgent)
+        session.askForGuideGoalIfNeeded()          // what the window does once it is key
+        XCTAssertFalse(session.showsGuidePicker, "the picker would block every agent action with ui_busy")
+        XCTAssertFalse(session.guide.askedOnce, "nothing saved: the person is asked next time")
+    }
+
     func testAgentOperatorIsRefusedWithoutASimulatedSource() async throws {
         let (m, _) = await call("protocol.run", ["project": p, "protocol": .string(UUID().uuidString), "operator": "agent"])
         XCTAssertEqual(m.error?.code, "refused", "nothing streams, so nothing runs")

@@ -942,6 +942,10 @@ final class ProjectSession: Identifiable {
     }
     /// The goal picker sheet is up.
     var showsGuidePicker = false
+    /// Brief 008: a coding agent opened this project. The goal picker isn't offered to an
+    /// agent (it would block every action with `ui_busy`); nothing is saved, so the person is
+    /// asked as usual the next time they open the project themselves.
+    var openedByAgent = false
     /// The step "Skip step" last skipped and the step that became current then.
     private var guideSkipUndo: (skipped: GuideStep.ID, currentAfter: GuideStep.ID?)?
     /// The step "Undo skip" puts back: only the step just skipped, and only until the
@@ -1061,7 +1065,7 @@ final class ProjectSession: Identifiable {
     /// Opens the picker the first time a project opens without a goal. "Asked" is saved
     /// when the picker is answered (a goal or Not now), so a quit before that asks again.
     func askForGuideGoalIfNeeded() {
-        guard guide.shouldAsk, !isClosing, !isSheetUp else { return }
+        guard guide.shouldAsk, !isClosing, !isSheetUp, !openedByAgent else { return }
         showsGuidePicker = true
     }
 

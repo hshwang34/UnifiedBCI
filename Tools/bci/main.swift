@@ -76,6 +76,10 @@ enum Launcher {
     static func require() -> ControlClientConnection {
         if let c = connect() { return c }
         let wasRunning = isAppRunning
+        // BCI_NO_LAUNCH=1 (the agent eval): never start the app, so a crash shows as a crash.
+        if !wasRunning, ProcessInfo.processInfo.environment["BCI_NO_LAUNCH"] == "1" {
+            fail("BCI Workspace isn't running (BCI_NO_LAUNCH is set).", code: .unreachable)
+        }
         if !wasRunning {
             guard launch(activate: false) else { fail("BCI Workspace isn't installed where bci can find it (set BCI_APP_PATH).", code: .unreachable) }
         }
