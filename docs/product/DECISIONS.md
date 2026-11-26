@@ -160,3 +160,15 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #52 · 2026-11-25 · `bci` ships inside the app as `Contents/Helpers/bci` and is signed with it. `bci install` symlinks it into `~/.local/bin` (no sudo).
 *Why:* lead decision; one notarized download, no installer. Brief 008.
+
+#53 · 2026-11-26 · Diagnostics stay on the Mac: structured logs in macOS's log system and a bounded per-launch file. Nothing is uploaded, and no crash-reporting service or account is used.
+*Why:* PM decision; keeps the PRD's local-only, no-account promise. Brief 009 Q1.
+
+#54 · 2026-11-26 · The bug loop covers the agent paths and crashes: everything the agent eval, the smoke run and the crash watcher find. It is done when the eval is clean. A sweep of the whole app is a separate pass.
+*Why:* PM decision; a bounded, measurable target. Brief 009 Q2.
+
+#55 · 2026-11-26 · The loop runs in the working session (eval → triage → fix → rerun) until the eval passes 5/5 twice in a row with no crash, at most 5 rounds. There is no scheduled nightly run for now.
+*Why:* PM decision; no ongoing usage cost. Brief 009 Q3.
+
+#56 · 2026-11-26 · Help ▸ Export Diagnostics… writes a folder the person can attach to a bug report: logs, crash reports and versions, never EEG data or project files.
+*Why:* PM decision. Brief 009 Q4.
