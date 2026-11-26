@@ -88,5 +88,9 @@ the workflow and the checks end to end, while they stay at the Mac for the human
   accounting on every result, plus the AGENTS.md rules.
 - An agent acts while the person is mid-edit. Mitigation: actions are refused with
   `ui_busy` while a sheet is open.
+- Another process running as the same user could turn the toggle on with `defaults write`.
+  Accepted: such a process can already drive the app and the Mac directly. The socket
+  still requires the same uid and the per-launch token, and Release ignores
+  launch-argument overrides.
 - The app is hidden when a cued run starts. Mitigation: the participant window is always
   brought forward.

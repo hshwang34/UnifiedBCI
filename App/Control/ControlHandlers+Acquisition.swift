@@ -126,9 +126,21 @@ extension ControlRouter {
 
     func acquisitionStatus(_ s: ProjectSession) async throws -> JSON { acquisitionState(s) }
 
-    private func streamingLive(_ s: ProjectSession) throws -> ConnectController {
+    /// The streaming board, checked for hardware permission: a serial board (even one the
+    /// person connected) is used by an agent only with "Allow agents to use hardware" on and
+    /// its port confirmed this launch (decision #48).
+    private func streamingLive(_ s: ProjectSession) async throws -> ConnectController {
         guard let live = s.live, !live.isClosed, live.state == .streaming else {
             throw ControlError(.refused, RecordGate.notStreaming, data: ["reason": .string(RecordGate.notStreaming), "acquisition": acquisitionState(s)])
+        }
+        if case .serial(let port)? = live.source {
+            guard settings.hardwareAllowed else {
+                throw ControlError(.hardwareNotAllowed, "Agents may not use hardware. The person can allow it in Settings ▸ Agent Control.")
+            }
+            if !allowedPorts.contains(port.path) {
+                guard await confirmHardware(port.path, s) else { throw ControlError(.hardwareNotAllowed, "The person didn't allow using \(port.path).") }
+                allowedPorts.insert(port.path)
+            }
         }
         return live
     }
@@ -137,7 +149,7 @@ extension ControlRouter {
 
     func acquisitionRecord(_ c: ControlCall) async throws -> JSON {
         let s = try await c.session()
-        let live = try streamingLive(s)
+        let live = try await streamingLive(s)
         if s.runs.map({ !$0.isFinished }) ?? false { throw ControlError(.refused, StartRunCopy.alreadyRecording) }
         if let r = live.recordDisabledReason { throw ControlError(.refused, r, data: ["reason": .string(r)]) }
         await live.perform(.record)
@@ -210,7 +222,7 @@ extension ControlRouter {
     func protocolRun(_ c: ControlCall) async throws -> JSON {
         let s = try await c.session()
         try requireIdleUI(s)
-        let live = try streamingLive(s)
+        let live = try await streamingLive(s)
         if let r = s.startRunDisabledReason { throw ControlError(.refused, r, data: ["reason": .string(r)]) }
         let agent = try operatorMode(c, live)
         let protocolID = try c.uuid("protocol")
@@ -244,7 +256,7 @@ extension ControlRouter {
     func liveTest(_ c: ControlCall) async throws -> JSON {
         let s = try await c.session()
         try requireIdleUI(s)
-        let live = try streamingLive(s)
+        let live = try await streamingLive(s)
         let agent = try operatorMode(c, live)
         let modelID = try c.uuid("model"), protocolID = try c.uuid("protocol")
         s.section = .liveTest

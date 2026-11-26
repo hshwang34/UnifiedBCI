@@ -155,6 +155,17 @@ card shows it the same way as any other result. Live feedback on a real particip
 board latency against the 100 ms p95 target, and how often radio bursts trip the 250 ms
 stale rule are checked by hand in brief 006's appendix.
 
+## Agent control (brief 008, in review)
+
+Claude Code, Codex and other coding agents can drive the app end to end through `bci`, a
+command-line tool inside the app, or through `bci mcp` (an MCP server). That covers
+projects, quality, evaluation, protocols, frozen models, replay, export, acquisition, cued
+runs and live tests. Commands run in the app, so every step shows in its windows. The
+feature is off by default (Settings ▸ Agent Control). Hardware needs a separate toggle,
+and human steps always stay with the person at the Mac. Every result an agent reads
+carries attempt accounting. Setup and reference: [docs/agent-interface.md](docs/agent-interface.md);
+rules for agents: [AGENTS.md](AGENTS.md).
+
 ## Layout
 
 ```

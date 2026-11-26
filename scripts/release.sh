@@ -110,6 +110,9 @@ xcodebuild -project "$ROOT/BCIWorkspace.xcodeproj" -scheme BCIWorkspace -configu
 APP="$WORK/$APP_NAME.app"
 ditto "$DERIVED/Build/Products/Release/$APP_NAME.app" "$APP"
 [[ -x "$APP/Contents/Resources/worker/python/bin/python3" ]] || { echo "error: the worker was not embedded" >&2; exit 1; }
+# Brief 008 / decision #52: the agent tool ships inside the app (signed by the Mach-O check below).
+[[ -x "$APP/Contents/Helpers/bci" ]] || { echo "error: the bci tool was not embedded" >&2; exit 1; }
+"$APP/Contents/Helpers/bci" describe >/dev/null || { echo "error: the embedded bci tool does not run" >&2; exit 1; }
 for f in S001R04-demo-cyton-daisy-125hz.csv S001R04-demo-cyton-daisy-125hz.json; do
   [[ -s "$APP/Contents/Resources/Demo/$f" ]] || { echo "error: the Demo file $f was not embedded" >&2; exit 1; }
 done

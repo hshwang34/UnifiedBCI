@@ -51,6 +51,7 @@ final class ControlJob: Identifiable {
         state = .running
         prompt = nil
         emit("operator", ["job": .string(id), "prompt": .null])
+        wake()
     }
 
     func finish(_ outcome: Result<JSON, ControlError>) {
@@ -88,9 +89,11 @@ final class ControlJob: Identifiable {
         for c in w { c.resume() }
     }
 
-    /// Returns when the job ends or needs the operator, or after `timeout`.
+    /// Returns when the job's state changes (it ends, starts waiting for the operator, or
+    /// the operator answered), or after `timeout`. A job already waiting for the operator
+    /// is not answered at once again, so an agent polling `jobs.wait` never spins.
     func wait(timeout: Duration) async {
-        if isFinished || state == .awaitingOperator { return }
+        if isFinished { return }
         let timer = Task { @MainActor [weak self] in
             try? await Task.sleep(for: timeout)
             self?.wake()
