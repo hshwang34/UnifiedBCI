@@ -38,6 +38,8 @@ import Foundation
 ///     -BCIReduceTransparency YES               force the frosted, solid head dome
 ///     -BCIMontageView top|left|right|front     the montage head's initial view
 ///     -BCIFrameLog /path/file.txt              append intro frame-interval stats there
+///     -BCIShowAgentCard YES                    show the welcome screen's agent-control card (brief 008)
+///     -BCIAgentControlEnabled YES              turn agent control on for this launch (brief 008, Debug only)
 ///     -BCIOffscreenSnapshotDir /path/dir       render intro steps and montage presets with
 ///                                              ImageRenderer (works with the display asleep)
 ///     -BCIConnectSheet YES                     open the Connect sheet in the opened project
@@ -113,6 +115,15 @@ enum LaunchArguments {
     static var resetFirstRun: Bool {
         #if DEBUG
         return UserDefaults.standard.bool(forKey: "BCIResetFirstRun")
+        #else
+        return false
+        #endif
+    }
+
+    /// `-BCIShowAgentCard YES`: the welcome screen's one-time agent card (brief 008 snapshots).
+    static var showAgentCard: Bool {
+        #if DEBUG
+        return UserDefaults.standard.bool(forKey: "BCIShowAgentCard")
         #else
         return false
         #endif

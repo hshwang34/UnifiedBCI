@@ -85,6 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // intro flash). The flag is set when the window appears (Workspace.welcomeAppeared).
         workspace.presentIntroIfFirstRun(FirstRun(defaults: .standard), reset: LaunchArguments.resetFirstRun,
                                          introStep: LaunchArguments.introStep)
+        if LaunchArguments.showAgentCard { workspace.showsAgentCard = true }
     }
 
     /// Closing the last project window leaves the app running; Welcome stays reachable.

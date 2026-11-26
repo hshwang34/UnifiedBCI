@@ -7,7 +7,7 @@ import Foundation
 // MARK: - Steps
 
 struct IntroStep: Identifiable, Equatable {
-    enum Kind: String, CaseIterable { case whatItDoes, honestUncertainty, tryExample, hardwarePhase2 }
+    enum Kind: String, CaseIterable { case whatItDoes, honestUncertainty, tryExample, hardwarePhase2, agents }
 
     let kind: Kind
     let title: String
@@ -34,6 +34,10 @@ enum IntroModel {
         IntroStep(kind: .hardwarePhase2,
                   title: "Record from your own board",
                   body: "Connect hardware streams an OpenBCI Cyton + Daisy into a project, with stream health always on screen, and records it. No kit? The Demo source plays the example EEG through the same live path."),
+        // Brief 008: decisions #47 and #48 in plain words (off by default, people keep the human steps).
+        IntroStep(kind: .agents,
+                  title: AgentIntroCopy.title,
+                  body: AgentIntroCopy.body),
     ]
 
     /// Step 2's range, labelled as an illustration. A real Clopper-Pearson interval for 28 of
@@ -67,6 +71,7 @@ enum IntroModel {
         case .whatItDoes, .honestUncertainty: return nil         // nil = every site
         case .tryExample: return Set(exampleLabels)
         case .hardwarePhase2: return []
+        case .agents: return nil
         }
     }
 
@@ -77,6 +82,7 @@ enum IntroModel {
         case .honestUncertainty: return Orbit(yaw: -72, pitch: 16)
         case .tryExample: return Orbit.Preset.top.orbit
         case .hardwarePhase2: return Orbit(yaw: 32, pitch: 8)
+        case .agents: return Orbit(yaw: 64, pitch: 22)
         }
     }
 

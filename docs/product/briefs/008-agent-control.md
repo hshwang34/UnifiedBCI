@@ -52,6 +52,13 @@ the workflow and the checks end to end, while they stay at the Mac for the human
 - [ ] The app refuses an agent action for the same reasons it disables the button, and
       returns the button's own wording.
 
+- [ ] The first-run intro ends on a fifth step, "Works with your coding agent", which says
+      it's off until allowed and that human steps stay with the person. People who saw the
+      intro before get a one-time "New" card on the welcome screen. Set Up… opens Settings ▸
+      Agent Control, and the card never comes back once dismissed or once control is on.
+- [ ] `scripts/agent_eval/run.sh` runs Claude Code headless against the app through MCP,
+      across five scenarios, and grades the transcript and the project it left.
+
 ## Out of scope
 - An assistant or chat panel inside the app.
 - Agents writing new pipelines or recipes (PRD §10: no automatic architecture search).
