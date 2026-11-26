@@ -255,6 +255,7 @@ enum LaunchArguments {
         #if DEBUG
         guard !done else { return }
         done = true
+        HitTestStress.startIfAsked()          // brief 009: -BCIHitTestStress YES
         let defaults = UserDefaults.standard
         let snapshots = defaults.string(forKey: "BCISnapshotDir").map { URL(fileURLWithPath: $0, isDirectory: true) }
         func snap(_ name: String, settle: Duration = .seconds(1.5)) async {
