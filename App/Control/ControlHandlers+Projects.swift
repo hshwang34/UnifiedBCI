@@ -202,6 +202,7 @@ extension ControlRouter {
                              windowOffsetSeconds: c.double("windowOffsetS"), windowLengthSeconds: c.double("windowLengthS"))
         if let reason = s.evaluateDisabledReason { throw ControlError(.refused, reason, data: ["reason": .string(reason)]) }
         c.job?.onCancel = { s.cancel() }
+        c.progress(["stage": "Starting", "detail": .string("Evaluating \(h.id.uuidString)"), "fraction": 0])
         let watch = Task { @MainActor in
             var last = ""
             while !Task.isCancelled {
@@ -209,13 +210,13 @@ extension ControlRouter {
                     last = p.detail
                     c.progress(["stage": .string(p.stage), "detail": .string(p.detail), "fraction": .double(p.fraction)])
                 }
-                try? await Task.sleep(for: .milliseconds(100))
+                try? await Task.sleep(for: .milliseconds(20))
             }
         }
         let state = await s.evaluateAndWait()
         watch.cancel()
         switch state {
-        case .done(let id): return try await resultPayload(s, id)
+        case .done(let id): return try await resultPayload(s, id, byAgent: true)
         case .cancelled: throw ControlError(.cancelled, "Cancelled — nothing saved.")
         case .analysisUnavailable(let why): throw ControlError(.failed, "Analysis unavailable: \(why). The recording is unchanged.")
         case .failed(let why): throw ControlError(.failed, "Evaluation failed: \(why). Nothing was saved.")
@@ -223,14 +224,14 @@ extension ControlRouter {
         }
     }
 
-    func resultPayload(_ s: ProjectSession, _ id: UUID) async throws -> JSON {
+    func resultPayload(_ s: ProjectSession, _ id: UUID, byAgent: Bool = false) async throws -> JSON {
         let stored: StoredResult
         do { stored = try await s.store.result(id: id) } catch { throw ControlError(.notFound, "no result \(id): \(error)") }
         let evaluation = (try? JSON.parse(stored.evaluationJSON)) ?? .null
         var o: [String: JSON] = [
             "resultID": .string(id.uuidString), "recordingID": .string(stored.meta.recordingID.uuidString),
             "meta": Self.record(stored.meta), "pipeline": Self.record(stored.pipeline), "evaluation": evaluation,
-            "accounting": accounting(s, recording: stored.meta.recordingID, evaluation: evaluation),
+            "accounting": accounting(s, recording: stored.meta.recordingID, evaluation: evaluation, agentResult: byAgent ? id : nil),
         ]
         if let model = try? ResultDetailModel(stored: stored, allResults: s.results, modelName: s.modelName) {
             o["headline"] = .object(["balancedAccuracy": .string(model.headline.balancedAccuracy), "accuracy": .string(model.headline.accuracy)])
@@ -242,11 +243,13 @@ extension ControlRouter {
 
     /// Decision #50: how many attempts this recording has had, so a best-of-many score
     /// can't pass for a single result.
-    func accounting(_ s: ProjectSession, recording: UUID, evaluation: JSON) -> JSON {
+    func accounting(_ s: ProjectSession, recording: UUID, evaluation: JSON, agentResult: UUID? = nil) -> JSON {
         let mine = s.results.filter { $0.recordingID == recording }
         let configs = Set(mine.map { "\($0.configHash)/\($0.seed)" })
         let seeds = Set(mine.map(\.seed))
-        let agent = AgentActionLog.agentResultIDs(project: s.url)
+        // The call answering now is logged only after it returns, so it is counted here.
+        var agent = AgentActionLog.agentResultIDs(project: s.url)
+        if let agentResult { agent.insert(agentResult.uuidString.uppercased()) }
         var warnings: [JSON] = []
         if configs.count > 5 { warnings.append("multiple_comparisons") }
         if seeds.count > 1 { warnings.append("several_seeds") }
@@ -256,7 +259,7 @@ extension ControlRouter {
             "distinctSeeds": .int(Int64(seeds.count)),
             "reproductions": .int(Int64(mine.filter { $0.reproductionOf != nil }.count)),
             "agentInitiated": .int(Int64(mine.filter { agent.contains($0.resultID.uuidString.uppercased()) }.count)),
-            "heldOutRuns": evaluation["splitManifest"]?["holdoutRuns"] ?? .null,
+            "heldOutRuns": evaluation["split_manifest"]?["holdout_runs"] ?? .null,
             "heldOutFixedBeforeFitting": true,
             "warnings": .array(warnings),
             "note": "Each seed picks a different held-out split. Report every configuration tried, not only the best; choosing by held-out score inflates it.",

@@ -64,7 +64,7 @@ final class ControlRouterTests: XCTestCase {
         XCTAssertEqual(r["accounting"]?["evaluationsOnRecording"], 1)
         XCTAssertEqual(r["accounting"]?["agentInitiated"], 1, "the action log names the agent's result")
         XCTAssertEqual(r["accounting"]?["heldOutFixedBeforeFitting"], true)
-        XCTAssertNotNil(r["evaluation"]?["splitManifest"], "the stored evaluation record comes back as-is")
+        XCTAssertNotNil(r["evaluation"]?["split_manifest"], "the stored evaluation record comes back as-is")
         XCTAssertEqual(workspace.sessions[Workspace.canonical(project)]?.selectedResultID?.uuidString, resultID, "the window shows the result")
 
         // Another seed: counted, and flagged as a different split.
