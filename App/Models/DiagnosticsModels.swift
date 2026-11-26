@@ -30,7 +30,7 @@ enum DiagnosticsCopy {
         if crashes.isEmpty {
             lines.append("- No BCI Workspace crash reports from the last 7 days.")
         } else {
-            lines.append("- crashes/: macOS crash reports for BCI Workspace from the last 7 days (\(crashes.joined(separator: ", "))).")
+            lines.append("- crashes/: macOS crash reports for BCI Workspace from the last 7 days (\(crashes.joined(separator: ", "))). macOS writes these as they are: they include file paths on this Mac (so your user name) and the names of loaded libraries, but no EEG data.")
         }
         lines += [
             "",

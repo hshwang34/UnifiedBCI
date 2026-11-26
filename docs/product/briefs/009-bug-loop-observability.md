@@ -69,3 +69,18 @@ evidence was a macOS crash report. We can't fix what we can't see, and we can't 
 - Logs that say too much: anything about the participant or the signal is never logged
   (`.private` by default), and the export lists exactly what it includes.
 - Log growth: the files are bounded per launch, and old launches are deleted.
+
+## Resume (paused 2026-11-26, branch `fix-agent-eval`, worktree `.claude/worktrees/feature-agent-control`)
+- **Done:**
+  - Observability: AppLog, the per-launch file, `bci app diagnostics`, Export Diagnostics.
+  - The goal picker no longer blocks agents.
+  - The live-view crash is found and fixed. Root cause: the inspector collapse animation's layout storm left the main actor wedged. `crash_repro.sh` with stress passes 5/5.
+  - Scenario 02's checks now grade behaviour.
+  - Eval round 1: 4/5 (02 failed on the old checks only; no crash).
+- **Uncommitted, not yet built:** the reviewer fixes. The log file-open failure is now logged, and the export README now says crash reports contain paths. Build and run DiagnosticsTests first.
+- **Next:**
+  1. Build, then run the targeted tests: Diagnostics, ControlRouter, ControlProtocol, Intro, AgentIntro and LiveScreen.
+  2. Eval round 2, and round 3 if needed, until 5/5 twice with no crash.
+  3. Snapshot the live view with the inspector note.
+  4. Push, open the PR (with the PM section), merge when CI is green, and mark the brief shipped.
+- **Known open item (not fixed):** the Debug `-BCIConnectSource synthetic -BCILiveRecordSeconds` run logged no recording. It probably presses Record before the preview has started. Check it.

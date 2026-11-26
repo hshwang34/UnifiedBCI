@@ -155,7 +155,14 @@ final class DiagnosticsLog: Sendable {
         // Keep the newest `launches - 1` older files; this launch's file is the last one.
         for url in older.dropLast(max(0, limits.launches - 1)) { try? fm.removeItem(at: url) }
         fm.createFile(atPath: file.path, contents: nil)
-        handle = try? FileHandle(forWritingTo: file)
+        do {
+            handle = try FileHandle(forWritingTo: file)
+        } catch {
+            // Never silent (brief 009 review): the export would otherwise come out empty without saying why.
+            handle = nil
+            Logger(subsystem: AppLog.subsystem, category: "app")
+                .error("diagnostics_file_unavailable dir=\(directory.path, privacy: .private) error=\(String(describing: error), privacy: .private)")
+        }
     }
 
     /// The launch files in `directory`, oldest first.
