@@ -40,7 +40,7 @@ struct AgentBanner: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.warning.opacity(prompts.isEmpty ? 0 : 0.8)))
             .padding(.horizontal, Theme.Space.l)
-            .padding(.top, Theme.Space.m)
+            .padding(.bottom, Theme.Space.l)
         }
     }
 }

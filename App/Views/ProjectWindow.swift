@@ -75,19 +75,23 @@ struct ProjectWindow: View {
                     // Under the Result hero the glow continues beneath sidebar and inspector (26).
                     if session.section == .results { AmbientBackdrop().extendedBackground() } else { AmbientBackdrop() }
                 }
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    VStack(spacing: 0) {
-                        AgentBanner(project: session.url)      // brief 008: what an agent is doing or waiting for
-                        StatusArea(session: session)
-                    }
-                }
+                .safeAreaInset(edge: .top, spacing: 0) { StatusArea(session: session) }
+                // Brief 008: what an agent is doing or waiting for. An overlay, never part of the
+                // inset's layout: a banner there re-measured its text against the detail column's
+                // width while the inspector animated, and that feedback stalled layout (brief 009).
+                .overlay(alignment: .bottom) { AgentBanner(project: session.url) }
                 
         }
-        // The Evaluate inspector belongs to Recordings only; the preference is kept.
-        .inspector(isPresented: Binding(get: { session.showInspector && session.section == .recordings && !showsLive },
-                                        set: { shown in if session.section == .recordings && !showsLive { session.showInspector = shown } })) {
-            EvaluateInspector(session: session)
-                .inspectorColumnWidth(min: 250, ideal: 280, max: 400)
+        // The Evaluate inspector belongs to Recordings only; the preference is kept. Brief 009:
+        // the live view does NOT collapse it. Collapsing the inspector as the stream started
+        // ran a layout storm in AppKit's split-view animation and left the main actor wedged
+        // (the 2026-11-26 crash); the column now stays and shows a note while live.
+        .inspector(isPresented: Binding(get: { session.showInspector && session.section == .recordings },
+                                        set: { shown in if session.section == .recordings { session.showInspector = shown } })) {
+            Group {
+                if showsLive { LiveInspectorNote() } else { EvaluateInspector(session: session) }
+            }
+            .inspectorColumnWidth(min: 250, ideal: 280, max: 400)
         }
         .navigationTitle(session.name)
         .navigationSubtitle(subtitle)
@@ -848,3 +852,17 @@ enum ParametersCopy {
     static let seed = "Chooses the held-out runs and the bootstrap draws. The same seed gives the same split."
 }
 
+
+/// The inspector's content while the live view is shown (brief 009): Evaluate works on a
+/// saved recording, so the column says so instead of collapsing.
+private struct LiveInspectorNote: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.s) {
+            Text(LiveScreenModel.inspectorNoteTitle).font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
+            Text(LiveScreenModel.inspectorNote).font(.callout).foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(Theme.Space.l)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
