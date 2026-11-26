@@ -37,6 +37,8 @@ fi
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT="$ROOT/build/agent-eval/$STAMP"
 mkdir -p "$OUT"
+# Brief 009: crash reports newer than this marker are copied into the report.
+RUN_START="$OUT/.run-start"; touch "$RUN_START"
 WORK="$(mktemp -d /tmp/bci-eval-XXXXXX)"
 export BCI_CONTROL_DIR="$WORK/control" BCI_APP_PATH="$APP" BCI_NO_LAUNCH=1
 APP_PID=""
@@ -86,6 +88,8 @@ for f in "$HERE"/scenarios/*.json; do
   crashed=false; app_alive || crashed=true
   python3 "$HERE/grade.py" "$f" "$OUT/$id.jsonl" "$project" "$crashed" >"$OUT/$id.grade.json"
   if [[ $crashed == true ]]; then echo "   THE APP CRASHED during this scenario (see ~/Library/Logs/DiagnosticReports)"; start_app; fi
+  # Brief 009: what the app was doing (after a crash, the relaunched app summarises the report).
+  "$BCI" app diagnostics >"$OUT/$id.diagnostics.json" 2>/dev/null || true
   # Leave the app clean for the next scenario: stop jobs, release the board, close the project.
   for j in $("$BCI" jobs list | jq -r '.jobs[] | select(.state == "running" or .state == "awaiting_operator") | .job'); do
     "$BCI" jobs cancel --job "$j" >/dev/null 2>&1 || true
@@ -109,5 +113,18 @@ done
   done
   printf '\n## Final answers\n\n'
   for g in "$OUT"/*.grade.json; do jq -r '"### \(.scenario)\n\n\(.final)\n"' "$g"; done
+} >>"$SUMMARY"
+# Brief 009: any BCI Workspace crash reports written during this run.
+CRASHES=()
+while IFS= read -r f; do CRASHES+=("$f"); done < <(find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -name 'BCIWorkspace*.ips' -newer "$RUN_START" 2>/dev/null | sort)
+{
+  printf '\n## Crash reports\n\n'
+  if [[ ${#CRASHES[@]} -eq 0 ]]; then
+    printf 'None.\n'
+  else
+    mkdir -p "$OUT/crashes"
+    for f in "${CRASHES[@]}"; do cp "$f" "$OUT/crashes/" && printf -- '- `crashes/%s`\n' "$(basename "$f")"; done
+  fi
+  printf '\nEach scenario'"'"'s app diagnostics: `<id>.diagnostics.json`.\n'
 } >>"$SUMMARY"
 echo "$PASSED of $TOTAL scenarios passed. Report: $SUMMARY"
