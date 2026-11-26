@@ -101,6 +101,7 @@ final class RunController {
                                     store: store, options: options)
         self.runner = runner
         status = runner.status
+        AppLog.info(.runs, "run_start", ["run": runner.status.runID, "index": String(index)])
         surface.show()
         installKeys()
         task = Task { [weak self] in
@@ -122,6 +123,11 @@ final class RunController {
     }
 
     private func ended(_ s: ProtocolRunner.Status) {
+        switch s.state {
+        case .ended(let aborted): AppLog.info(.runs, "run_end", ["run": s.runID, "state": aborted ? "aborted" : "ended", "started": s.startedAt == nil ? "no" : "yes"])
+        case .failed(let why): AppLog.error(.runs, "run_end", ["run": s.runID, "state": "failed"], detail: why)
+        default: AppLog.info(.runs, "run_end", ["run": s.runID, "state": "other"])
+        }
         guard !tornDown else { return }
         status = s
         task = nil
@@ -157,8 +163,14 @@ final class RunController {
     }
 
     func begin() { runner?.begin() }
-    func pause() { runner?.pause() }
-    func abortRun() { runner?.abortRun() }
+    func pause() {
+        AppLog.info(.runs, "run_pause", ["run": status?.runID ?? "-"])
+        runner?.pause()
+    }
+    func abortRun() {
+        AppLog.info(.runs, "run_abort", ["run": status?.runID ?? "-"])
+        runner?.abortRun()
+    }
 
     /// Aborts the trial on screen once; repeats and late presses for it do nothing.
     func abortTrial() {
@@ -177,6 +189,7 @@ final class RunController {
             setup.framePeriodNanos = surface.framePeriodNanos
         }
         resumeProblem = nil
+        AppLog.info(.runs, "run_resume", ["run": status?.runID ?? "-"])
         runner.resume()
     }
 

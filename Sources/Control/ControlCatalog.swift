@@ -67,6 +67,8 @@ public enum ControlCatalog {
     public static let methods: [MethodSpec] = [
         // App and jobs
         .init("app.status", .read, "App version, whether control and hardware are allowed, open projects and active jobs"),
+        .init("app.diagnostics", .read, "Recent app events and errors, active jobs, open projects, memory use, and BCI Workspace crash reports since the last launch (brief 009)", [
+            .init("limit", .integer, "Recent events to return (default 200, at most 2000)")]),
         .init("jobs.list", .read, "Jobs started in this app launch, newest first"),
         .init("jobs.status", .read, "One job's state, progress, operator prompt, and result once done", [job]),
         .init("jobs.wait", .read, "Waits until a job ends or needs the operator, or until the timeout", [

@@ -75,10 +75,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        AppLog.notice(.app, "terminate", ["openProjects": String(workspace.sessions.count)])
+        DiagnosticsLog.shared.flush()
         agentControl.stop()
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // Brief 009: opens this launch's diagnostics file (and prunes old ones) first.
+        AppLog.notice(.app, "launch", ["version": ControlServer.appVersion, "pid": String(getpid()),
+                                       "agentControl": ControlSettings.standard.enabled ? "on" : "off"])
         LaunchArguments.applyAppearance()
         HeadGlassWarmUp.start()
         // Lead default 6, decided before the Welcome window's first frame (no welcome-then-
@@ -202,6 +207,9 @@ struct WorkspaceCommands: Commands {
                 .disabled(session == nil || session?.isSheetUp == true || workspace.welcomeFlow.isIntro)
             Button(GuideCopy.menuShowGuide) { session?.showGuide() }
                 .disabled(session == nil || session?.showsGuideCard == true)
+            Divider()
+            // Brief 009 / decision #56: a folder for a bug report; never EEG data.
+            Button(DiagnosticsCopy.menuExport) { workspace.exportDiagnosticsPanel() }
         }
         #if DEBUG
         CommandMenu("Debug") {

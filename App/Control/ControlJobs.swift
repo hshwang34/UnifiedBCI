@@ -28,6 +28,13 @@ final class ControlJob: Identifiable {
         id = "job-" + UUID().uuidString.prefix(8).lowercased()
         self.method = method
         self.project = project
+        logState()
+    }
+
+    /// One line per state change in the app log (brief 009).
+    private func logState(code: String? = nil) {
+        AppLog.log(state == .failed ? .error : .info, .jobs, "job_state",
+                   ["job": id, "method": method, "state": state.rawValue, "code": code ?? "-"])
     }
 
     var isFinished: Bool { [.done, .failed, .cancelled].contains(state) }
@@ -42,6 +49,7 @@ final class ControlJob: Identifiable {
         guard state == .running || state == .awaitingOperator, prompt != text else { return }
         state = .awaitingOperator
         prompt = text
+        logState()
         emit("operator", ["job": .string(id), "prompt": .string(text)])
         wake()
     }
@@ -50,6 +58,7 @@ final class ControlJob: Identifiable {
         guard state == .awaitingOperator else { return }
         state = .running
         prompt = nil
+        logState()
         emit("operator", ["job": .string(id), "prompt": .null])
         wake()
     }
@@ -62,6 +71,7 @@ final class ControlJob: Identifiable {
         }
         prompt = nil
         endedAt = Date()
+        logState(code: error?.code)
         wake()
     }
 

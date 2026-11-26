@@ -214,9 +214,12 @@ final class ConnectController: Identifiable {
             let id = try await session.startRecording(request, in: store)
             watchedRecordingID = id
             recordingStartedAt = Date()
+            AppLog.info(.acquisition, "recording_start", ["recording": id.uuidString])
         } catch let e as AcquisitionSession.SessionError {
+            AppLog.error(.acquisition, "recording_start_refused", ["error": AppLog.kind(e)], detail: "\(e)")
             recordMessage = (true, RecordGate.message(e))
         } catch {
+            AppLog.error(.acquisition, "recording_start_failed", ["error": AppLog.kind(error)], detail: "\(error)")
             recordMessage = (true, RecordGate.startFailed(error))
         }
         sync()
@@ -240,11 +243,13 @@ final class ConnectController: Identifiable {
         endBeforeRecording = snapshot.lastRecordingEnd
         watchedRecordingID = id
         recordingStartedAt = Date()
+        AppLog.info(.acquisition, "recording_start", ["recording": id.uuidString, "by": "run"])
         sync()
     }
 
     func stopRecording() async {
         guard let session else { return }
+        AppLog.info(.acquisition, "recording_stop_requested")
         _ = await session.stopRecording()
         sync()
     }
@@ -266,6 +271,12 @@ final class ConnectController: Identifiable {
         guard next != snapshot else { return }
         let boardArrived = next.board != nil && next.board != snapshot.board
         let firstStream = next.state == .streaming && !hasStreamed
+        if next.state != snapshot.state {
+            let failed: Bool
+            switch next.state { case .failed, .interrupted: failed = true; default: failed = false }
+            AppLog.log(failed ? .error : .info, .acquisition, "stream_state",
+                       ["from": ControlRouter.stateName(snapshot.state), "to": ControlRouter.stateName(next.state)])
+        }
         snapshot = next
         if next.state == .streaming { hasStreamed = true }
         let beganStreaming = next.state == .streaming && streamingSince == nil
@@ -287,6 +298,10 @@ final class ConnectController: Identifiable {
         watchedRecordingID = nil
         recordingStartedAt = nil
         lastRecordingID = id
+        AppLog.log(status?.failure == nil ? .info : .error, .acquisition, "recording_end",
+                   ["recording": id.uuidString, "reason": status?.endReason?.rawValue ?? (snapshot.recordingEndedByReconnect != nil ? "reconnect" : "-"),
+                    "chunks": String(status?.committedChunks ?? 0), "samples": String(status?.committedSamples ?? 0),
+                    "eventsFailed": String(status?.eventsFailed ?? 0)])
         let rate = Double(snapshot.board?.samplingRate ?? 125)
         if let reconnect = snapshot.recordingEndedByReconnect {
             recordMessage = (true, RecordingEndModel.endedByReconnect(reconnect))

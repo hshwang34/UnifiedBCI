@@ -251,6 +251,7 @@ final class ProjectSession: Identifiable {
                                         displays: CueWindowController.displays(operatorScreen: operatorScreen),
                                         remembered: CueDisplayPicker.remembered(in: .standard))
         } catch {
+            AppLog.error(.store, "protocols_unreadable", ["error": AppLog.kind(error)], detail: "\(error)")
             startRunError = ProtocolCopy.unreadableList(error)
         }
     }
@@ -489,6 +490,7 @@ final class ProjectSession: Identifiable {
             await frozen.reload()
             loadError = nil
         } catch {
+            AppLog.error(.store, "reload_failed", ["error": AppLog.kind(error)], detail: "\(error)")
             loadError = "\(error)"
         }
     }
@@ -577,6 +579,7 @@ final class ProjectSession: Identifiable {
                     self.selectedProtocolID = ProtocolListModel(list: list, usage: usage).groups.first?.rows.first?.id
                 }
             } catch let e {
+                AppLog.error(.store, "protocols_unreadable", ["error": AppLog.kind(e)], detail: "\(e)")
                 self.protocolsError = ProtocolCopy.unreadableList(e)
             }
         }
@@ -616,6 +619,7 @@ final class ProjectSession: Identifiable {
             loadProtocols()
             await awaitProtocols()
         } catch {
+            AppLog.error(.store, "protocol_not_saved", ["error": AppLog.kind(error)], detail: "\(error)")
             editor.saveError = ProtocolCopy.notSaved(error)
         }
     }
@@ -708,7 +712,10 @@ final class ProjectSession: Identifiable {
         notice = nil
         // The worker's defaults decide the request; a lookup in flight is waited for.
         await defaultsTask?.value
+        let started = ContinuousClock.now
+        AppLog.info(.evaluation, "evaluation_start", ["recording": recordingID.uuidString])
         let state = await runner.evaluateAndWait(makeRequest(recordingID: recordingID))
+        Self.logEvaluationEnd(state, started: started)
         await finished(state)
         return state
     }
@@ -720,13 +727,28 @@ final class ProjectSession: Identifiable {
     @discardableResult
     func retryAndWait() async -> EvaluationRunner.State {
         notice = nil
+        let started = ContinuousClock.now
+        AppLog.info(.evaluation, "evaluation_retry")
         let state = await runner.retryAndWait()
+        Self.logEvaluationEnd(state, started: started)
         await finished(state)
         if workerDefaults == nil, case .done = state { loadDefaults() }
         return state
     }
 
     func cancel() { runner.cancel() }
+
+    /// Brief 009: how an evaluation ended. The reason text stays private (it can name files).
+    private static func logEvaluationEnd(_ state: EvaluationRunner.State, started: ContinuousClock.Instant) {
+        let ms = AppLog.ms(since: started)
+        switch state {
+        case .done(let id): AppLog.info(.evaluation, "evaluation_end", ["state": "done", "result": id.uuidString, "ms": ms])
+        case .failed(let r): AppLog.error(.evaluation, "evaluation_end", ["state": "failed", "ms": ms], detail: r)
+        case .analysisUnavailable(let r): AppLog.error(.evaluation, "evaluation_end", ["state": "analysis_unavailable", "ms": ms], detail: r)
+        case .cancelled: AppLog.info(.evaluation, "evaluation_end", ["state": "cancelled", "ms": ms])
+        case .idle, .running: AppLog.info(.evaluation, "evaluation_end", ["state": ControlRouter.stateName(state), "ms": ms])
+        }
+    }
 
     private func finished(_ state: EvaluationRunner.State) async {
         switch state {
@@ -913,6 +935,7 @@ final class ProjectSession: Identifiable {
         } catch ProjectStoreError.alreadyExists {
             notice = .exportFailed("\(destination.lastPathComponent) already exists. Export never overwrites; choose a new name.")
         } catch {
+            AppLog.error(.store, "export_failed", ["result": resultID.uuidString, "error": AppLog.kind(error)], detail: "\(error)")
             notice = .exportFailed("\(error)")
         }
         announce(noticeText(notice!))
