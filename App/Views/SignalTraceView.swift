@@ -42,10 +42,7 @@ struct SignalTraceCard: View {
             Text(TraceModel.processedTitle).tag(true)
         }
         .pickerStyle(.segmented).labelsHidden().fixedSize()
-        return ViewThatFits(in: .horizontal) {
-            HStack { title; Spacer(minLength: Theme.Space.m); toggle }
-            VStack(alignment: .leading, spacing: Theme.Space.s) { title; toggle }
-        }
+        return HeaderWithHelp(title: title, topic: .recordedTrace) { toggle }
     }
 
     private func controls(_ model: TraceModel?) -> some View {

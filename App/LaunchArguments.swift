@@ -78,6 +78,9 @@ import Foundation
 ///                                              "guide" at the end of the run (the sidebar card)
 ///     -BCIGuidePicker YES                      show the goal picker in the opened project; snapshots
 ///                                              "guide-picker", then closes it ("Not now")
+///     -BCIHelpTopic streamHealth|heldOutAccuracy|…  open that "?" popover wherever it appears
+///                                              (HelpTopic ids, brief 007 PR 5); with -BCIGuideGoal
+///                                              absent, -BCISection then snapshots "help"
 ///     -BCIGuideShowMe YES                      with -BCIGuideGoal: after "guide", press Show me on the
 ///                                              current step; snapshots "guide-showme" mid-ring (add
 ///                                              -BCIReduceMotion YES for the static ring)
@@ -174,6 +177,15 @@ enum LaunchArguments {
         return snapshotting || guideGoal != nil || UserDefaults.standard.bool(forKey: "BCIGuidePicker")
         #else
         return false
+        #endif
+    }
+
+    /// `-BCIHelpTopic`: the "?" popover snapshots open.
+    static var helpTopic: HelpTopic? {
+        #if DEBUG
+        return UserDefaults.standard.string(forKey: "BCIHelpTopic").flatMap(HelpTopic.init(rawValue:))
+        #else
+        return nil
         #endif
     }
 
@@ -379,6 +391,10 @@ enum LaunchArguments {
         }
         if let raw = defaults.string(forKey: "BCISection"), let section = SidebarSection(rawValue: raw) {
             session.section = section
+            if helpTopic != nil, snapshots != nil {
+                if section == .liveTest { await session.prepareLiveSetup(operatorScreen: nil) }
+                await snap("help", settle: .seconds(2.5))
+            }
         }
         #endif
     }
@@ -661,12 +677,14 @@ enum LaunchArguments {
         typealias Capture = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
         guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { return }
         let capture = unsafeBitCast(sym, to: Capture.self)
-        let windows = NSApp.windows.filter { $0.isVisible && ($0.styleMask.contains(.titled) || $0.isSheet || $0.identifier == CueWindowController.identifier) }
+        // Popovers (the "?" help, brief 007) are captured as windows of their own ("popover").
+        let isPopover = { (w: NSWindow) in String(describing: type(of: w)).contains("Popover") }
+        let windows = NSApp.windows.filter { $0.isVisible && ($0.styleMask.contains(.titled) || $0.isSheet || isPopover($0) || $0.identifier == CueWindowController.identifier) }
         for (i, window) in windows.enumerated() {
             // .optionIncludingWindow = 1 << 3; .boundsIgnoreFraming = 1 << 0, .bestResolution = 1 << 3
             guard let image = capture(.null, 1 << 3, UInt32(window.windowNumber), (1 << 0) | (1 << 3))?.takeRetainedValue() else { continue }
             let rep = NSBitmapImageRep(cgImage: image)
-            let title = window.title.isEmpty ? "window" : window.title
+            let title = window.title.isEmpty ? (isPopover(window) ? "popover" : "window") : window.title
             let file = dir.appendingPathComponent("\(name)-\(i)-\(title.replacingOccurrences(of: "/", with: "-")).png")
             try? rep.representation(using: .png, properties: [:])?.write(to: file)
         }

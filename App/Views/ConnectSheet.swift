@@ -220,6 +220,10 @@ private struct ChannelMapEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
+            HStack(spacing: Theme.Space.xs) {
+                Text(HelpTopic.channelMap.title).font(Theme.Fonts.sectionHeader).accessibilityAddTraits(.isHeader)
+                HelpButton(topic: .channelMap)
+            }
             Form {
                 Picker(ChannelMapModel.savedMaps, selection: Binding(get: { UUID?.none }, set: { model.pick(savedMap: $0) })) {
                     Text(ChannelMapModel.noSavedMap).tag(UUID?.none)

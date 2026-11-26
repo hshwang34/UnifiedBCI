@@ -74,8 +74,11 @@ struct QualityTabView: View {
             }
             SignalTraceCard(session: session, segment: section.id, section: segment, selected: $selected)
             legend(model)
-            Text(QualityModel.footer).font(.callout).foregroundStyle(Theme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
+                Text(QualityModel.footer).font(.callout).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HelpButton(topic: .qualityChecks)
+            }
         }
     }
 

@@ -39,17 +39,8 @@ struct MontageView: View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
             // The view buttons sit beside the title when they fit, below it otherwise (a
             // narrow detail column truncated "Reset").
-            ViewThatFits(in: .horizontal) {
-                HStack {
-                    Text("Montage").font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
-                    Spacer(minLength: Theme.Space.m)
-                    presetButtons.fixedSize()
-                }
-                VStack(alignment: .leading, spacing: Theme.Space.s) {
-                    Text("Montage").font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
-                    presetButtons.fixedSize()
-                }
-            }
+            HeaderWithHelp(title: Text("Montage").font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary),
+                           topic: .headMontage) { presetButtons.fixedSize() }
             stage
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
                 Text(layout.caption).font(.callout).foregroundStyle(Theme.textSecondary)

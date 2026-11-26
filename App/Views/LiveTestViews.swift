@@ -82,7 +82,10 @@ struct LiveTestSetupView: View {
                                 .onSubmit { Task { await session.startLiveFromSetup() } }
                         }
                         .help(LiveRunCopy.thresholdHelp)
-                        Text(LiveRunCopy.thresholdHelp).font(.caption).foregroundStyle(Theme.textSecondary)
+                        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
+                            Text(LiveRunCopy.thresholdHelp).font(.caption).foregroundStyle(Theme.textSecondary)
+                            HelpButton(topic: .modelConfidence)
+                        }
                     }
                     if let form = session.liveRunForm {
                         Section {
@@ -180,7 +183,10 @@ struct LiveRunCard: View {
                     Text("Balanced accuracy").font(Theme.Fonts.heroLabel).foregroundStyle(Theme.textSecondary)
                     Text(m.balancedAccuracyValue).font(Theme.Fonts.display(size: displaySize)).foregroundStyle(Theme.textPrimary)
                 }
-                Text(m.accuracyLine).font(Theme.Fonts.accuracyLine).foregroundStyle(Theme.textPrimary)
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
+                    Text(m.accuracyLine).font(Theme.Fonts.accuracyLine).foregroundStyle(Theme.textPrimary)
+                    HelpButton(topic: .liveRunInterval)
+                }
                 Label(LiveRunCopy.scoredLikeOffline, systemImage: "info.circle").font(.callout).foregroundStyle(Theme.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 RangeBar(value: m.accuracy ?? 0, interval: m.interval,
