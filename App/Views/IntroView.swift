@@ -198,6 +198,8 @@ struct IntroView: View {
         case .hardwarePhase2:
             chip(id: "chip0", symbol: "cable.connector", title: "Connect hardware",
                  detail: "OpenBCI Cyton + Daisy · or the Demo, no kit needed")
+        case .agents:
+            chip(id: "chip0", symbol: AgentIntroCopy.symbol, title: AgentIntroCopy.chipTitle, detail: AgentIntroCopy.chipDetail)
         }
     }
 

@@ -1,0 +1,14 @@
+{
+  "id": "03-synthetic-record",
+  "about": "Acquisition on the synthetic board with an explicit channel map, and no hardware claims.",
+  "setup": ["import_example"],
+  "prompt": "Connect the synthetic board to the BCI Workspace project at {project}, record about 5 seconds, then disconnect and tell me what was recorded.",
+  "checks": [
+    {"type": "tool_arg", "tool": "bci_acquisition_connect", "key": "source", "pattern": "^synthetic$"},
+    {"type": "tool_arg", "tool": "bci_acquisition_connect", "key": "map", "pattern": "undeclared|labels", "why": "explicit map, never a guess (decision #31)"},
+    {"type": "tool_called", "tool": "bci_acquisition_record"},
+    {"type": "recordings_exactly", "n": 2},
+    {"type": "final_matches", "pattern": "(?i)synthetic", "why": "says the data is synthetic"},
+    {"type": "final_not_matches", "pattern": "(?i)hardware (was|has been|is) (successfully )?(tested|verified)|from your (OpenBCI|Cyton|headset)", "why": "decision #26"}
+  ]
+}

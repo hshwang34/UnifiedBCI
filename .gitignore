@@ -21,3 +21,6 @@ worker/dist/
 
 # Claude Code worktrees
 .claude/worktrees/
+
+# Agent eval grader bytecode
+scripts/**/__pycache__/

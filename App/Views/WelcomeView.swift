@@ -61,7 +61,13 @@ struct WelcomeView: View {
                         .foregroundStyle(Theme.textPrimary)
                     Text("Version \(Self.version)").font(.callout).foregroundStyle(Theme.textSecondary)
                 }
+                Spacer(minLength: Theme.Space.l)
+                if workspace.showsAgentCard {
+                    AgentWelcomeCard(dismiss: workspace.dismissAgentCard)
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                }
             }
+            .animation(LaunchArguments.reduceMotion(system: systemReduceMotion) ? nil : .smooth(duration: 0.3), value: workspace.showsAgentCard)
             HStack(alignment: .top, spacing: Theme.Space.xl) {
                 GlassGroup(spacing: 12) {
                     VStack(spacing: Theme.Space.m) {

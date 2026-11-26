@@ -144,10 +144,10 @@ final class IntroTests: XCTestCase {
         XCTAssertFalse(FirstRun(defaults: defaults).shouldPresent(), "a replay never clears the flag")
     }
 
-    // MARK: Criterion 2 — four steps
+    // MARK: Criterion 2 — the steps (brief 008 added the fifth, agent control)
 
     func testSteps_orderAndContent() {
-        XCTAssertEqual(IntroModel.steps.map(\.kind), [.whatItDoes, .honestUncertainty, .tryExample, .hardwarePhase2])
+        XCTAssertEqual(IntroModel.steps.map(\.kind), [.whatItDoes, .honestUncertainty, .tryExample, .hardwarePhase2, .agents])
         for s in IntroModel.steps {
             XCTAssertFalse(s.title.isEmpty)
             XCTAssertFalse(s.body.isEmpty)
@@ -156,9 +156,9 @@ final class IntroTests: XCTestCase {
         }
         XCTAssertTrue(IntroModel.steps[3].body.contains("Connect hardware"), "step 4 names the live entry point (brief 004)")
         XCTAssertTrue(IntroModel.steps[2].body.contains("Explore an example"))
-        XCTAssertEqual(IntroModel.announcement(1), "Step 2 of 4. \(IntroModel.steps[1].accessibilityLabel)")
+        XCTAssertEqual(IntroModel.announcement(1), "Step 2 of 5. \(IntroModel.steps[1].accessibilityLabel)")
         XCTAssertEqual(IntroModel.nextTitle(at: 0), "Next")
-        XCTAssertEqual(IntroModel.nextTitle(at: 3), "Get Started")
+        XCTAssertEqual(IntroModel.nextTitle(at: IntroModel.steps.count - 1), "Get Started")
     }
 
     // MARK: Criterion 13 — decision #8 wording, a range and no claim
@@ -196,16 +196,16 @@ final class IntroTests: XCTestCase {
         XCTAssertEqual(IntroKeys.phases, .down)
         XCTAssertFalse(IntroKeys.phases.contains(.repeat))
         var flow = WelcomeFlow()
-        flow.start(at: 3)
+        flow.start(at: IntroModel.steps.count - 1)
         flow.apply(IntroKeys.command(for: .return)!)
         XCTAssertEqual(flow.mode, .welcome)
         XCTAssertEqual(flow.focus, .exploreExample)
     }
 
-    func testNext_fourTimesEndsOnWelcomeWithExploreFocused() {
+    func testNext_throughEveryStepEndsOnWelcomeWithExploreFocused() {
         var flow = WelcomeFlow()
         flow.start()
-        for expected in 1..<4 {
+        for expected in 1..<IntroModel.steps.count {
             flow.apply(.next)
             XCTAssertEqual(flow.step, expected)
         }
@@ -241,7 +241,7 @@ final class IntroTests: XCTestCase {
     func testStart_clampsAndRestarts() {
         var flow = WelcomeFlow()
         flow.start(at: 99)
-        XCTAssertEqual(flow.step, 3)
+        XCTAssertEqual(flow.step, IntroModel.steps.count - 1)
         flow.start(at: -4)
         XCTAssertEqual(flow.step, 0)
         // E4: a replay during the intro restarts at step 0 with a new clock generation.

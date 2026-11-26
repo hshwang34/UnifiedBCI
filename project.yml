@@ -107,10 +107,21 @@ targets:
             LSHandlerRank: Default
             LSTypeIsPackage: true
             LSItemContentTypes: [com.hshwang34.bciproj]
+        # Brief 008: `bci enable` opens bciworkspace://enable-control; the app asks first.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.hshwang34.BCIWorkspace.control
+            CFBundleURLSchemes: [bciworkspace]
     dependencies:
       - framework: native/brainflow/lib/libBoardController.dylib
         embed: true
         codeSign: true
+      # Brief 008 / decision #52: the agent command-line tool, signed with the app.
+      - target: bci
+        embed: true
+        codeSign: true
+        copy:
+          destination: wrapper
+          subpath: Contents/Helpers
     postCompileScripts:
       - name: Copy bundled worker if built
         # scripts/bundle_worker.sh produces build/worker-dist; skip the rsync when nothing under
@@ -183,6 +194,19 @@ targets:
     settings:
       base:
         PRODUCT_NAME: BCIStoreCrashHelper
+
+  # Brief 008: `bci`, the thin client coding agents use (CLI + `bci mcp`). Only the shared
+  # control protocol; every command runs in the app over its local socket.
+  bci:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Sources/Control
+      - path: Tools/bci
+    settings:
+      base:
+        PRODUCT_NAME: bci
+        PRODUCT_BUNDLE_IDENTIFIER: com.hshwang34.BCIWorkspace.bci
 
   BCIWorkspaceTests:
     type: bundle.unit-test

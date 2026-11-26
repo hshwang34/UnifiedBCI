@@ -191,6 +191,20 @@ final class Workspace {
 
     var isClosingAny: Bool { !closing.isEmpty }
 
+    /// Closes a project's window (agent control's `project.close`), then its session, as
+    /// the person closing the window would. A session without a window just closes.
+    func closeWindow(of url: URL) async {
+        let key = Self.canonical(url)
+        if let window = windows[key]?.window {
+            window.close()
+            let deadline = ContinuousClock.now + .seconds(10)
+            while sessions[key] != nil || closing[key] != nil, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(50)) }
+            if sessions[key] != nil { await close(key) }
+        } else {
+            await close(key)
+        }
+    }
+
     /// Closes every project at once (quit): sessions still open and teardowns already
     /// under way, concurrently, so N projects take one shutdown's time, not N. A window
     /// closed mid-commit is waited for here too, so quitting never cuts a store short.
@@ -402,6 +416,14 @@ final class Workspace {
     /// Whether this run has already made its first-run decision: the Welcome window can close
     /// and reopen, but the intro is considered once per launch.
     private(set) var checkedFirstRun = false
+    /// Brief 008: the one-time "Works with your coding agent" card on the welcome screen.
+    var showsAgentCard = false
+
+    /// The card's Set Up… or close button: never shown again.
+    func dismissAgentCard() {
+        showsAgentCard = false
+        AgentIntroCard(defaults: .standard).markSeen()
+    }
     /// The decided-but-not-yet-shown first run: the flag is set when the Welcome window first
     /// appears in intro mode, so a launch that opens a document first leaves it unset.
     @ObservationIgnored private var pendingFirstRun: FirstRun?
@@ -414,7 +436,11 @@ final class Workspace {
     func presentIntroIfFirstRun(_ firstRun: FirstRun, reset: Bool = false, introStep: Int? = nil) -> Bool {
         guard !checkedFirstRun else { return false }
         checkedFirstRun = true
-        guard firstRun.decide(flow: &welcomeFlow, reset: reset, introStep: introStep) else { return false }
+        guard firstRun.decide(flow: &welcomeFlow, reset: reset, introStep: introStep) else {
+            // Brief 008: people who saw the intro before agent control get a one-time card.
+            showsAgentCard = AgentIntroCard(defaults: firstRun.defaults).shouldShow()
+            return false
+        }
         pendingFirstRun = firstRun
         return true
     }
@@ -423,7 +449,10 @@ final class Workspace {
     func welcomeAppeared() {
         guard let firstRun = pendingFirstRun else { return }
         pendingFirstRun = nil
-        if welcomeFlow.isIntro { firstRun.markPresented() }
+        if welcomeFlow.isIntro {
+            firstRun.markPresented()
+            AgentIntroCard(defaults: firstRun.defaults).markSeen()      // its last step says the same
+        }
     }
 
     /// The Welcome window closed. Mid-intro, the intro ends (E6 behaves like E2): a Dock

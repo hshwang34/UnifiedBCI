@@ -142,3 +142,21 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #46 · 2026-11-21 · "?" help is a short native popover (2–4 sentences, offline) at about a dozen concept-heavy spots only. There is no Help Book in this pass.
 *Why:* PM decision; clean UX, help where people actually get stuck (brief 007 Q4).
+
+#47 · 2026-11-25 · Coding agents drive the app through a local control server inside the running app. It is off by default and turned on in Settings or by `bci enable` with an in-app confirmation. It listens on a same-user Unix socket only (peer uid check plus a per-launch token). There is no network listener.
+*Why:* owner decision; one owner per project and per board, the person sees what the agent does, and nothing opens on its own (#7). Brief 008.
+
+#48 · 2026-11-25 · Agents never confirm a human step: starting a cued run, resuming after a pause, checking electrodes. Those wait for the operator in the app, and the agent's job reports `awaiting_operator`. Unattended runs (`operator: "agent"`) are allowed only on the synthetic and Demo sources. A serial board also needs "Allow agents to use hardware" and an in-app confirmation once per launch.
+*Why:* owner decision; a participant's session is never driven by software alone. Brief 008.
+
+#49 · 2026-11-25 · Every agent call is appended to the project's `logs/agent-actions.jsonl`. It is a log, not provenance: it is not a contract record, export leaves it out, and it cannot be turned off.
+*Why:* lead decision; the person can always see what an agent did. Brief 008.
+
+#50 · 2026-11-25 · Every evaluation an agent reads carries attempt accounting for its recording: the number of evaluations and distinct configurations, the held-out runs, and a `multiple_comparisons` warning past five configurations.
+*Why:* lead decision; repeated evaluation against one holdout inflates the best score (PRD scientific rules). Brief 008.
+
+#51 · 2026-11-25 · `bci` and its MCP mode use a hand-rolled JSON-lines and MCP stdio implementation with no new dependency. One catalogue feeds `describe`, the CLI flags and the MCP tools.
+*Why:* lead decision; nothing new to sign, audit or pin. Brief 008.
+
+#52 · 2026-11-25 · `bci` ships inside the app as `Contents/Helpers/bci` and is signed with it. `bci install` symlinks it into `~/.local/bin` (no sudo).
+*Why:* lead decision; one notarized download, no installer. Brief 008.

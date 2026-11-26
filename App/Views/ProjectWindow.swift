@@ -75,7 +75,12 @@ struct ProjectWindow: View {
                     // Under the Result hero the glow continues beneath sidebar and inspector (26).
                     if session.section == .results { AmbientBackdrop().extendedBackground() } else { AmbientBackdrop() }
                 }
-                .safeAreaInset(edge: .top, spacing: 0) { StatusArea(session: session) }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    VStack(spacing: 0) {
+                        AgentBanner(project: session.url)      // brief 008: what an agent is doing or waiting for
+                        StatusArea(session: session)
+                    }
+                }
                 
         }
         // The Evaluate inspector belongs to Recordings only; the preference is kept.
