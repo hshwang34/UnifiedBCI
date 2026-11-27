@@ -172,3 +172,18 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #56 · 2026-11-26 · Help ▸ Export Diagnostics… writes a folder the person can attach to a bug report: logs, crash reports and versions, never EEG data or project files.
 *Why:* PM decision. Brief 009 Q4.
+
+#57 · 2026-11-27 · The cue replaces the fixation cross: at cue onset the cross disappears and the arrow appears in its place, centred, on the same refresh, with no cross-fade. The cue is a solid SF Symbol arrow (`arrowshape.left/right/up/down.fill`), pre-rendered, shown at full contrast on its scheduled frame and static until cue end.
+*Why:* lead decision, PM delegated design calls (2026-11-27). Overlapping cross and arrow was the PM's main complaint; replacing keeps the gaze at the centre and gives one clean onset to mark. Brief 010; `App/Views/CueWindow.swift`.
+
+#58 · 2026-11-27 · The participant sees progress (runs done, as dots, and "Run n of N") only on the instructions and between-run cards, never during fixation, cue or rest. There is no trials-left indicator inside a run.
+*Why:* lead decision, PM delegated design calls (2026-11-27). Anything that changes during a trial can draw the eye and evoke a visual response; between runs it helps the participant pace themselves. Brief 010.
+
+#59 · 2026-11-27 · The live feedback bar is a capsule in its own calm blue (≈9:1 on the background), under the cue and clear of every arrow. It jumps to each new length on the refresh that reports it, with no display interpolation, and the operator's mirror does the same. Decision #40's rule (windows wholly inside the imagery period) is unchanged.
+*Why:* lead decision, PM delegated design calls (2026-11-27). A tween would draw lengths the model never produced; a separate colour keeps the bar from merging with the white cue. Brief 010.
+
+#60 · 2026-11-27 · The participant window shows a card outside the measured phases: instructions (run, legend of arrows, "the run starts when the operator is ready"), "Paused" while paused, "Run complete" or "Run ended" with a short-break line between runs, and "All runs done" after the last run. Rests stay blank. Cards fade in and out (instant under Reduce Motion) and are never on screen with a cross or a cue; the instructions card fades the moment Space is pressed.
+*Why:* lead decision, PM delegated design calls (2026-11-27). A participant could not tell a rest from a pause from a break (brief 005's break screen was never built). Brief 010.
+
+#61 · 2026-11-27 · The operator panel leads with a state badge, run dots with a trial progress bar, and the trial drawn to scale with the current phase highlighted; every run button shows its key (Space, esc, ⌘.). In Live Test, the run controls sit directly under the feedback card.
+*Why:* lead decision, PM delegated design calls (2026-11-27). The next action and its key must be obvious at a glance, especially on one display where the keyboard is the only control. Brief 010.

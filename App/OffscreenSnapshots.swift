@@ -39,6 +39,25 @@ enum OffscreenSnapshots {
         }
     }
 
+    /// Brief 010: every participant card as the second display would show it (1440 × 900),
+    /// `participant-<kind>.png`. The window itself steps aside between runs on one display,
+    /// so a window capture can't show the break card there.
+    static func participantCards(_ p: ProtocolRecord, runsPerSession: Int, into dir: URL) {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let context = ParticipantRunContext(runIndex: 1, runsPerSession: runsPerSession, protocolRecord: p)
+        let cases: [(String, String?, ParticipantScreen)] = [
+            ("instructions", p.instructions, .instructions), ("paused", nil, .paused),
+            ("between-runs", nil, .betweenRuns(completed: 2, endedEarly: false)), ("session-done", nil, .sessionDone),
+        ]
+        let bg = Color(.sRGB, red: CueWindowModel.background.r, green: CueWindowModel.background.g, blue: CueWindowModel.background.b)
+        for (name, text, screen) in cases {
+            let state = ParticipantCardState()
+            state.card = ParticipantCardModel.make(instructionsText: text, screen: screen, context: context)
+            let view = ParticipantCardStage(state: state).frame(width: 1440, height: 900).background(bg)
+            write(view, scheme: .dark, to: dir.appendingPathComponent("participant-\(name).png"))
+        }
+    }
+
     private static func write(_ view: some View, scheme: ColorScheme, to url: URL) {
         let renderer = ImageRenderer(content: view.environment(\.colorScheme, scheme))
         renderer.scale = 2

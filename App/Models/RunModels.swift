@@ -71,6 +71,18 @@ enum StartRunCopy {
     static let alreadyRecording = "Stop the current recording first."
     static let nextRunNote = "The next run starts on the same recording, as a new segment."
     static let displayGone = "The chosen display is no longer connected. Pick another display."
+    // Brief 010: the sheet's header and sections.
+    static let subtitle = "The participant window shows the cues. Every run is recorded with its events on the current stream."
+    static let protocolSection = "Protocol"
+    static let sessionSection = "Session"
+    static let displaySection = "Participant"
+    static let trialAnatomy = "One trial"
+
+    static func sessionEstimate(_ p: ProtocolRecord, runs: Int) -> String {
+        let t = p.timing
+        let perRun = 2 * p.trialsPerClass * (t.fixationMs + t.cueMs + (t.restMinMs + t.restMaxMs) / 2)
+        return "\(runs) run\(runs == 1 ? "" : "s") · about \(Fmt.duration(ms: runs * perRun)) of cues, plus breaks between runs"
+    }
 
     static func protocolTitle(_ p: ProtocolRecord) -> String { "\(p.name) · v\(p.version)" }
 
@@ -88,6 +100,34 @@ enum StartRunCopy {
     }
 }
 
+/// One trial's phases drawn to scale (brief 010): fixation, cue, rest (its range).
+struct TrialAnatomyModel: Equatable {
+    struct Segment: Equatable, Identifiable {
+        let step: OperatorPanelModel.Step
+        let title: String
+        let duration: String
+        /// Share of the mean trial, 0…1.
+        let fraction: Double
+        var id: OperatorPanelModel.Step { step }
+    }
+
+    let segments: [Segment]
+    let accessibilityLabel: String
+
+    init(_ p: ProtocolRecord) {
+        let t = p.timing
+        let rest = (t.restMinMs + t.restMaxMs) / 2
+        let total = Double(max(1, t.fixationMs + t.cueMs + rest))
+        let restText = t.restMinMs == t.restMaxMs ? Fmt.seconds(ms: t.restMinMs) : "\(Fmt.secondsValue(ms: t.restMinMs))–\(Fmt.seconds(ms: t.restMaxMs))"
+        segments = [
+            .init(step: .fixation, title: OperatorPanelModel.Step.fixation.title, duration: Fmt.seconds(ms: t.fixationMs), fraction: Double(t.fixationMs) / total),
+            .init(step: .cue, title: OperatorPanelModel.Step.cue.title, duration: Fmt.seconds(ms: t.cueMs), fraction: Double(t.cueMs) / total),
+            .init(step: .rest, title: OperatorPanelModel.Step.rest.title, duration: restText, fraction: Double(rest) / total),
+        ]
+        accessibilityLabel = "One trial: " + segments.map { "\($0.title) \($0.duration)" }.joined(separator: ", then ")
+    }
+}
+
 /// What the operator sees during a run (brief 005 "Operator panel").
 struct OperatorPanelModel: Equatable {
     let title: String
@@ -98,6 +138,45 @@ struct OperatorPanelModel: Equatable {
     /// The keys as they act in this state.
     let shortcuts: String
     let canBegin, canAbortTrial, canPause, canResume, canAbortRun: Bool
+    // Brief 010: the glanceable parts.
+    let badge: Badge
+    /// The phase in progress, for the phase strip; nil outside a trial.
+    let step: Step?
+    /// The cued class while a cue is on screen (or about to be), with its arrow.
+    let cue: (name: String, symbol: CueSymbol)?
+    /// Trials done in this run, 0…1; nil before the run starts.
+    let trialFraction: Double?
+    let runDots: [ParticipantCardModel.Dot]
+    let accessibilitySummary: String
+
+    /// The run's state at a glance: a chip in the panel's header.
+    struct Badge: Equatable {
+        enum Tone: Equatable { case ready, live, paused, done, problem }
+        let text: String
+        let symbol: String
+        let tone: Tone
+    }
+
+    enum Step: String, CaseIterable, Equatable, Hashable {
+        case fixation, cue, rest
+        var title: String {
+            switch self {
+            case .fixation: return "Fixation"
+            case .cue: return "Cue"
+            case .rest: return "Rest"
+            }
+        }
+        var symbol: String {
+            switch self {
+            case .fixation: return "plus"
+            case .cue: return "arrowshape.forward.fill"
+            case .rest: return "moon.zzz"
+            }
+        }
+    }
+
+    // Key caps shown beside the buttons; the keys themselves are RunController's.
+    static let spaceKey = "Space", escapeKey = "esc", abortRunKey = "⌘."
 
     static let header = "Protocol run"
     static let begin = "Begin", abortTrial = "Abort Trial", pause = "Pause", resume = "Resume", abortRun = "Abort Run"
@@ -124,6 +203,8 @@ struct OperatorPanelModel: Equatable {
         a.title == b.title && a.progress == b.progress && a.phase == b.phase && a.time == b.time
             && a.notice?.danger == b.notice?.danger && a.notice?.text == b.notice?.text && a.shortcuts == b.shortcuts
             && [a.canBegin, a.canAbortTrial, a.canPause, a.canResume, a.canAbortRun] == [b.canBegin, b.canAbortTrial, b.canPause, b.canResume, b.canAbortRun]
+            && a.badge == b.badge && a.step == b.step && a.cue?.name == b.cue?.name && a.cue?.symbol == b.cue?.symbol
+            && a.trialFraction == b.trialFraction && a.runDots == b.runDots
     }
 
     /// `streaming`: the board is delivering samples into the run (Resume needs it, decision #35).
@@ -171,6 +252,48 @@ struct OperatorPanelModel: Equatable {
         canPause = s.state == .running
         canResume = { if case .paused = s.state { streaming } else { false } }()
         canAbortRun = live
+        switch s.state {
+        case .instructions: badge = .init(text: "Ready", symbol: "hand.raised", tone: .ready)
+        case .running: badge = .init(text: "Running", symbol: "record.circle", tone: .live)
+        case .paused(.operator): badge = .init(text: "Paused", symbol: "pause.circle.fill", tone: .paused)
+        case .paused: badge = .init(text: "Paused", symbol: "exclamationmark.triangle.fill", tone: .problem)
+        case .ended(let aborted): badge = .init(text: aborted ? "Ended early" : "Complete", symbol: aborted ? "stop.circle" : "checkmark.circle.fill", tone: .done)
+        case .failed: badge = .init(text: "Couldn't start", symbol: "exclamationmark.octagon.fill", tone: .problem)
+        }
+        if case .running = s.state {
+            switch s.phase {
+            case .fixation: step = .fixation
+            case .cue: step = .cue
+            case .rest: step = .rest
+            case .none: step = nil
+            }
+        } else {
+            step = nil
+        }
+        if let l = s.label, let c = p.classes.first(where: { $0.label == l }), step == .cue {
+            cue = (c.displayName, c.cue)
+        } else {
+            cue = nil
+        }
+        // Trials done: the trial in progress counts as started; between trials the planned
+        // time fills the gap, so the bar never jumps back.
+        switch s.state {
+        case .instructions, .failed:
+            trialFraction = nil
+        case .ended:
+            trialFraction = 1
+        case .running, .paused:
+            if let t = s.trial, s.trialCount > 0 {
+                trialFraction = min(1, Double(t) / Double(s.trialCount))
+            } else if let start = s.startedAt, let end = s.plannedEnd, end > start {
+                trialFraction = min(1, max(0, Double(nowNanos - start) / Double(end - start)))
+            } else {
+                trialFraction = 0
+            }
+        }
+        let finished: Bool = { if case .ended = s.state { true } else { false } }()
+        runDots = ParticipantCardModel.dots(done: s.runIndex + (finished ? 1 : 0), current: finished ? nil : s.runIndex, total: runsPerSession)
+        accessibilitySummary = "\(badge.text). \(progress). \(phase)" + (time.map { ". \($0)" } ?? "")
     }
 }
 

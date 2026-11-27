@@ -1,3 +1,4 @@
+import AppKit
 import Synchronization
 import XCTest
 @testable import BCIWorkspace
@@ -143,6 +144,51 @@ final class CueWindowTests: XCTestCase {
         XCTAssertGreaterThan(CueWindowModel.arrowHead, CueWindowModel.crossStroke)
     }
 
+    // MARK: Brief 010: cue composition and the cards between trials
+
+    func testEveryCueHasItsOwnSolidGlyph() {
+        XCTAssertEqual(Set(CueSymbol.allCases.map(CueWindowModel.cueGlyph)).count, CueSymbol.allCases.count)
+        for cue in CueSymbol.allCases {
+            XCTAssertNotNil(NSImage(systemSymbolName: CueWindowModel.cueGlyph(cue), accessibilityDescription: nil), "\(cue) renders")
+        }
+        // The bar sits clear of the longest arrow (a down arrow reaches half its length below the centre).
+        XCTAssertGreaterThan(CueWindowModel.feedbackDrop - CueWindowModel.feedbackHeight / 2, CueWindowModel.arrowLength / 2)
+    }
+
+    private let context = ParticipantRunContext(runIndex: 1, runsPerSession: 4,
+                                                legend: [.init(name: "Left hand", cue: .leftArrow), .init(name: "Right hand", cue: .rightArrow)])
+
+    func testParticipantCards() {
+        let text = ProtocolDraft.grazDefault.instructions
+        let card = ParticipantCardModel.make(instructionsText: text, screen: .instructions, context: context)
+        XCTAssertEqual(card?.kind, .instructions)
+        XCTAssertEqual(card?.eyebrow, "Run 2 of 4")
+        XCTAssertEqual(card?.body, text)
+        XCTAssertEqual(card?.legend.map(\.name), ["Left hand", "Right hand"])
+        XCTAssertEqual(card?.runs, [.done, .current, .pending, .pending])
+        XCTAssertNil(ParticipantCardModel.make(instructionsText: text, screen: nil, context: context), "Space pressed: the card goes")
+        XCTAssertNil(ParticipantCardModel.make(instructionsText: nil, screen: nil, context: context), "a rest is blank")
+        XCTAssertNil(ParticipantCardModel.make(instructionsText: nil, screen: .instructions, context: context), "a blank frame never shows instructions")
+        XCTAssertEqual(ParticipantCardModel.make(instructionsText: nil, screen: .paused, context: context)?.title, "Paused")
+        let pause = ParticipantCardModel.make(instructionsText: nil, screen: .paused, context: context)
+        XCTAssertEqual(pause?.runs, [], "no progress on the pause card")
+        let gap = ParticipantCardModel.make(instructionsText: nil, screen: .betweenRuns(completed: 2, endedEarly: false), context: context)
+        XCTAssertEqual(gap?.eyebrow, "Run 2 of 4")
+        XCTAssertEqual(gap?.title, ParticipantCardModel.runDoneTitle)
+        XCTAssertEqual(gap?.runs, [.done, .done, .pending, .pending])
+        XCTAssertEqual(ParticipantCardModel.make(instructionsText: nil, screen: .betweenRuns(completed: 2, endedEarly: true), context: context)?.title,
+                       ParticipantCardModel.runEndedTitle)
+        XCTAssertEqual(ParticipantCardModel.make(instructionsText: nil, screen: .sessionDone, context: context)?.runs, [.done, .done, .done, .done])
+    }
+
+    func testLegendReadsLikeTheScreen() {
+        var draft = ProtocolDraft.grazDefault
+        draft.classes = [.init(label: "cue_right_hand", displayName: "Right hand", cue: .rightArrow),
+                         .init(label: "cue_left_hand", displayName: "Left hand", cue: .leftArrow)]
+        let c = ParticipantRunContext(runIndex: 0, runsPerSession: 1, protocolRecord: ProtocolRecord(draft: draft, parent: nil))
+        XCTAssertEqual(c.legend.map(\.cue), [.leftArrow, .rightArrow])
+    }
+
     /// The window's ink on its background, WCAG: far above 7:1 (readable at a distance).
     func testContrast() {
         func lum(_ c: (r: Double, g: Double, b: Double)) -> Double {
@@ -151,5 +197,7 @@ final class CueWindowTests: XCTestCase {
         }
         let ratio = (lum(CueWindowModel.ink) + 0.05) / (lum(CueWindowModel.background) + 0.05)
         XCTAssertGreaterThan(ratio, 12)
+        let bar = (lum(CueWindowModel.feedbackBar) + 0.05) / (lum(CueWindowModel.background) + 0.05)
+        XCTAssertGreaterThan(bar, 7, "the feedback bar's colour reads at a distance too")
     }
 }

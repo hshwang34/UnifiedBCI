@@ -16,10 +16,14 @@ protocol CueSurface: AnyObject {
     func reframe() -> Bool
     /// Live feedback for the window to draw during cues (brief 006); nil: none.
     func attachFeedback(_ feed: FeedbackFeed?)
+    /// The participant's card between trials (brief 010); nil: none. Never drawn with a
+    /// fixation cross or a cue, so it can't touch a measured phase.
+    func showParticipant(_ screen: ParticipantScreen?, context: ParticipantRunContext?)
 }
 
 extension CueSurface {
     func attachFeedback(_ feed: FeedbackFeed?) {}
+    func showParticipant(_ screen: ParticipantScreen?, context: ParticipantRunContext?) {}
 }
 
 extension CueWindowController: CueSurface {
@@ -69,6 +73,10 @@ final class RunController {
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var keys: Any?
     @ObservationIgnored private var tornDown = false
+    /// The participant card last asked for, so the 100 ms status poll only sends changes.
+    @ObservationIgnored private var participant: ParticipantScreen?
+    /// Space or Resume was pressed: the card fades now, during the start lead, not at the next poll.
+    @ObservationIgnored private var cardDismissed = false
     /// Trials (by id) an abort was already sent for: a second press never aborts the next one.
     @ObservationIgnored private var abortSent: Set<String> = []
     /// The project window that owns the run; keys are taken only from it and the participant window.
@@ -102,6 +110,8 @@ final class RunController {
         self.runner = runner
         status = runner.status
         AppLog.info(.runs, "run_start", ["run": runner.status.runID, "index": String(index)])
+        cardDismissed = false
+        setParticipant(.instructions, context: participantContext(runIndex: index))
         surface.show()
         installKeys()
         task = Task { [weak self] in
@@ -113,6 +123,7 @@ final class RunController {
                 self.status = s
                 if !adopted, let id = s.recordingID { adopted = true; self.onRecording(id) }
                 if s.startedAt != nil, self.runsStarted == index { self.runsStarted = index + 1 }
+                self.syncParticipant(s.state)
                 if case .ended = s.state { break }
                 if case .failed = s.state { break }
                 try? await Task.sleep(for: .milliseconds(100))
@@ -132,6 +143,8 @@ final class RunController {
         status = s
         task = nil
         runner = nil
+        let aborted: Bool = { if case .ended(true) = s.state { true } else { false } }()
+        setParticipant(runsStarted >= setup.runsPerSession ? .sessionDone : .betweenRuns(completed: runsStarted, endedEarly: aborted || s.startedAt == nil))
         // One display: the participant window steps aside so the operator sees the summary.
         if setup.display.isOperator { surface.hide() }
         guard s.startedAt != nil else { return }
@@ -162,7 +175,10 @@ final class RunController {
         }
     }
 
-    func begin() { runner?.begin() }
+    func begin() {
+        if status?.state == .instructions { dismissCard() }
+        runner?.begin()
+    }
     func pause() {
         AppLog.info(.runs, "run_pause", ["run": status?.runID ?? "-"])
         runner?.pause()
@@ -190,7 +206,41 @@ final class RunController {
         }
         resumeProblem = nil
         AppLog.info(.runs, "run_resume", ["run": status?.runID ?? "-"])
+        if host.isStreaming { dismissCard() }        // the runner ignores Resume while the stream is down (decision #35)
         runner.resume()
+    }
+
+    // MARK: Participant cards (brief 010)
+
+    private func participantContext(runIndex: Int) -> ParticipantRunContext {
+        ParticipantRunContext(runIndex: runIndex, runsPerSession: setup.runsPerSession, protocolRecord: setup.protocolRecord)
+    }
+
+    private func setParticipant(_ screen: ParticipantScreen?, context: ParticipantRunContext? = nil) {
+        guard screen != participant || context != nil else { return }
+        participant = screen
+        surface.showParticipant(screen, context: context)
+    }
+
+    private func dismissCard() {
+        cardDismissed = true
+        setParticipant(nil)
+    }
+
+    /// The card for a run state, from the status poll. A dismissed card stays gone until the
+    /// state moves on (a refused Resume shows the pause card again at the next change).
+    private func syncParticipant(_ state: ProtocolRunner.RunState) {
+        let wanted: ParticipantScreen?
+        switch state {
+        case .instructions: wanted = .instructions
+        case .paused: wanted = .paused
+        case .running, .ended, .failed: wanted = nil
+        }
+        if cardDismissed {
+            guard wanted == nil else { return }
+            cardDismissed = false
+        }
+        setParticipant(wanted)
     }
 
     /// Ends the session: an active run is aborted first, then the recording stops.

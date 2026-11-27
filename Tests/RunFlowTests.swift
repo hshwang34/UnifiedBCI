@@ -57,6 +57,51 @@ final class RunFlowTests: XCTestCase {
         XCTAssertEqual(StartRunForm(protocols: [graz], displays: [], remembered: nil).disabledReason(streamReason: nil), StartRunCopy.noDisplay)
     }
 
+    // MARK: Brief 010
+
+    func testTrialAnatomy_toScale() {
+        let m = TrialAnatomyModel(graz)
+        XCTAssertEqual(m.segments.map(\.title), ["Fixation", "Cue", "Rest"])
+        XCTAssertEqual(m.segments.map(\.duration), ["2 s", "4 s", "1.5–2.5 s"])
+        XCTAssertEqual(m.segments.map(\.fraction).reduce(0, +), 1, accuracy: 1e-9)
+        XCTAssertEqual(m.segments[1].fraction, 0.5, accuracy: 1e-9, "the 4 s cue is half of an 8 s mean trial")
+        XCTAssertEqual(m.accessibilityLabel, "One trial: Fixation 2 s, then Cue 4 s, then Rest 1.5–2.5 s")
+        XCTAssertEqual(StartRunCopy.sessionEstimate(graz, runs: 4), "4 runs · about 21 min 20 s of cues, plus breaks between runs")
+    }
+
+    func testOperatorPanel_glanceableParts() {
+        let p = graz
+        var s = ProtocolRunner.Status(runID: "run02", runIndex: 1, runsPerSession: 4, trialCount: 40)
+        var m = OperatorPanelModel(s, protocol: p, runsPerSession: 4, streaming: true, nowNanos: 0)
+        XCTAssertEqual(m.badge.text, "Ready")
+        XCTAssertNil(m.step, "no phase strip on the instructions")
+        XCTAssertNil(m.trialFraction)
+        XCTAssertEqual(m.runDots, [.done, .current, .pending, .pending])
+        s.state = .running; s.trial = 10; s.phase = .cue; s.label = "cue_right_hand"; s.startedAt = 0; s.plannedEnd = 100
+        m = OperatorPanelModel(s, protocol: p, runsPerSession: 4, streaming: true, nowNanos: 50)
+        XCTAssertEqual(m.badge.tone, .live)
+        XCTAssertEqual(m.step, .cue)
+        XCTAssertEqual(m.cue?.name, "Right hand")
+        XCTAssertEqual(m.cue?.symbol, .rightArrow)
+        XCTAssertEqual(m.trialFraction, 0.25)
+        s.phase = .rest
+        XCTAssertNil(OperatorPanelModel(s, protocol: p, runsPerSession: 4, streaming: true, nowNanos: 50).cue, "the class shows only during its cue")
+        s.trial = nil; s.phase = .none
+        XCTAssertEqual(OperatorPanelModel(s, protocol: p, runsPerSession: 4, streaming: true, nowNanos: 50).trialFraction, 0.5, "between trials: planned time")
+        s.state = .paused(.operator)
+        m = OperatorPanelModel(s, protocol: p, runsPerSession: 4, streaming: true, nowNanos: 50)
+        XCTAssertEqual(m.badge.tone, .paused)
+        XCTAssertNil(m.step)
+        s.state = .paused(.disconnect)
+        XCTAssertEqual(OperatorPanelModel(s, protocol: p, runsPerSession: 4, streaming: false, nowNanos: 50).badge.tone, .problem)
+        s.state = .ended(aborted: false)
+        m = OperatorPanelModel(s, protocol: p, runsPerSession: 4, streaming: true, nowNanos: 50)
+        XCTAssertEqual(m.badge.text, "Complete")
+        XCTAssertEqual(m.trialFraction, 1)
+        XCTAssertEqual(m.runDots, [.done, .done, .pending, .pending])
+        XCTAssertTrue(m.accessibilitySummary.hasPrefix("Complete. Run 2 of 4"))
+    }
+
     func testRunKeys() {
         XCTAssertEqual(RunKey(keyCode: 49, characters: " ", modifiers: []), .space)
         XCTAssertEqual(RunKey(keyCode: 53, characters: "\u{1b}", modifiers: [.capsLock]), .escape, "Caps Lock doesn't count")
@@ -171,6 +216,13 @@ final class RunFlowTests: XCTestCase {
         func hide() { hidden += 1 }
         func close() { closed += 1 }
         func reframe() -> Bool { reframed += 1; return displayPresent }
+        /// Brief 010: every participant card asked for, in order.
+        var cards: [ParticipantScreen?] = []
+        var context: ParticipantRunContext?
+        func showParticipant(_ screen: ParticipantScreen?, context: ParticipantRunContext?) {
+            cards.append(screen)
+            if let context { self.context = context }
+        }
     }
 
     /// Key repeats and second presses never abort another trial; a display change pauses the
@@ -185,10 +237,13 @@ final class RunFlowTests: XCTestCase {
         let runs = RunController(setup: .init(protocolRecord: p, sessionSeed: 1, runsPerSession: 1, display: external, framePeriodNanos: 16_666_667),
                                  host: FakeHost(store: store), store: store, surface: surface, onRecording: { _ in }, stopRecording: {})
         runs.startNextRun()
+        XCTAssertEqual(surface.cards, [.instructions], "brief 010: the instructions card first")
+        XCTAssertEqual(surface.context, ParticipantRunContext(runIndex: 0, runsPerSession: 1, protocolRecord: p))
         XCTAssertTrue(runs.press(.space, isRepeat: true), "a repeat is consumed")
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(runs.status?.state, .instructions, "…without acting")
         runs.press(.space, isRepeat: false)
+        XCTAssertEqual(surface.cards.last, .some(nil), "Space dismisses the card at once, during the start lead")
         try await waitFor { runs.status?.phase == .cue && runs.status?.trial == 0 }
         runs.press(.escape, isRepeat: false)
         for _ in 0..<5 { runs.press(.escape, isRepeat: true) }
@@ -199,6 +254,7 @@ final class RunFlowTests: XCTestCase {
         surface.onDisplayChange?()
         try await waitFor { runs.status?.state == .paused(.display) }
         XCTAssertEqual(runs.status?.abortedTrials.count, 2, "the trial on screen is aborted, as on a disconnect")
+        try await waitFor { surface.cards.last == .paused }
         surface.displayPresent = false
         runs.resume()
         XCTAssertEqual(runs.resumeProblem, OperatorPanelModel.displayGone)
@@ -210,10 +266,13 @@ final class RunFlowTests: XCTestCase {
         XCTAssertNil(runs.resumeProblem)
         XCTAssertEqual(runs.setup.framePeriodNanos, 8_333_333, "the frame period is read again")
         try await waitFor { runs.status?.state == .running }
+        XCTAssertEqual(surface.cards.last, .some(nil), "running: no card")
         runs.press(.abortRun, isRepeat: false)
         await runs.awaitRun()
         XCTAssertEqual(runs.status?.state, .ended(aborted: true))
         XCTAssertEqual(surface.reframed, 2)
+        XCTAssertEqual(surface.cards.last, .sessionDone, "the session's only run ended")
+        XCTAssertEqual(surface.cards.filter { $0 == .instructions }.count, 1, "instructions only before the first trial")
     }
 
     func testTwoRunsOnTheSyntheticBoard_summaries_protocolLabels_andTheRunCountMessage() async throws {

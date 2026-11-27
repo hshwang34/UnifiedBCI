@@ -61,10 +61,7 @@ struct LiveTestSetupView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.cardGap) {
-                VStack(alignment: .leading, spacing: Theme.Space.xs) {
-                    Text(LiveRunCopy.setupTitle).font(Theme.Fonts.title).foregroundStyle(Theme.textPrimary).accessibilityAddTraits(.isHeader)
-                    Text(LiveRunCopy.setupIntro).font(.callout).foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
-                }
+                SheetHeader(title: LiveRunCopy.setupTitle, subtitle: LiveRunCopy.setupIntro, symbol: "waveform.path.ecg")
                 Form {
                     Section {
                         Picker(LiveRunCopy.modelLabel, selection: $session.liveTestForm.modelID) {
@@ -93,6 +90,7 @@ struct LiveTestSetupView: View {
                                 ForEach(form.protocols) { Text(StartRunCopy.protocolTitle($0)).tag(Optional($0.protocolID)) }
                             }
                             if let p = form.selected {
+                                TrialAnatomyStrip(model: TrialAnatomyModel(p)).padding(.vertical, Theme.Space.xxs)
                                 Text(StartRunCopy.protocolSummary(p)).font(.callout).foregroundStyle(Theme.textSecondary)
                                 if let model = session.liveSetupModel {
                                     Label(FreezeSheetModel.span(offset: model.window.offsetSeconds, length: model.window.lengthSeconds,
@@ -113,7 +111,7 @@ struct LiveTestSetupView: View {
                                 ForEach(form.displays) { Text(CueWindowModel.displayLabel($0)).tag(Optional($0.id)) }
                             }
                             if form.display?.isOperator == true {
-                                Text(CueWindowModel.sharedDisplayNote).font(.callout).foregroundStyle(Theme.textPrimary)
+                                SharedDisplayNote()
                             }
                         }
                     }
@@ -121,7 +119,7 @@ struct LiveTestSetupView: View {
                 .formStyle(.grouped)
                 .scrollContentBackground(.hidden)
                 .scrollDisabled(true)
-                .frame(minHeight: 420)
+                .frame(minHeight: 480)
                 if let error = session.startRunSheetError { StatusChip(kind: .danger, text: error) }
                 HStack(spacing: Theme.Space.m) {
                     if session.isStartingLive { ProgressView().controlSize(.small) }
@@ -283,13 +281,14 @@ struct LiveTestOperatorView: View {
                 // when the participant's is hidden, not at the next 4 Hz status refresh.
                 TimelineView(.periodic(from: .now, by: 0.05)) { _ in FeedbackStateCard(model: feedbackState()) }
                 if let w = m.logWarning { StatusChip(kind: .warning, text: w) }
+                // The run's controls next to the feedback: the next action is never below the fold.
+                if let runs = session.runs {
+                    OperatorPanel(session: session, runs: runs, streaming: session.live?.state == .streaming)
+                }
                 HStack(alignment: .top, spacing: Theme.Space.cardGap) {
                     StatTile(title: LiveTestCopy.abstainHeader, value: m.abstainValue, line: m.abstainLine, symbol: "hand.raised")
                     StatTile(title: LiveTestCopy.latencyHeader, value: m.latencyValue, line: m.latencyLine, symbol: "stopwatch",
                              note: LiveTestCopy.latencyNote)
-                }
-                if let runs = session.runs {
-                    OperatorPanel(session: session, runs: runs, streaming: session.live?.state == .streaming)
                 }
                 TrialOutcomesCard(model: m)
             }
@@ -323,12 +322,15 @@ struct LiveTestOperatorView: View {
 /// The current state in words, the bar as the participant sees it, and the raw prediction.
 private struct FeedbackStateCard: View {
     let model: LiveFeedbackStateModel
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.l) {
             HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
                 Image(systemName: symbol).foregroundStyle(tint).font(.title3).accessibilityHidden(true)
+                    .contentTransition(.symbolEffect(.replace))
                 Text(model.state).font(Theme.Fonts.heroLabel).foregroundStyle(Theme.textPrimary)
+                    .contentTransition(.opacity)
                 if let d = model.detail { Text(d).font(Theme.Fonts.monoCaption).foregroundStyle(Theme.textSecondary).lineLimit(1) }
                 Spacer(minLength: 0)
                 Text(LiveTestCopy.feedbackHeader).font(.caption).foregroundStyle(Theme.textSecondary)
@@ -342,6 +344,7 @@ private struct FeedbackStateCard: View {
         }
         .padding(Theme.Space.heroPadding)
         .glassSurface(cornerRadius: Theme.Radius.hero, style: .hero)
+        .animation(Theme.motion(reduceMotion: LaunchArguments.reduceMotion(system: systemReduceMotion)), value: model.state)
     }
 
     private var symbol: String {
@@ -363,40 +366,45 @@ private struct FeedbackStateCard: View {
     }
 }
 
-/// The participant's bar, mirrored for the operator: a track, the centre line, and the bar
-/// growing toward its class's side. Animated only when Reduce Motion is off.
+/// The participant's bar, mirrored for the operator: the same capsule track, centre line and
+/// bar growing toward its class's side. Like the participant's bar it jumps to each new length
+/// and never interpolates (decision #59): what the operator sees is what was drawn. Only its
+/// appearing and hiding fade (none under Reduce Motion).
 struct FeedbackGauge: View {
     let bar: LiveFeedbackStateModel.Bar?
     let side: String?
     let leftEnd: String
     let rightEnd: String
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         GeometryReader { g in
-            let half = g.size.width / 2, h: CGFloat = 14
+            let half = g.size.width / 2, h: CGFloat = 16
             let length = CGFloat(bar?.length ?? 0) * half
             // The participant bar's minimum, at the same proportion.
             let minimum = half * CGFloat(CueWindowModel.feedbackMinimumFraction)
+            let width = max(bar == nil ? 0 : minimum, length)
             ZStack(alignment: .leading) {
-                Capsule().fill(Theme.textTertiary.opacity(0.18)).frame(height: h)
+                Capsule().fill(Theme.textTertiary.opacity(contrast == .increased ? 0.4 : 0.18)).frame(height: h)
                 Capsule()
                     .fill(Theme.accentInk.gradient)
-                    .frame(width: max(bar == nil ? 0 : minimum, length), height: h)
-                    .offset(x: (bar?.direction ?? 1) < 0 ? half - max(minimum, length) : half)
+                    .frame(width: width, height: h)
+                    .offset(x: (bar?.direction ?? 1) < 0 ? half - width : half)
                     .opacity(bar == nil ? 0 : 1)
-                Rectangle().fill(Theme.textPrimary).frame(width: 2, height: 30).offset(x: half - 1)
+                    .animation(nil, value: bar)
+                    .animation(Theme.motion(reduceMotion: LaunchArguments.reduceMotion(system: systemReduceMotion)), value: bar == nil)
+                Capsule().fill(Theme.textPrimary).frame(width: 3, height: 32).offset(x: half - 1.5)
             }
             .frame(maxHeight: .infinity)
-            .animation(Theme.motion(reduceMotion: LaunchArguments.reduceMotion(system: systemReduceMotion)), value: bar)
         }
         .overlay(alignment: .bottom) {
             HStack {
-                Text(leftEnd).opacity((bar?.direction ?? 0) < 0 ? 1 : 0.6)
+                Text(leftEnd).fontWeight((bar?.direction ?? 0) < 0 ? .semibold : .regular).opacity((bar?.direction ?? 0) < 0 ? 1 : 0.6)
                 Spacer()
-                Text(rightEnd).opacity((bar?.direction ?? 0) > 0 ? 1 : 0.6)
+                Text(rightEnd).fontWeight((bar?.direction ?? 0) > 0 ? .semibold : .regular).opacity((bar?.direction ?? 0) > 0 ? 1 : 0.6)
             }
-            .font(.caption2).foregroundStyle(Theme.textSecondary)
+            .font(.caption).foregroundStyle(Theme.textSecondary)
             .accessibilityHidden(true)
         }
         .accessibilityElement(children: .ignore)
@@ -444,6 +452,7 @@ private struct TrialOutcomesCard: View {
                             Text(row.outcome).foregroundStyle(Theme.textPrimary)
                         }
                         .font(.callout)
+                        .contentTransition(.opacity)
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel(row.accessibilityLabel)
                     }
