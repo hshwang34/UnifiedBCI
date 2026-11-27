@@ -30,7 +30,7 @@ FLOWS=(
   "live-synthetic|240|live-preview live-recording live-recorded|-BCIExploreExampleAt {w}/syn.bciproj -BCIConnectSource synthetic -BCILiveRecordSeconds 6"
   "protocol-run|420|run-start-sheet run-instructions run-cue run-summary run-evaluated|-BCIExploreExampleAt {w}/run.bciproj -BCIConnectSource synthetic -BCIStartRun 2"
   "live-test|600|live-setup live-instructions live-feedback live-run-done live-card|-BCIExploreExampleAt {w}/livetest.bciproj -BCIConnectSource synthetic -BCILiveTest 2"
-  "guide|180|guide guide-showme|-BCIExploreExampleAt {w}/guide.bciproj -BCIGuideGoal train -BCIGuideShowMe YES"
+  "guide|75|guide guide-showme|-BCIExploreExampleAt {w}/guide.bciproj -BCIGuideGoal train -BCIGuideShowMe YES"
   "guide-picker|120|guide-picker|-BCIExploreExampleAt {w}/picker.bciproj -BCIGuidePicker YES"
   "intro|120|intro-0-light intro-4-dark montage-top-light|-BCIOffscreenSnapshotDir {s}"
   "agent-card|60|welcome|-BCIShowAgentCard YES"
@@ -46,7 +46,7 @@ for row in "${FLOWS[@]}"; do
   crash_mark="$WORK/$name.mark"; touch "$crash_mark"
   start=$(date +%s)
   # shellcheck disable=SC2086
-  "$APP" $args -BCISnapshotDir "$snaps" -BCIQuitWhenDone YES >"$snaps/app.log" 2>&1 &
+  "$APP" $args ${EXTRA_ARGS:-} -BCISnapshotDir "$snaps" -BCIQuitWhenDone YES >"$snaps/app.log" 2>&1 &
   pid=$!
   hung=0
   while kill -0 "$pid" 2>/dev/null; do

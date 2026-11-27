@@ -398,7 +398,13 @@ enum LaunchArguments {
             if defaults.bool(forKey: "BCIGuideShowMe"), let step = session.guideProgress?.current?.step {
                 session.showGuideTarget(step)
                 await snap("guide-showme", settle: .milliseconds(1300))
-                await session.spotlight.awaitHighlight()
+                // Bounded: a run launched in the background can have its 2 s ring timer
+                // deferred by macOS for minutes (brief 009); the snapshot is already taken.
+                _ = await withTaskGroup(of: Void.self) { g in
+                    g.addTask { await session.spotlight.awaitHighlight() }
+                    g.addTask { try? await Task.sleep(for: .seconds(5)) }
+                    await g.next(); g.cancelAll()
+                }
             }
         }
         if let raw = defaults.string(forKey: "BCISection"), let section = SidebarSection(rawValue: raw) {
