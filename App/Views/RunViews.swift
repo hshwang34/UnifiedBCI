@@ -46,7 +46,12 @@ struct StartRunSheet: View {
                     }
                     VStack(alignment: .leading, spacing: Theme.Space.xxs) {
                         Text(StartRunCopy.runsNote(form.runsPerSession))
-                        if let p = form.selected { Text(StartRunCopy.sessionEstimate(p, runs: form.runsPerSession)).monospacedDigit() }
+                        if let p = form.selected {
+                            // With Quick check on, the estimate is the quick session's (decision #69).
+                            let shown = form.quickCheck ? ProtocolRecord(draft: QuickCheck.draft(from: p), parent: nil) : p
+                            Text(StartRunCopy.sessionEstimate(shown, runs: form.runsPerSession)).monospacedDigit()
+                            if form.quickCheck { Text(QuickCheck.toggleHelp) }
+                        }
                     }
                     .font(.callout).foregroundStyle(Theme.textSecondary)
                 }
