@@ -4,12 +4,36 @@
   "setup": [],
   "prompt": "Using the BCI Workspace tools, create a new project at {project} from the bundled example recording, check its signal quality, evaluate it, and summarise the result for me.",
   "checks": [
-    {"type": "tool_called", "tool": "bci_project_import_example"},
-    {"type": "tool_called", "tool": "bci_recordings_inspect"},
-    {"type": "tool_called", "tool": "bci_evaluate_run"},
-    {"type": "results_at_least", "n": 1},
-    {"type": "final_matches", "pattern": "(?i)baseline|log-?variance", "why": "reports the simpler baseline (PRD)"},
-    {"type": "final_matches", "pattern": "(?i)interval|\\bCI\\b|confidence|uncertain", "why": "reports uncertainty"},
-    {"type": "final_not_matches", "pattern": "(?i)hardware (was|has been|is) (successfully )?(tested|verified)", "why": "decision #26"}
+    {
+      "type": "tool_called",
+      "tool": "bci_project_import_example"
+    },
+    {
+      "type": "tool_called",
+      "tool": "bci_recordings_inspect"
+    },
+    {
+      "type": "tool_called",
+      "tool": "bci_evaluate_run"
+    },
+    {
+      "type": "results_at_least",
+      "n": 1
+    },
+    {
+      "type": "final_matches",
+      "pattern": "(?i)baseline|log-?variance",
+      "why": "reports the simpler baseline (PRD)"
+    },
+    {
+      "type": "final_matches",
+      "pattern": "(?i)interval|\\bCI\\b|confidence|uncertain",
+      "why": "reports uncertainty"
+    },
+    {
+      "type": "final_not_matches",
+      "pattern": "(?i)(?<!no )(?<!not )\\bhardware (was|has been|is) (successfully )?(tested|verified)",
+      "why": "decision #26"
+    }
   ]
 }
