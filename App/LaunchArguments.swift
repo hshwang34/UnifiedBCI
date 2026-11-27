@@ -517,6 +517,12 @@ enum LaunchArguments {
         let trials = UserDefaults.standard.integer(forKey: "BCIStartRun")
         if trials > 0 { return await protocolRun(session, trialsPerClass: trials, snap: snap) }
         guard recordSeconds > 0 else { return }
+        // Without -BCISnapshotDir the snap above doesn't wait: let the stream come up first,
+        // or Record is pressed before the preview runs and nothing is recorded (brief 009).
+        let streamDeadline = ContinuousClock.now + .seconds(15)
+        while model.state != .streaming || model.recordDisabledReason != nil, ContinuousClock.now < streamDeadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
         await model.perform(.record)
         guard model.isRecording else { return await snap("live-record-refused", .seconds(1)) }
         let shown = min(recordSeconds, 6)

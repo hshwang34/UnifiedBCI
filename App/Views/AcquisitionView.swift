@@ -39,8 +39,24 @@ struct AcquisitionView: View {
 
     private var source: ConnectSource { live.source ?? .demo }
 
+    /// Buttons beside the status when there is room, below it when the column is narrow, so
+    /// the text is never squeezed to a word per line (brief 009: that tall wrap also made the
+    /// split view's layout pass expensive enough to stall the app).
     private var header: some View {
-        HStack(alignment: .top, spacing: Theme.Space.l) {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: Theme.Space.l) {
+                headerText.frame(minWidth: 280, alignment: .leading)
+                Spacer(minLength: Theme.Space.m)
+                controls
+            }
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                headerText
+                controls
+            }
+        }
+    }
+
+    private var headerText: some View {
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
                 Text(LiveScreenModel.title(source)).font(Theme.Fonts.title).foregroundStyle(Theme.textPrimary)
                     .accessibilityAddTraits(.isHeader)
@@ -62,11 +78,9 @@ struct AcquisitionView: View {
                     }
                 } else {
                     Text(LiveScreenModel.mapLine(live.choice)).font(.callout).foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Spacer(minLength: Theme.Space.m)
-            controls
-        }
     }
 
     private var controls: some View {
