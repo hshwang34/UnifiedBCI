@@ -11,7 +11,6 @@ struct AcquisitionView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.cardGap) {
-                header
                 notices
                 if let runs = session.runs {
                     OperatorPanel(session: session, runs: runs, streaming: live.state == .streaming)
@@ -21,6 +20,14 @@ struct AcquisitionView: View {
             }
             .padding(Theme.Space.pageMargin)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        // Brief 009: the source, state and Record / Stop / Disconnect are pinned above the
+        // scrolling cards, so the controls can never scroll out of reach mid-recording.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            header
+                .padding(.horizontal, Theme.Space.pageMargin)
+                .padding(.top, Theme.Space.l)
+                .padding(.bottom, Theme.Space.m)
         }
         .softScrollEdge(.top)
         .sheet(item: Binding(get: { session.startRunForm.map(FormBox.init) }, set: { session.startRunForm = $0?.form })) { box in

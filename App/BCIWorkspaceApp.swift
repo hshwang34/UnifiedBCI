@@ -22,6 +22,10 @@ struct BCIWorkspaceApp: App {
         .windowBackgroundDragBehavior(.enabled)
         .windowResizability(.contentSize)
         .defaultPosition(.center)
+        // Brief 009: never restored from saved state. A launch after a force-quit (or after
+        // the Welcome window was closed) otherwise came up with no window at all; decision #7
+        // says the Welcome window is what a launch shows.
+        .restorationBehavior(.disabled)
         .keyboardShortcut("0", modifiers: [.command, .shift])
         .commands { WorkspaceCommands(workspace: appDelegate.workspace) }
 
@@ -65,6 +69,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     init(workspace: Workspace) {
         self.workspace = workspace
+        // Brief 009 / decision #7: a launch shows the Welcome window and nothing else. macOS's
+        // saved window state (written after a crash or force-quit) made later launches come up
+        // with no window at all, so it is ignored. Registration domain: a user can still override.
+        UserDefaults.standard.register(defaults: ["ApplePersistenceIgnoreState": true])
         super.init()
     }
 
