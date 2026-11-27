@@ -520,6 +520,7 @@ enum LaunchArguments {
         if model.declaredMap != nil { model.confirmMap() } else { model.recordWithoutPositions() }
         await model.perform(.startPreview)               // the sheet hands over to the screen
         await snap("live-preview", .seconds(12))         // the 10 s window is full
+        if UserDefaults.standard.bool(forKey: "BCILayoutDump") { dumpLayout(session) }
         let liveTrials = UserDefaults.standard.integer(forKey: "BCILiveTest")
         if liveTrials > 0 { return await liveTest(session, trialsPerClass: liveTrials, snap: snap) }
         let trials = UserDefaults.standard.integer(forKey: "BCIStartRun")
@@ -680,6 +681,23 @@ enum LaunchArguments {
             await snap("live-result", .seconds(2.5))
             window.setFrame(frame, display: true)
         }
+    }
+
+    /// Debug `-BCILayoutDump YES` (brief 009): the project window's geometry, to the
+    /// diagnostics log: window, content view, and every split view and its items.
+    private static func dumpLayout(_ session: ProjectSession) {
+        guard let window = NSApp.windows.first(where: { $0.title == session.name }), let content = window.contentView else { return }
+        func r(_ f: NSRect) -> String { "\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height))" }
+        AppLog.info(.ui, "layout_window", ["frame": r(window.frame), "contentLayout": r(window.contentLayoutRect),
+                                            "contentView": r(content.frame), "fitting": "\(Int(content.fittingSize.width))x\(Int(content.fittingSize.height))"])
+        func walk(_ v: NSView, depth: Int) {
+            if let split = v as? NSSplitView {
+                AppLog.info(.ui, "layout_split", ["depth": "\(depth)", "frame": r(split.frame), "vertical": "\(split.isVertical)",
+                                                   "items": split.arrangedSubviews.map { "\(r($0.frame)) fit=\(Int($0.fittingSize.height))" }.joined(separator: " | ")])
+            }
+            for sub in v.subviews where depth < 14 { walk(sub, depth: depth + 1) }
+        }
+        walk(content, depth: 0)
     }
 
     /// Start run…'s form for a new version of `draft` (created here), seed fixed.

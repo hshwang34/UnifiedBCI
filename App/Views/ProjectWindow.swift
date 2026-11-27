@@ -171,7 +171,7 @@ struct ProjectWindow: View {
 
     private var subtitle: String {
         if showsLive, let live = session.live, let source = live.source {
-            return AcquisitionStateModel.statusLine(live.state, source: source, recording: live.isRecording, reconnects: live.snapshot.health.reconnects)
+            return AcquisitionStateModel.statusLine(live.state, source: source, recording: live.isRecording, reconnects: live.reconnects)
         }
         switch session.section {
         case .recordings: return session.selectedRecording.map { RecordingDetailModel.title(for: $0.manifest) } ?? "Recordings"
@@ -250,7 +250,7 @@ private struct ProjectSidebar: View {
     /// The session state in words while a board is connected (brief 004), else replay mode.
     private var statusLines: (symbol: String, first: String, second: String, accessibility: String, live: Bool, recording: Bool) {
         if let live = session.live, let source = live.source, live.session != nil, live.state != .disconnected {
-            let reconnects = live.snapshot.health.reconnects
+            let reconnects = live.reconnects
             let lines = AcquisitionStateModel.statusLines(live.state, source: source, recording: live.isRecording, reconnects: reconnects)
             return (AcquisitionStateModel.symbol(live.state, recording: live.isRecording), lines.state, lines.source,
                     AcquisitionStateModel.statusLine(live.state, source: source, recording: live.isRecording, reconnects: reconnects),
@@ -367,7 +367,7 @@ private struct LiveRow: View {
 
     var body: some View {
         let lines = AcquisitionStateModel.statusLines(live.state, source: source, recording: live.isRecording,
-                                                      reconnects: live.snapshot.health.reconnects)
+                                                      reconnects: live.reconnects)
         HStack(spacing: Theme.Space.s) {
             Image(systemName: AcquisitionStateModel.symbol(live.state, recording: live.isRecording))
                 .foregroundStyle(live.isRecording ? Theme.danger : Theme.accentInk)
@@ -857,12 +857,16 @@ enum ParametersCopy {
 /// saved recording, so the column says so instead of collapsing.
 private struct LiveInspectorNote: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Space.s) {
-            Text(LiveScreenModel.inspectorNoteTitle).font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
-            Text(LiveScreenModel.inspectorNote).font(.callout).foregroundStyle(Theme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+        // In a scroll view: the inspector's height must never depend on its text. Measured at a
+        // narrow width, wrapping text asked for ~1400 pt; the split view grew past the window and
+        // clipped the top of every column (brief 009).
+        ScrollView {
+            VStack(alignment: .leading, spacing: Theme.Space.s) {
+                Text(LiveScreenModel.inspectorNoteTitle).font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
+                Text(LiveScreenModel.inspectorNote).font(.callout).foregroundStyle(Theme.textSecondary)
+            }
+            .padding(Theme.Space.l)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding(Theme.Space.l)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

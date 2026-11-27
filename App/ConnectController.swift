@@ -14,6 +14,13 @@ final class ConnectController: Identifiable {
     private(set) var gonePort: SerialPort?
     private(set) var source: ConnectSource?
     private(set) var snapshot = AcquisitionSession.Snapshot()
+    /// Brief 009: the few fields the project window, sidebar and list show, stored apart from
+    /// `snapshot` and set only when they change. `snapshot` is replaced on every 200 ms poll;
+    /// reading it from the window root rebuilt the whole window (lists included) five times a
+    /// second while streaming. Leaf views (preview, health) may still read `snapshot`.
+    private(set) var state: AcquisitionSession.State = .disconnected
+    private(set) var reconnects = 0
+    private(set) var recordingIDNow: UUID?
     private(set) var hasStreamed = false
     /// When the current stream started streaming (nil while not streaming), for the guide.
     private(set) var streamingSince: Date?
@@ -63,7 +70,10 @@ final class ConnectController: Identifiable {
     @ObservationIgnored private let store: ProjectStore
     @ObservationIgnored private let projectDirectory: URL
     @ObservationIgnored private(set) var session: AcquisitionSession?
-    @ObservationIgnored private var poll: Task<Void, Never>?
+    /// The 200 ms status poll. A run-loop timer, not a sleeping Task: the Task loop was found
+    /// stuck as the main thread's "current task" after the stream started (brief 009), which
+    /// froze the UI at "Ready" and later crashed the app in Swift's executor checks.
+    @ObservationIgnored private var poll: Timer?
     @ObservationIgnored private var filling = false
     @ObservationIgnored private let scan: @Sendable () -> [SerialPort]
 
@@ -77,7 +87,6 @@ final class ConnectController: Identifiable {
 
     var sources: [ConnectSource] { ports.map(ConnectSource.serial) + [.synthetic, .demo] }
     var selected: ConnectSource? { sources.first { $0.id == selectedID } }
-    var state: AcquisitionSession.State { snapshot.state }
     var actions: [AcquisitionAction] {
         // Record belongs to the acquisition screen; the sheet stops at preview.
         screenActions.filter { $0 != .record && $0 != .stopRecording }
@@ -85,7 +94,7 @@ final class ConnectController: Identifiable {
     var screenActions: [AcquisitionAction] {
         AcquisitionStateModel.actions(state, recording: isRecording, afterStreaming: hasStreamed)
     }
-    var isRecording: Bool { snapshot.recordingID != nil }
+    var isRecording: Bool { recordingIDNow != nil }
     /// Read from the session's lock now, not the 200 ms poll: ⌘W right after Record must ask.
     var isRecordingNow: Bool { (session?.snapshot.recordingID != nil) || isRecording || isStartingRecording }
     /// Stopped but not yet finished (the writer is committing its last chunk).
@@ -160,7 +169,7 @@ final class ConnectController: Identifiable {
         // Closed while the board was opening: `close()` may have run before `s` existed
         // or while it prepared, so release it here too (disconnect is idempotent).
         if isClosed {
-            poll?.cancel()
+            poll?.invalidate()
             await s.disconnect()
             return
         }
@@ -189,7 +198,7 @@ final class ConnectController: Identifiable {
     /// Window close and quit come here through `ProjectSession.shutdown`.
     func close() async {
         isClosed = true
-        poll?.cancel()
+        poll?.invalidate()
         await session?.disconnect()
         sync()
         stopPreview()
@@ -255,14 +264,13 @@ final class ConnectController: Identifiable {
     }
 
     private func startPolling() {
-        poll?.cancel()
-        poll = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let self else { return }
-                self.sync()
-                try? await Task.sleep(for: .milliseconds(200))
-            }
+        poll?.invalidate()
+        sync()
+        let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.sync() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        poll = timer
     }
 
     private func sync() {
@@ -278,6 +286,9 @@ final class ConnectController: Identifiable {
                        ["from": ControlRouter.stateName(snapshot.state), "to": ControlRouter.stateName(next.state)])
         }
         snapshot = next
+        if state != next.state { state = next.state }
+        if reconnects != next.health.reconnects { reconnects = next.health.reconnects }
+        if recordingIDNow != next.recordingID { recordingIDNow = next.recordingID }
         if next.state == .streaming { hasStreamed = true }
         let beganStreaming = next.state == .streaming && streamingSince == nil
         if next.state != .streaming { streamingSince = nil } else if beganStreaming { streamingSince = Date() }
