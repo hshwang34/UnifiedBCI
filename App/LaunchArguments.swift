@@ -268,7 +268,11 @@ enum LaunchArguments {
         defer {
             // From a run-loop perform, not a main-queue block: `.terminateLater` spins a nested
             // run loop, and a busy (serial) main queue would starve the shutdown Task.
-            if defaults.bool(forKey: "BCIQuitWhenDone") { NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0) }
+            if defaults.bool(forKey: "BCIQuitWhenDone") {
+                // As ⌘Q does: an open sheet would make AppKit refuse to quit (brief 009).
+                workspace.dismissSheetsForQuit()
+                NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0.3)
+            }
         }
         if let dir = defaults.string(forKey: "BCIOffscreenSnapshotDir") {
             OffscreenSnapshots.run(into: URL(fileURLWithPath: dir, isDirectory: true))
@@ -400,13 +404,8 @@ enum LaunchArguments {
             if defaults.bool(forKey: "BCIGuideShowMe"), let step = session.guideProgress?.current?.step {
                 session.showGuideTarget(step)
                 await snap("guide-showme", settle: .milliseconds(1300))
-                // Bounded: a run launched in the background can have its 2 s ring timer
-                // deferred by macOS for minutes (brief 009); the snapshot is already taken.
-                _ = await withTaskGroup(of: Void.self) { g in
-                    g.addTask { await session.spotlight.awaitHighlight() }
-                    g.addTask { try? await Task.sleep(for: .seconds(5)) }
-                    await g.next(); g.cancelAll()
-                }
+                // No wait for the ring to end: the snapshot is taken, and in background Debug
+                // runs that wait never returned (the app itself stays responsive; brief 009).
             }
         }
         if let raw = defaults.string(forKey: "BCISection"), let section = SidebarSection(rawValue: raw) {

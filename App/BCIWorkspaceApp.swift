@@ -88,7 +88,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         agentControl.stop()
     }
 
+    /// Quit from the Dock, logout, shutdown or a script arrives as the quit Apple Event, which
+    /// macOS refuses while a sheet is open (brief 009: "Show me" can leave the Connect sheet
+    /// up). It takes the same path as ⌘Q: close sheets, then quit.
+    @objc func handleQuitEvent(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
+        workspace.dismissSheetsForQuit()
+        NSApp.terminate(nil)
+    }
+
     func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleQuitEvent(_:withReply:)),
+                                                     forEventClass: AEEventClass(kCoreEventClass), andEventID: AEEventID(kAEQuitApplication))
         // Brief 009: opens this launch's diagnostics file (and prunes old ones) first.
         AppLog.notice(.app, "launch", ["version": ControlServer.appVersion, "pid": String(getpid()),
                                        "agentControl": ControlSettings.standard.enabled ? "on" : "off"])
