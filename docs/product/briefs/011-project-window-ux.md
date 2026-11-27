@@ -1,6 +1,6 @@
 # 011 — Project window UX pass
 
-**Status:** building · **Owner:** lead (PM delegated design calls, 2026-11-27) · **PR:** — · **Updated:** 2026-11-27
+**Status:** in review · **Owner:** lead (PM delegated design calls, 2026-11-27) · **PR:** — · **Updated:** 2026-11-27
 
 ## Problem
 The PM is unhappy with the project window. A designer's review of every screen (verify run
