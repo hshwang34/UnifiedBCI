@@ -60,6 +60,8 @@ import Foundation
 ///                                              class, 3 runs, the minimum Evaluate accepts) on that
 ///                                              stream; snapshots "run-instructions", "run-cue" (the
 ///                                              operator panel and the participant window mid-run),
+///                                              "run-rest", "run-paused" (paused in a rest),
+///                                              "run-fixation", participant-<card>.png (offscreen),
 ///                                              "run-summary", then evaluates the recording:
 ///                                              "run-evaluated"
 ///     -BCILiveTest N                           with -BCIConnectSource: a live run of N trials per class
@@ -572,6 +574,10 @@ enum LaunchArguments {
         await snap("run-start-sheet", .seconds(1))
         session.startRuns(form)
         guard let runs = session.runs else { return await snap("run-refused", .seconds(1)) }
+        if let dir = UserDefaults.standard.string(forKey: "BCISnapshotDir") {
+            OffscreenSnapshots.participantCards(runs.setup.protocolRecord, runsPerSession: runs.setup.runsPerSession,
+                                                into: URL(fileURLWithPath: dir, isDirectory: true))
+        }
         for run in 0..<runs.setup.runsPerSession {
             if run > 0 { runs.startNextRun() }
             if run == 0 { await snap("run-instructions", .seconds(1.5)) } else { try? await Task.sleep(for: .seconds(1)) }
@@ -579,6 +585,17 @@ enum LaunchArguments {
             if run == 0 {
                 while runs.status?.phase != .cue, runs.isRunActive { try? await Task.sleep(for: .milliseconds(20)) }
                 await snap("run-cue", .milliseconds(600))
+                // Brief 010: the rest, an operator pause (in the rest, so no trial is aborted)
+                // with its card, then the next fixation.
+                while runs.status?.phase != .rest, runs.isRunActive { try? await Task.sleep(for: .milliseconds(10)) }
+                await snap("run-rest", .milliseconds(100))
+                if runs.status?.phase == .rest {
+                    runs.pause()
+                    await snap("run-paused", .seconds(1.2))
+                    runs.resume()
+                }
+                while runs.status?.phase != .fixation, runs.isRunActive { try? await Task.sleep(for: .milliseconds(10)) }
+                await snap("run-fixation", .milliseconds(300))
             }
             await runs.awaitRun()
             if run == 0 { await snap("run-summary", .seconds(3)) }
