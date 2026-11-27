@@ -416,6 +416,7 @@ struct TimingSummaryView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.top, Theme.Space.s)
+            .frame(maxWidth: .infinity, alignment: .leading)
         } label: {
             Label(model.heading(runIndex: runIndex), systemImage: "timer").font(.headline).foregroundStyle(Theme.textPrimary)
         }

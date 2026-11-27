@@ -322,15 +322,14 @@ struct LiveTestOperatorView: View {
 /// The current state in words, the bar as the participant sees it, and the raw prediction.
 private struct FeedbackStateCard: View {
     let model: LiveFeedbackStateModel
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.l) {
             HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
+                // No transitions here: the card is rebuilt 20 times a second, and a cross-fade
+                // would show two states (and two confidences) at once.
                 Image(systemName: symbol).foregroundStyle(tint).font(.title3).accessibilityHidden(true)
-                    .contentTransition(.symbolEffect(.replace))
                 Text(model.state).font(Theme.Fonts.heroLabel).foregroundStyle(Theme.textPrimary)
-                    .contentTransition(.opacity)
                 if let d = model.detail { Text(d).font(Theme.Fonts.monoCaption).foregroundStyle(Theme.textSecondary).lineLimit(1) }
                 Spacer(minLength: 0)
                 Text(LiveTestCopy.feedbackHeader).font(.caption).foregroundStyle(Theme.textSecondary)
@@ -344,7 +343,6 @@ private struct FeedbackStateCard: View {
         }
         .padding(Theme.Space.heroPadding)
         .glassSurface(cornerRadius: Theme.Radius.hero, style: .hero)
-        .animation(Theme.motion(reduceMotion: LaunchArguments.reduceMotion(system: systemReduceMotion)), value: model.state)
     }
 
     private var symbol: String {
@@ -368,14 +366,12 @@ private struct FeedbackStateCard: View {
 
 /// The participant's bar, mirrored for the operator: the same capsule track, centre line and
 /// bar growing toward its class's side. Like the participant's bar it jumps to each new length
-/// and never interpolates (decision #59): what the operator sees is what was drawn. Only its
-/// appearing and hiding fade (none under Reduce Motion).
+/// and never interpolates or fades (decision #59): what the operator sees is what was drawn.
 struct FeedbackGauge: View {
     let bar: LiveFeedbackStateModel.Bar?
     let side: String?
     let leftEnd: String
     let rightEnd: String
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
@@ -392,8 +388,6 @@ struct FeedbackGauge: View {
                     .frame(width: width, height: h)
                     .offset(x: (bar?.direction ?? 1) < 0 ? half - width : half)
                     .opacity(bar == nil ? 0 : 1)
-                    .animation(nil, value: bar)
-                    .animation(Theme.motion(reduceMotion: LaunchArguments.reduceMotion(system: systemReduceMotion)), value: bar == nil)
                 Capsule().fill(Theme.textPrimary).frame(width: 3, height: 32).offset(x: half - 1.5)
             }
             .frame(maxHeight: .infinity)

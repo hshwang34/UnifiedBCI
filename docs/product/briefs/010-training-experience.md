@@ -160,8 +160,10 @@ None: the PM delegated the design calls to the lead (2026-11-27); they are decis
 - **Key caps don't add shortcuts.** The keys stay in `RunController`'s local event monitor
   (decision #36's focus rules); `KeyCap`/`ShortcutLabel` (App/Design/KeyCap.swift) only show
   them, and each button's help and accessibility hint name the key.
-- **Operator feedback gauge** no longer animates its length (it mirrors the participant's
-  bar exactly); only its appearing and hiding fade.
+- **Operator feedback gauge** no longer animates at all (it mirrors the participant's bar
+  exactly). The feedback state card has no transitions either: it is rebuilt 20 times a
+  second, and the first snapshot pass showed a cross-fade drawing two states and two
+  confidences at once.
 - **Trial progress** on the operator panel is trials started ÷ trials; between trials (no trial
   index) it falls back to planned elapsed time, so the bar never jumps back.
 
