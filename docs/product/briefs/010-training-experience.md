@@ -1,6 +1,6 @@
 # 010 — Training experience (participant window, operator panel, Start run…, Live Test)
 
-**Status:** in review · **Owner:** PM · **PR:** — · **Updated:** 2026-11-27
+**Status:** in review · **Owner:** PM · **PR:** #60 · **Updated:** 2026-11-27
 
 ## Problem
 The PM ran a cued motor-imagery session and called the experience "awful UX". On the
