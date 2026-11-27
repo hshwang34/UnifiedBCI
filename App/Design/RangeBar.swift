@@ -57,11 +57,11 @@ struct RangeBar: View {
                     Rectangle().fill(Theme.textSecondary)
                         .frame(width: 2, height: Self.marker + 8)
                         .position(x: clamp(rx, width: w, half: 1), y: barY)
-                    Text("\(Fmt.fixed(reference.value)) \(reference.label)")
-                        .font(.caption)
-                        .foregroundStyle(Theme.textSecondary)
+                    Text("\(reference.label) \(Fmt.fixed(reference.value))")
+                        .font(.callout.weight(.medium)).monospacedDigit()
+                        .foregroundStyle(Theme.textPrimary)
                         .fixedSize()
-                        .position(x: clamp(rx, width: w, half: 70), y: barY + 40)
+                        .position(x: clamp(rx, width: w, half: 90), y: barY + 42)
                 }
                 // Point estimate: accentFill marker with a surface1 ring, value above.
                 Circle().fill(Theme.accentFill)
@@ -69,19 +69,19 @@ struct RangeBar: View {
                     .frame(width: Self.marker, height: Self.marker)
                     .position(x: clamp(x(value), width: w, half: Self.marker / 2), y: barY)
                 Text(Fmt.fixed(value))
-                    .font(Theme.Fonts.mono.weight(.semibold))
+                    .font(.callout.weight(.semibold)).monospacedDigit()
                     .foregroundStyle(Theme.textPrimary)
                     .fixedSize()
                     .position(x: clamp(x(value), width: w, half: 18), y: barY - 20)
                 // Scale ticks.
                 ForEach([0.0, 0.5, 1.0], id: \.self) { t in
                     Text(t == 0.5 ? "0.5" : "\(Int(t))")
-                        .font(Theme.Fonts.monoCaption)
+                        .font(.caption).monospacedDigit()
                         .foregroundStyle(Theme.textSecondary)
                         .fixedSize()
                         .position(x: clamp(x(t), width: w, half: 10), y: barY + 40)
                         // A tick under the reference caption gives way to it.
-                        .opacity(reference.map { abs(x($0.value) - x(t)) < 80 } == true ? 0 : 1)
+                        .opacity(reference.map { abs(x($0.value) - x(t)) < 100 } == true ? 0 : 1)
                 }
             }
         }
@@ -94,7 +94,7 @@ struct RangeBar: View {
 
     private func edgeLabel(_ text: String, at x: CGFloat, y: CGFloat, width: CGFloat) -> some View {
         Text(text)
-            .font(Theme.Fonts.mono)
+            .font(.callout).monospacedDigit()
             .foregroundStyle(Theme.textPrimary)
             .fixedSize()
             .position(x: clamp(x, width: width, half: 18), y: y)

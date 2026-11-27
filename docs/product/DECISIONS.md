@@ -187,3 +187,27 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #61 · 2026-11-27 · The operator panel leads with a state badge, run dots with a trial progress bar, and the trial drawn to scale with the current phase highlighted; every run button shows its key (Space, esc, ⌘.). In Live Test, the run controls sit directly under the feedback card.
 *Why:* lead decision, PM delegated design calls (2026-11-27). The next action and its key must be obvious at a glance, especially on one display where the keyboard is the only control. Brief 010.
+
+#62 · 2026-11-27 · A result's headline is an interval with its point estimate inside it. When balanced accuracy has no run-level interval, the screen says "point estimate, no interval" beside the number and shows the trial-level accuracy interval as the larger figure; the larger-class reference is always readable beside it. The live-run card follows the same rule.
+*Why:* lead decision, PM delegated design calls (2026-11-27). Honesty first: a bare number reads as more certain than it is (PRD scientific rules). Brief 011.
+
+#63 · 2026-11-27 · Primary text uses researcher words: class display names, recipe names, "Run 1" for an unnamed run, "Live path matches offline" for replay parity. Exact stored values (labels, recipe ids, run and session ids, hashes, hop windows, chunkings) stay one click away in a Details disclosure or a tooltip. Monospace is used only for those stored identifiers.
+*Why:* lead decision, PM delegated design calls (2026-11-27). The users are researchers, not ML engineers; reproducibility still needs the exact values. Brief 011.
+
+#64 · 2026-11-27 · The sidebar's "Pipelines" section is called "Models" (frozen models, then the recipes they come from). Release-planning wording ("phase 1") never appears in the app.
+*Why:* lead decision, PM delegated design calls (2026-11-27). Brief 011.
+
+#65 · 2026-11-27 · The toolbar is contextual: Recordings offers Evaluate and Parameters…; a selected result offers Freeze for live use… and Export…; other sections and the live view offer neither. Every disabled control says why.
+*Why:* lead decision, PM delegated design calls (2026-11-27). Brief 011.
+
+#66 · 2026-11-27 · Each caveat appears once per screen: the recording's dataset or synthetic warning is the chip at the top of the page (not repeated in the inspector), and a reproduction is named by the result's own chip, not also by a toast.
+*Why:* lead decision, PM delegated design calls (2026-11-27). Repetition teaches people to skip warnings. Brief 011.
+
+#67 · 2026-11-27 · Dates on screen are localized and relative ("Today, 7:58 AM"). Stored names, exports and default model names keep the fixed `2026-11-27 07:58` form.
+*Why:* lead decision, PM delegated design calls (2026-11-27). Brief 011.
+
+#68 · 2026-11-27 · The Evaluate inspector starts hidden when the project window is narrower than 1200 pt, so the tables keep their width; the person can always show it again. It never collapses while the live view shows (brief 009 crash).
+*Why:* lead decision, PM delegated design calls (2026-11-27). Brief 011.
+
+#69 · 2026-11-27 · Start Run offers a "Quick check" session (3 runs × 8 trials per class, about 3 minutes) for confirming that the cap, signal, cue window and recording work end to end. Its results are labelled "setup check, not a performance estimate". The full protocol stays the default for real measurements, and stopping early by looking at the score is not offered.
+*Why:* PM decision (2026-11-27). Checking the setup shouldn't cost a 20-minute session, but a few trials can't separate skill from chance (a 4/5 score has a 95 % CI of about 0.28–0.99), and stopping when the score looks good inflates it.

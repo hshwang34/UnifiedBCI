@@ -64,6 +64,18 @@ struct QualityModel: Equatable {
         let spectra: [Spectrum]
         /// The chart's upper frequency bound (brief: 1 Hz to Nyquist).
         var nyquistHz: Double = 0
+        /// "All 16 channels: Large deflections" when every flagged channel carries the same
+        /// flags (brief 011): said once, and the rows carry a marker only.
+        var sharedFlags: String? { QualityModel.sharedFlagLine(rows.map { $0.flags.map(\.title) }) }
+    }
+
+    /// One line for flags every flagged channel shares; nil when fewer than two channels are
+    /// flagged or their flags differ. Counts only, never a verdict (decision #22).
+    static func sharedFlagLine(_ flags: [[String]]) -> String? {
+        let flagged = flags.filter { !$0.isEmpty }
+        guard flagged.count >= 2, let first = flagged.first, flagged.allSatisfy({ $0 == first }) else { return nil }
+        let who = flagged.count == flags.count ? "All \(flags.count) channels" : "\(flagged.count) of \(flags.count) channels"
+        return "\(who): \(first.joined(separator: ", "))"
     }
 
     struct LegendRow: Identifiable, Equatable {

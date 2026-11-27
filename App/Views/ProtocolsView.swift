@@ -94,7 +94,11 @@ struct ProtocolDetailView: View {
                         Text(model.instructions).font(.body).foregroundStyle(Theme.textPrimary)
                             .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                     }
-                    card("Identity") { fields(model.identity) }
+                    // Decision #63: the stored hash and id, one click away.
+                    DisclosureGroup("Details") { fields(model.identity).padding(.top, Theme.Space.s) }
+                        .font(.callout)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .card()
                     Text(ProtocolCopy.timingCaveat).font(.caption).foregroundStyle(Theme.textSecondary)
                 }
                 .padding(Theme.Space.pageMargin)
@@ -167,11 +171,11 @@ struct ProtocolDetailView: View {
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(c.displayName).foregroundStyle(Theme.textPrimary)
-                        Text("\(c.cue) · stored as ").foregroundStyle(Theme.textSecondary)
-                            + Text(c.label).font(Theme.Fonts.monoCaption).foregroundStyle(Theme.textSecondary)
+                        Text(c.cue).foregroundStyle(Theme.textSecondary)
                     }
                     .font(.callout)
                 }
+                .help("Stored label: \(c.label)")
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(c.displayName): \(c.cue), stored as \(c.label)")
             }
@@ -197,45 +201,56 @@ struct ProtocolEditorSheet: View {
             .accessibilityElement(children: .combine)
             Form {
                 Section {
-                    TextField("Name", text: $editor.name)
+                    TextField("Name", text: $editor.name).fieldIssue(editor.issues(for: .name))
+                    issueRows(.name)
                 }
                 ForEach(editor.classes.indices, id: \.self) { i in
                     Section("Class \(i + 1)") {
-                        TextField("Display name", text: $editor.classes[i].displayName)
+                        TextField("Display name", text: $editor.classes[i].displayName).fieldIssue(editor.issues(for: .displayName(i)))
+                        issueRows(.displayName(i))
                         LabeledContent("Stored label") {
                             TextField("Stored label", text: $editor.classes[i].label)
                                 .labelsHidden().multilineTextAlignment(.trailing).font(Theme.Fonts.mono)
+                                .frame(maxWidth: 220)
+                                .fieldIssue(editor.issues(for: .label(i)))
                         }
                         .help("Written on every cue event and used by the evaluation: a–z, 0–9 and _.")
+                        issueRows(.label(i))
                         Picker("Cue", selection: $editor.classes[i].cue) {
                             ForEach(CueSymbol.allCases, id: \.self) { s in Label(s.title, systemImage: s.symbol).tag(s) }
                         }
                     }
                 }
                 Section {
-                    seconds("Fixation", $editor.fixation)
-                    seconds("Cue", $editor.cue)
-                    seconds("Shortest rest", $editor.restMin)
-                    seconds("Longest rest", $editor.restMax)
+                    seconds("Fixation", $editor.fixation, .fixation)
+                    seconds("Cue", $editor.cue, .cue)
+                    seconds("Shortest rest", $editor.restMin, .restMin)
+                    seconds("Longest rest", $editor.restMax, .restMax)
                 } header: {
                     Text("Timing")
                 } footer: {
-                    Text("In seconds, to the millisecond. Rest is drawn per trial between the two.").foregroundStyle(Theme.textSecondary)
+                    Text("To the millisecond. Rest is drawn per trial between the shortest and longest.").foregroundStyle(Theme.textSecondary)
                 }
                 Section("Trials") {
-                    count("Trials per class", $editor.trialsPerClass, ProtocolRecord.trialsPerClassRange)
-                    count("Runs per session", $editor.runsPerSession, 1...ProtocolRecord.maxRunsPerSession)
+                    count("Trials per class", $editor.trialsPerClass, ProtocolRecord.trialsPerClassRange, unit: "trials", .trialsPerClass)
+                    count("Runs per session", $editor.runsPerSession, 1...ProtocolRecord.maxRunsPerSession, unit: "runs", .runsPerSession)
                 }
                 Section("Participant instructions") {
                     TextEditor(text: $editor.instructions)
                         .font(.body)
                         .frame(minHeight: 72)
                         .accessibilityLabel("Participant instructions")
+                    issueRows(.instructions)
                 }
             }
             .formStyle(.grouped)
-            issues
-            HStack {
+            footerIssues
+            HStack(spacing: Theme.Space.m) {
+                // Neutral status ("Nothing changed from v1"): not an error, just why Save waits.
+                if let status = editor.issues.first(where: { $0.kind == .status }) {
+                    Label(status.text, systemImage: "equal.circle").font(.callout).foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Spacer()
                 Button("Cancel", role: .cancel, action: cancel).keyboardShortcut(.cancelAction)
                     .disabled(editor.isSaving)
@@ -243,49 +258,82 @@ struct ProtocolEditorSheet: View {
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
                     .disabled(!editor.canSave)
+                    .help(editor.canSave ? "" : editor.issues.first { $0.kind != .warning }?.text ?? "")
             }
             .padding(Theme.Space.xl)
         }
         .frame(width: 560, height: 720)
     }
 
-    @ViewBuilder private var issues: some View {
-        let list = editor.issues
-        if !list.isEmpty || editor.saveError != nil {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.Space.s) {
-                    if let error = editor.saveError { StatusChip(kind: .danger, text: error) }
-                    ForEach(list) { StatusChip(kind: $0.kind == .error ? .danger : .warning, text: $0.text) }
-                }
-                .padding(.horizontal, Theme.Space.xl)
-                .padding(.top, Theme.Space.s)
+    /// The messages for one field, right under it (brief 011): red for errors, warning colour
+    /// for warnings.
+    @ViewBuilder private func issueRows(_ field: ProtocolEditor.Field) -> some View {
+        ForEach(editor.issues(for: field)) { issue in
+            Label {
+                Text(issue.text).fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: issue.kind == .error ? "exclamationmark.circle.fill" : "exclamationmark.triangle.fill")
             }
-            .frame(maxHeight: 150)
-            .fixedSize(horizontal: false, vertical: true)
+            .font(.callout)
+            .foregroundStyle(issue.kind == .error ? Theme.danger : Theme.warning)
+            .accessibilityLabel("\(issue.kind == .error ? "Error" : "Warning"): \(issue.text)")
         }
     }
 
-    private func seconds(_ title: String, _ value: Binding<String>) -> some View {
+    /// Only what belongs to no field: a save failure, or a rule about the whole protocol.
+    @ViewBuilder private var footerIssues: some View {
+        let list = editor.issues.filter { $0.field == nil && $0.kind != .status }
+        if !list.isEmpty || editor.saveError != nil {
+            VStack(alignment: .leading, spacing: Theme.Space.s) {
+                if let error = editor.saveError { StatusChip(kind: .danger, text: error) }
+                ForEach(list) { StatusChip(kind: $0.kind == .error ? .danger : .warning, text: $0.text) }
+            }
+            .padding(.horizontal, Theme.Space.xl)
+            .padding(.top, Theme.Space.s)
+        }
+    }
+
+    @ViewBuilder private func seconds(_ title: String, _ value: Binding<String>, _ field: ProtocolEditor.Field) -> some View {
         LabeledContent(title) {
             HStack(spacing: Theme.Space.xs) {
+                Spacer(minLength: 0)
                 TextField(title, text: value)
                     .labelsHidden().multilineTextAlignment(.trailing).monospacedDigit()
+                    .frame(width: 80)
+                    .fieldIssue(editor.issues(for: field))
                     .accessibilityHint("Seconds, up to 3 decimal places")
-                Text("s").foregroundStyle(Theme.textSecondary).accessibilityHidden(true)
+                Text("s").foregroundStyle(Theme.textSecondary).frame(width: 40, alignment: .leading).accessibilityHidden(true)
             }
         }
+        issueRows(field)
     }
 
     /// A whole-number field: typed text (an invalid entry stays visible and is named under
     /// the form) with a stepper that works from the last valid value.
-    private func count(_ title: String, _ text: Binding<String>, _ range: ClosedRange<Int>) -> some View {
+    @ViewBuilder private func count(_ title: String, _ text: Binding<String>, _ range: ClosedRange<Int>, unit: String, _ field: ProtocolEditor.Field) -> some View {
         let number = Binding<Int>(get: { Int(text.wrappedValue.trimmingCharacters(in: .whitespaces)) ?? range.lowerBound },
                                   set: { text.wrappedValue = String($0) })
-        return LabeledContent(title) {
-            HStack(spacing: Theme.Space.s) {
+        LabeledContent(title) {
+            HStack(spacing: Theme.Space.xs) {
+                Spacer(minLength: 0)
                 TextField(title, text: text)
-                    .labelsHidden().multilineTextAlignment(.trailing).monospacedDigit().frame(width: 64)
+                    .labelsHidden().multilineTextAlignment(.trailing).monospacedDigit().frame(width: 80)
+                    .fieldIssue(editor.issues(for: field))
+                Text(unit).foregroundStyle(Theme.textSecondary).frame(width: 40, alignment: .leading).accessibilityHidden(true)
                 Stepper(title, value: number, in: range).labelsHidden()
+            }
+        }
+        issueRows(field)
+    }
+}
+
+private extension View {
+    /// A red outline on a field with an error (warnings keep the plain field).
+    func fieldIssue(_ issues: [ProtocolEditor.Issue]) -> some View {
+        overlay {
+            if issues.contains(where: { $0.kind == .error }) {
+                RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(Theme.danger, lineWidth: 1.5).padding(-2)
+                    .allowsHitTesting(false)
             }
         }
     }

@@ -921,6 +921,16 @@ final class ProjectSession: Identifiable {
     }
 
     /// The protocol's cue length for a recording its run plans name, else nil.
+    /// A class label's name for primary text (decision #63): the recording's protocol
+    /// display name when it has one, else `ClassDisplay.name` ("Left-fist cue").
+    func className(recording: UUID?) -> (String) -> String {
+        let classes = recording.flatMap { recordingProtocols[$0]?.classes } ?? []
+        return { raw in
+            if let c = classes.first(where: { $0.label == raw }), !c.displayName.trimmingCharacters(in: .whitespaces).isEmpty { return c.displayName }
+            return ClassDisplay.name(raw)
+        }
+    }
+
     func cueLength(_ recording: UUID) -> Double? {
         recordingProtocols[recording].map { Double($0.timing.cueMs) / 1000 }
     }

@@ -8,7 +8,8 @@ struct ResultDetailView: View {
 
     var body: some View {
         switch Result(catching: { try ResultDetailModel(stored: stored, allResults: session.results, modelName: session.modelName,
-                                                                   isDemo: session.recordings.first { $0.id == stored.meta.recordingID }.map { RecordingDetailModel.isDemo($0.manifest) } ?? false) }) {
+                                                                   isDemo: session.recordings.first { $0.id == stored.meta.recordingID }.map { RecordingDetailModel.isDemo($0.manifest) } ?? false,
+                                                                   className: session.className(recording: stored.meta.recordingID)) }) {
         case .failure(let error):
             ContentUnavailableView("Result unreadable", systemImage: "exclamationmark.triangle", description: Text("\(error)"))
         case .success(let m):
@@ -58,27 +59,29 @@ struct ResultDetailView: View {
 
 // MARK: Hero
 
+/// Decision #62: the interval is the headline and the point estimate sits inside it. With no
+/// run-level interval, the number says it is a point estimate without one, and the trial-level
+/// accuracy interval is the larger figure. The larger-class reference is readable text.
 private struct ResultHero: View {
     let model: ResultDetailModel
     let session: ProjectSession
     let stored: StoredResult
-    @Environment(Workspace.self) private var workspace
-    @ScaledMetric(relativeTo: .largeTitle) private var displaySize: CGFloat = 64
+    @ScaledMetric(relativeTo: .largeTitle) private var displaySize: CGFloat = 56
+    @ScaledMetric(relativeTo: .largeTitle) private var secondarySize: CGFloat = 34
 
     var body: some View {
         let m = model
-        VStack(alignment: .leading, spacing: Theme.Space.m) {
+        VStack(alignment: .leading, spacing: Theme.Space.l) {
             figures(m)
-            HStack {
-                Text("\(m.referenceName) · stored \(Fmt.dateTime(stored.meta.createdAt))")
-                    .font(.caption).foregroundStyle(Theme.textSecondary)
+            HStack(alignment: .firstTextBaseline) {
+                Text("\(m.referenceName) · \(Fmt.relativeDateTime(stored.meta.createdAt))")
+                    .font(.callout).foregroundStyle(Theme.textSecondary)
                 Spacer()
+                // Also in the toolbar; here it is the guide's "Show me" target (brief 011).
                 Button(ReplayCopy.freezeButton) { session.showFreeze(stored) }
                     .buttonStyle(.bordered)
                     .help(ReplayCopy.freezeHelp)
                     .guideAnchor(.freezeButton)
-                Button { workspace.exportPanel(for: session) } label: { Label("Export…", systemImage: "square.and.arrow.up") }
-                    .buttonStyle(.bordered)
             }
         }
         .padding(Theme.Space.heroPadding)
@@ -89,40 +92,79 @@ private struct ResultHero: View {
 
     /// The numbers and their uncertainty; one VoiceOver element reading the whole statement.
     private func figures(_ m: ResultDetailModel) -> some View {
-        VStack(alignment: .leading, spacing: Theme.Space.m) {
-            VStack(alignment: .leading, spacing: Theme.Space.xxs) {
-                HStack(spacing: Theme.Space.xs) {
-                    Text("Balanced accuracy").font(Theme.Fonts.heroLabel).foregroundStyle(Theme.textSecondary)
-                    HelpButton(topic: .heldOutAccuracy)
-                }
-                Text(m.headline.balancedAccuracyValue).font(Theme.Fonts.display(size: displaySize)).foregroundStyle(Theme.textPrimary)
+        let h = m.headline
+        return VStack(alignment: .leading, spacing: Theme.Space.m) {
+            HStack(spacing: Theme.Space.xs) {
+                Text("Balanced accuracy").font(Theme.Fonts.heroLabel).foregroundStyle(Theme.textSecondary)
+                HelpButton(topic: .heldOutAccuracy)
             }
-            // The BA bar carries only the run-level interval; with one held-out run it is dashed.
-            RangeBar(value: m.balancedAccuracy, interval: m.balancedAccuracyInterval,
-                     label: m.balancedAccuracyBarLabel ?? "Balanced accuracy, no run-level interval")
-            Label {
-                Text(m.headline.balancedAccuracyInterval).font(.callout).foregroundStyle(Theme.textPrimary)
-            } icon: {
-                Image(systemName: m.balancedAccuracyInterval == nil ? "info.circle" : "chart.bar.xaxis")
-                    .foregroundStyle(Theme.textSecondary)
+            if let interval = h.intervalHeadline {
+                // The interval is the display text; the point estimate is inside it, on the bar.
+                VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                    Text(interval).font(Theme.Fonts.display(size: displaySize)).foregroundStyle(Theme.textPrimary)
+                    Text("\(h.intervalCaption) · \(h.pointEstimate)").font(.callout).foregroundStyle(Theme.textSecondary).monospacedDigit()
+                }
+                RangeBar(value: m.balancedAccuracy, interval: m.balancedAccuracyInterval,
+                         label: m.balancedAccuracyBarLabel ?? "Balanced accuracy interval")
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.m) {
+                    Text(h.balancedAccuracyValue).font(Theme.Fonts.display(size: secondarySize)).foregroundStyle(Theme.textPrimary)
+                    if let tag = h.noIntervalTag { PointEstimateTag(text: tag) }
+                }
+                if let reason = h.noIntervalReason {
+                    Text(reason).font(.callout).foregroundStyle(Theme.textPrimary).fixedSize(horizontal: false, vertical: true)
+                }
             }
             Divider().padding(.vertical, Theme.Space.xs)
-            Text(m.headline.accuracy).font(Theme.Fonts.accuracyLine).foregroundStyle(Theme.textPrimary)
-            RangeBar(value: m.accuracyValue, interval: m.accuracyInterval,
-                     reference: m.largerClass.map { .init(value: $0.rate, label: "larger-class rate") },
-                     label: "Accuracy interval")
-            if let larger = m.largerClass {
-                Label {
-                    Text(larger.sentence).font(.callout).foregroundStyle(Theme.textPrimary)
-                } icon: {
-                    Image(systemName: larger.symbol).foregroundStyle(Theme.textSecondary)
-                }
-            }
+            accuracy(m)
             Text(m.trialsLine).font(.callout).foregroundStyle(Theme.textSecondary).monospacedDigit()
         }
         .textSelection(.enabled)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(m.heroAccessibilityLabel)
+    }
+
+    /// The trial-level accuracy interval: the larger figure when balanced accuracy has no
+    /// interval, a supporting line when it has one.
+    @ViewBuilder private func accuracy(_ m: ResultDetailModel) -> some View {
+        let h = m.headline
+        let leads = h.intervalHeadline == nil
+        VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+            Text(h.accuracyCaption).font(leads ? Theme.Fonts.heroLabel : .headline).foregroundStyle(Theme.textSecondary)
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.m) {
+                Text(h.accuracyIntervalText ?? "unavailable")
+                    .font(leads ? Theme.Fonts.display(size: displaySize) : Theme.Fonts.accuracyLine)
+                    .foregroundStyle(Theme.textPrimary)
+                Text(h.accuracyPoint).font(.callout).foregroundStyle(Theme.textSecondary).monospacedDigit()
+            }
+        }
+        RangeBar(value: m.accuracyValue, interval: m.accuracyInterval,
+                 reference: m.largerClass.map { .init(value: $0.rate, label: "larger-class rate") },
+                 label: "Accuracy interval")
+        if let larger = m.largerClass {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(larger.sentence).font(.callout.weight(.semibold)).foregroundStyle(Theme.textPrimary)
+                    Text(larger.detail).font(.callout).foregroundStyle(Theme.textSecondary).monospacedDigit()
+                }
+            } icon: {
+                Image(systemName: larger.symbol).foregroundStyle(Theme.textSecondary)
+            }
+        }
+    }
+}
+
+/// "Point estimate · no interval": said in words, on a neutral capsule, never colour alone.
+private struct PointEstimateTag: View {
+    let text: String
+    var body: some View {
+        Label(text, systemImage: "circle.dashed")
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(Theme.textPrimary)
+            .padding(.horizontal, Theme.Space.s)
+            .padding(.vertical, Theme.Space.xxs)
+            .background(Theme.surface2, in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.textTertiary, style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
     }
 }
 
@@ -132,19 +174,19 @@ private struct ReproductionChip: View {
 
     var body: some View {
         if let r = model.reproduction {
-            let time = r.originalCreatedAt.map(ProjectSession.time) ?? "earlier"
+            let time = r.originalCreatedAt.map { Fmt.relativeDateTime($0) } ?? "an earlier result"
             switch r.kind {
             case .identical:
                 Button {
                     session.selectedResultID = r.originalID
                 } label: {
-                    StatusChip(kind: .info, text: "Reproduction of \(time) - evaluation.json identical to the original", symbol: "arrow.triangle.2.circlepath")
+                    StatusChip(kind: .positive, text: "Reproduced: identical to the original from \(time). Show the original", symbol: "arrow.triangle.2.circlepath")
                 }
                 .buttonStyle(.plain)
                 .help("Show the original result")
                 .accessibilityAddTraits(.isLink)
             case .differs:
-                StatusChip(kind: .warning, text: "Differs from original (\(time)). Same recording, configuration and seed gave different evaluation.json bytes. This is a bug; please report it.")
+                StatusChip(kind: .warning, text: "Differs from the original from \(time): the same recording, settings and seed gave a different result. This is a bug; please report it.")
             }
         }
     }
@@ -163,19 +205,17 @@ private struct CardTitle: View {
     }
 }
 
-/// A class as shown everywhere in this screen: display name over the stored label (§3).
+/// A class as shown everywhere in this screen: its display name; the stored label is in the
+/// tooltip and under Details (decision #63).
 private struct ClassName: View {
     let raw: String
+    let display: String
     var alignment: HorizontalAlignment = .leading
 
     var body: some View {
-        VStack(alignment: alignment, spacing: 1) {
-            Text(ClassDisplay.name(raw)).font(.callout.weight(.semibold)).foregroundStyle(Theme.textPrimary)
-            if ClassDisplay.name(raw) != raw {
-                Text(raw).font(Theme.Fonts.monoCaption).foregroundStyle(Theme.textSecondary)
-            }
-        }
-        .help(raw)
+        Text(display).font(.callout.weight(.semibold)).foregroundStyle(Theme.textPrimary)
+            .multilineTextAlignment(alignment == .trailing ? .trailing : alignment == .center ? .center : .leading)
+        .help("Stored label: \(raw)")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(ClassDisplay.spoken(raw))
     }
@@ -195,7 +235,7 @@ private struct ConfusionCard: View {
                     ForEach(0..<2, id: \.self) { j in
                         VStack(spacing: 2) {
                             Text("Predicted").font(.caption).foregroundStyle(Theme.textSecondary)
-                            ClassName(raw: model.classNames[j], alignment: .center)
+                            ClassName(raw: model.classNames[j], display: model.classDisplayNames[j], alignment: .center)
                         }
                         .gridColumnAlignment(.center)
                     }
@@ -204,7 +244,7 @@ private struct ConfusionCard: View {
                     GridRow {
                         VStack(alignment: .trailing, spacing: 2) {
                             Text("True").font(.caption).foregroundStyle(Theme.textSecondary)
-                            ClassName(raw: model.classNames[i], alignment: .trailing)
+                            ClassName(raw: model.classNames[i], display: model.classDisplayNames[i], alignment: .trailing)
                         }
                         .gridColumnAlignment(.trailing)
                         ForEach(model.cells.filter { $0.row == i }) { cell in
@@ -289,7 +329,7 @@ private struct BaselineCard: View {
             }
             HStack(spacing: Theme.Space.s) {
                 PairChip(label: "Both correct", count: m.paired.bothCorrect)
-                PairChip(label: "Reference only", count: m.paired.referenceOnlyCorrect)
+                PairChip(label: "Model only", count: m.paired.referenceOnlyCorrect)
                 PairChip(label: "Baseline only", count: m.paired.baselineOnlyCorrect)
                 PairChip(label: "Neither", count: m.paired.neitherCorrect)
             }
@@ -311,7 +351,7 @@ private struct ValueBar: View {
             HStack {
                 Text(label).font(.callout).foregroundStyle(Theme.textPrimary)
                 Spacer()
-                Text(Fmt.fixed(value)).font(Theme.Fonts.mono).foregroundStyle(Theme.textPrimary)
+                Text(Fmt.fixed(value)).font(.callout.weight(.semibold)).monospacedDigit().foregroundStyle(Theme.textPrimary)
             }
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
@@ -349,14 +389,14 @@ private struct ClassCountsCard: View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
             CardTitle(text: "Class counts")
             Table(model.classCounts) {
-                TableColumn("Class") { ClassName(raw: $0.className) }
+                TableColumn("Class") { ClassName(raw: $0.className, display: $0.displayName) }
                 TableColumn("Training") { Text("\($0.train)").monospacedDigit() }.width(70)
                 TableColumn("Held out") { Text("\($0.holdout)").monospacedDigit() }.width(70)
             }
             .scrollContentBackground(.hidden)
             .scrollDisabled(true)
             .alternatingRowBackgrounds(.disabled)
-            .frame(height: ResultTableMetrics.height(rows: model.classCounts.count, twoLine: true))
+            .frame(height: ResultTableMetrics.height(rows: model.classCounts.count, twoLine: false))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
@@ -370,16 +410,17 @@ private struct HeldOutRunsCard: View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
             CardTitle(text: "Held-out runs")
             Table(model.perRun) {
-                TableColumn("Run") { Text($0.runID).font(Theme.Fonts.mono) }
+                TableColumn("Run") { Text($0.runID).monospacedDigit() }
                 TableColumn("Trials") { Text("\($0.trials)").monospacedDigit() }.width(50)
-                TableColumn("Reference BA") { Text($0.reference).monospacedDigit() }.width(100)
-                TableColumn("Baseline BA") { Text($0.baseline).monospacedDigit() }.width(90)
+                TableColumn("Model") { Text($0.reference).monospacedDigit() }.width(70)
+                TableColumn("Baseline") { Text($0.baseline).monospacedDigit() }.width(70)
             }
             .scrollContentBackground(.hidden)
             .scrollDisabled(true)
             .alternatingRowBackgrounds(.disabled)
             .frame(height: ResultTableMetrics.height(rows: model.perRun.count, twoLine: false))
-            Text("Reference: \(model.referenceName)").font(.caption).foregroundStyle(Theme.textSecondary)
+            Text("Balanced accuracy per held-out run. Model: \(model.referenceName); baseline: \(model.baselineName).")
+                .font(.caption).foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
@@ -397,26 +438,38 @@ enum ResultTableMetrics {
 
 private struct SplitPolicyCard: View {
     let model: ResultDetailModel
+    @State private var showDetails = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
-            CardTitle(text: "Split policy")
+            CardTitle(text: "How the data was split")
+            Label {
+                Text(model.evidence.text).font(.callout).foregroundStyle(Theme.textPrimary).fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: model.evidence.symbol).foregroundStyle(Theme.textSecondary)
+            }
             ForEach(model.splitFields) { f in
                 LabeledContent {
-                    Text(f.value)
-                        .font(f.mono ? Theme.Fonts.mono : .callout)
-                        .foregroundStyle(Theme.textPrimary)
-                        .multilineTextAlignment(.trailing)
-                        .textSelection(.enabled)
+                    Text(f.value).font(.callout).monospacedDigit().foregroundStyle(Theme.textPrimary)
+                        .multilineTextAlignment(.trailing).textSelection(.enabled)
                 } label: {
                     Text(f.label).font(.callout).foregroundStyle(Theme.textSecondary)
                 }
             }
-            Label {
-                Text(model.evidence.text).font(.callout).foregroundStyle(Theme.textPrimary)
-            } icon: {
-                Image(systemName: model.evidence.symbol).foregroundStyle(Theme.textSecondary)
+            // Decision #63: the exact stored values, for reproduction.
+            DisclosureGroup("Details", isExpanded: $showDetails) {
+                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: Theme.Space.l, verticalSpacing: Theme.Space.xs) {
+                    ForEach(model.detailFields) { f in
+                        GridRow {
+                            Text(f.label).font(.callout).foregroundStyle(Theme.textSecondary)
+                            Text(f.value).font(Theme.Fonts.monoCaption).foregroundStyle(Theme.textPrimary).textSelection(.enabled)
+                        }
+                    }
+                }
+                .padding(.top, Theme.Space.xs)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .font(.callout)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()

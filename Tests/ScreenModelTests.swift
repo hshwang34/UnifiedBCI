@@ -44,9 +44,9 @@ final class ScreenModelTests: XCTestCase {
     // MARK: Criterion 3 — sidebar
 
     func testSidebarSections_orderAndPlaceholders() {
-        XCTAssertEqual(SidebarSection.allCases.map(\.title), ["Recordings", "Protocols", "Pipelines", "Results", "Live Test"])
+        XCTAssertEqual(SidebarSection.allCases.map(\.title), ["Recordings", "Protocols", "Models", "Results", "Live Test"])
         XCTAssertEqual(SidebarSection.allCases.map(\.symbol),
-                       ["waveform", "list.bullet.clipboard", "slider.horizontal.3", "chart.bar.doc.horizontal", "bolt.horizontal.circle"])
+                       ["waveform", "list.bullet.clipboard", "cube.transparent", "chart.bar.doc.horizontal", "bolt.horizontal.circle"])
         XCTAssertEqual(SidebarSection.allCases.filter { $0.placeholder != nil }, [], "Live Test is a real section (brief 006)")
         XCTAssertEqual(SidebarSection.allCases.filter(\.showsCount), [.recordings, .results])
         XCTAssertEqual(SidebarSection.statusLine, "No hardware connected · Replay mode")
@@ -220,6 +220,45 @@ final class ScreenModelTests: XCTestCase {
         XCTAssertEqual(m.trialsLine, "n = 14 held-out trials in 1 run · Session unknown", "the evidence phrase, never the raw token")
     }
 
+    /// Decision #62: the interval is the headline; without one, the number says so.
+    func testHeadline_intervalLeads_pointEstimateSaysSo() throws {
+        let one = try ResultDetailModel(stored: try stored(holdoutRuns: ["R1"], baCI: nil, diffCI: nil))
+        XCTAssertNil(one.headline.intervalHeadline)
+        XCTAssertEqual(one.headline.noIntervalTag, "Point estimate · no interval")
+        XCTAssertTrue(one.headline.noIntervalReason?.hasPrefix("Only one run was held out") == true)
+        XCTAssertEqual(one.headline.accuracyIntervalText, "0.51–0.85")
+        XCTAssertEqual(one.headline.accuracyCaption, "Accuracy · 95 % interval, trial-level, n = 14")
+        XCTAssertEqual(one.headline.accuracyPoint, "Point estimate 0.70")
+        let two = try ResultDetailModel(stored: try stored(holdoutRuns: ["R1", "R2"], baCI: [0.55, 0.79], diffCI: nil))
+        XCTAssertEqual(two.headline.intervalHeadline, "0.55–0.79")
+        XCTAssertEqual(two.headline.intervalCaption, "95 % interval · run-level bootstrap over 2 held-out runs")
+        XCTAssertEqual(two.headline.pointEstimate, "Point estimate 0.68")
+        XCTAssertNil(two.headline.noIntervalTag)
+    }
+
+    /// Decision #67: localized, relative, and deterministic once now/locale/zone are pinned.
+    func testRelativeDateTime_isDeterministic() {
+        let utc = TimeZone(identifier: "UTC")!
+        let en = Locale(identifier: "en_US")
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = utc
+        let now = Date(timeIntervalSince1970: 1_795_800_000) // 2026-11-27 17:20 UTC
+        let today = now.addingTimeInterval(-5 * 3600)
+        XCTAssertEqual(Fmt.relativeDateTime(today, now: now, locale: en, timeZone: utc, calendar: cal)
+                        .replacingOccurrences(of: "\u{202F}", with: " "), "Today, 12:20 PM")
+        XCTAssertTrue(Fmt.relativeDateTime(now.addingTimeInterval(-86_400), now: now, locale: en, timeZone: utc, calendar: cal).hasPrefix("Yesterday, "))
+        XCTAssertTrue(Fmt.relativeDateTime(now.addingTimeInterval(-10 * 86_400), now: now, locale: en, timeZone: utc, calendar: cal).hasPrefix("Nov 17, 2026, "))
+    }
+
+    /// Brief 011: one line for flags every flagged channel shares; run UUIDs become names.
+    func testSharedFlagLine_andRunNames() {
+        XCTAssertEqual(QualityModel.sharedFlagLine([["Large deflections"], ["Large deflections"]]), "All 2 channels: Large deflections")
+        XCTAssertEqual(QualityModel.sharedFlagLine([["Large deflections"], [], ["Large deflections"]]), "2 of 3 channels: Large deflections")
+        XCTAssertNil(QualityModel.sharedFlagLine([["Large deflections"], ["Flat"]]), "different flags are listed per channel")
+        XCTAssertNil(QualityModel.sharedFlagLine([["Large deflections"], []]), "one flagged channel needs no summary")
+        XCTAssertEqual(RecordingDetailModel.runName(UUID().uuidString, ordinal: 2), "Run 2")
+        XCTAssertEqual(RecordingDetailModel.runName("S001R04", ordinal: 1), "S001R04")
+    }
+
     func testHeadline_trialLevelIntervalNeverLabelledAsBalancedAccuracy() throws {
         for (runs, ba) in [(["R1"], nil), (["R1", "R2"], [0.55, 0.79]), (["R1", "R2", "R3"], [0.41, 0.9])] as [([String], [Double]?)] {
             let m = try ResultDetailModel(stored: try stored(holdoutRuns: runs, baCI: ba, diffCI: ba))
@@ -263,7 +302,7 @@ final class ScreenModelTests: XCTestCase {
         XCTAssertEqual(m.evidence.symbol, "questionmark.circle")
         XCTAssertEqual(m.evidence.text, "Session unknown — this is not evidence of cross-session transfer.")
         XCTAssertEqual(m.splitFields.first { $0.label == "Seed" }?.value, "3")
-        XCTAssertEqual(m.splitFields.first { $0.label == "Grouping" }?.value, "by run")
+        XCTAssertEqual(m.detailFields.first { $0.label == "Grouping" }?.value, "run", "stored values live under Details (decision #63)")
         XCTAssertEqual(m.exclusions, ["Trial S001R04-t00 (S001R04, Right-fist cue (cue_right_fist)): window starts before filter warm-up"])
         XCTAssertEqual(m.warning, "Public dataset, not your device")
     }
@@ -327,7 +366,7 @@ final class ScreenModelTests: XCTestCase {
         XCTAssertTrue(model.events.contains { $0.label == "cue_left_fist" })
         XCTAssertFalse(model.events.contains { $0.label.contains("Left-fist") })
         let inspector = EvaluateInspectorModel(manifest: m, events: events, latest: nil, defaults: nil, modelName: { $0 })
-        XCTAssertTrue(inspector.misleading[0].text.contains("“cue_left_fist”"), "the inspector quotes the raw label")
+        XCTAssertTrue(inspector.misleading[0].text.contains("Left-fist cue"), "the inspector names classes in words (decision #63)")
     }
 
     // MARK: Inspector and progress
@@ -338,7 +377,7 @@ final class ScreenModelTests: XCTestCase {
         let text = model.misleading.map(\.text).joined(separator: "\n")
         let left = events.filter { $0.label == "cue_left_fist" && $0.trialID != nil }.count
         let right = events.filter { $0.label == "cue_right_fist" && $0.trialID != nil }.count
-        XCTAssertTrue(text.contains("\(left) “cue_left_fist”") && text.contains("\(right) “cue_right_fist”"), text)
+        XCTAssertTrue(text.contains("\(left) Left-fist cue") && text.contains("\(right) Right-fist cue"), text)
         XCTAssertTrue(text.contains("not evidence of cross-session transfer"), text)
         XCTAssertTrue(text.contains("One subject (S001)"), text)
         XCTAssertTrue(text.contains("not recorded on your device"), text)

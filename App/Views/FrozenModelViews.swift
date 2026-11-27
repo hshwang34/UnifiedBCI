@@ -32,20 +32,34 @@ struct FreezeSheet: View {
                 Text(m.title).font(Theme.Fonts.title).accessibilityAddTraits(.isHeader)
                 HelpButton(topic: .freeze)
             }
-            Picker("Fit", selection: $draft.role) {
-                Text("Model").tag(ModelRole.reference)
-                Text("Baseline").tag(ModelRole.baseline)
-            }
-            .pickerStyle(.segmented)
-            .fixedSize()
-            TextField("Name", text: $draft.name, prompt: Text(m.defaultName))
-                .textFieldStyle(.roundedBorder)
-            FactRows(rows: m.rows)
+            // The one notice: what this model's evidence is.
             StatusChip(kind: .info, text: m.evidence).fixedSize(horizontal: false, vertical: true)
-            Label(m.feedbackSpan, systemImage: "timer").font(.callout).foregroundStyle(Theme.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-            if let s = m.windowSuggestion { StatusChip(kind: .warning, text: s).fixedSize(horizontal: false, vertical: true) }
-            Text(m.confidenceNote).font(.callout).foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                Picker("Freeze", selection: $draft.role) {
+                    Text("Model").tag(ModelRole.reference)
+                    Text("Baseline").tag(ModelRole.baseline)
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
+                Text(FreezeSheetModel.roleExplainer).font(.callout).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            LabeledContent("Name") {
+                TextField("Name", text: $draft.name, prompt: Text(m.defaultName))
+                    .textFieldStyle(.roundedBorder).labelsHidden()
+            }
+            FactRows(rows: m.rows)
+            VStack(alignment: .leading, spacing: Theme.Space.s) {
+                Label(m.feedbackSpan, systemImage: "timer")
+                    .foregroundStyle(Theme.textPrimary)
+                if let s = m.windowSuggestion {
+                    // Decision #40, as guidance for the next evaluation, not a warning about this one.
+                    Label(s, systemImage: "lightbulb").foregroundStyle(Theme.textPrimary)
+                }
+                Text(m.confidenceNote).foregroundStyle(Theme.textSecondary)
+            }
+            .font(.callout)
+            .fixedSize(horizontal: false, vertical: true)
             if let error = draft.error { StatusChip(kind: .danger, text: error).fixedSize(horizontal: false, vertical: true) }
             HStack {
                 if draft.isFreezing { ProgressView().controlSize(.small) }
@@ -162,6 +176,7 @@ struct FrozenModelDetailView: View {
                     Text(FreezeSheetModel.recipeName(model.recipe)).font(.callout).foregroundStyle(Theme.textSecondary)
                     FactRows(rows: FrozenModelRowModel.facts(model, channelLabels: FreezeSheetModel.labels(
                         session.recordings.first { $0.id == model.sourceRecordingID }?.manifest.channels ?? [])))
+                    DetailsDisclosure(rows: FrozenModelRowModel.details(model))
                     Button("Show the source result") {
                         session.section = .results
                         session.selectedResultID = model.sourceResultID
@@ -200,38 +215,73 @@ struct FrozenModelDetailView: View {
     }
 }
 
-/// "Streaming matches offline within tolerance", or where and by how much it doesn't.
+/// The verdict first ("Live path matches offline") and one sentence; tolerances, hop
+/// windows and chunkings under Details (decision #63).
 struct ParityView: View {
     let model: ParityViewModel
+    @State private var showDetails = false
 
     var body: some View {
         let m = model
         VStack(alignment: .leading, spacing: Theme.Space.m) {
             HStack(spacing: Theme.Space.s) {
-                StatusChip(kind: m.passed ? .positive : .warning, text: m.headline, symbol: m.symbol)
+                Image(systemName: m.symbol).font(.title2).foregroundStyle(m.passed ? Theme.positive : Theme.warning)
+                    .accessibilityHidden(true)
+                Text(m.headline).font(Theme.Fonts.title).foregroundStyle(Theme.textPrimary).accessibilityAddTraits(.isHeader)
                 HelpButton(topic: .replayParity)
             }
-            Text("Largest difference per quantity").font(Theme.Fonts.sectionHeader).accessibilityAddTraits(.isHeader)
-            ForEach(m.tolerances) { line in
-                Label {
-                    Text(line.text).font(.callout).monospacedDigit()
-                } icon: {
-                    Image(systemName: line.within.map { $0 ? "checkmark.circle" : "xmark.octagon" } ?? "minus.circle")
-                        .foregroundStyle(line.within.map { $0 ? Theme.positive : Theme.danger } ?? Theme.textSecondary)
-                }
-                .accessibilityLabel(line.within.map { "\(line.text), \($0 ? "within" : "outside") tolerance" } ?? line.text)
-            }
-            Divider()
-            ForEach([m.windows, m.cueLocked, m.boundary, m.abstentions, m.firstValid, m.chunkings], id: \.self) { text in
-                Text(text).font(.callout).foregroundStyle(Theme.textPrimary).monospacedDigit().fixedSize(horizontal: false, vertical: true)
-            }
+            Text(m.summary).font(.callout).foregroundStyle(Theme.textPrimary).fixedSize(horizontal: false, vertical: true)
+            Text(m.cueLocked).font(.callout).foregroundStyle(Theme.textSecondary).monospacedDigit().fixedSize(horizontal: false, vertical: true)
             if !m.mismatches.isEmpty {
                 Text("Where they differ").font(Theme.Fonts.sectionHeader).accessibilityAddTraits(.isHeader)
-                ForEach(m.mismatches, id: \.self) { Text($0).font(Theme.Fonts.monoCaption).foregroundStyle(Theme.textPrimary) }
+                ForEach(m.mismatches, id: \.self) { Text($0).font(.callout).foregroundStyle(Theme.textPrimary) }
             }
+            DisclosureGroup(ReplayCopy.parityDetails, isExpanded: $showDetails) {
+                VStack(alignment: .leading, spacing: Theme.Space.s) {
+                    Text("Largest difference per quantity").font(.callout.weight(.semibold)).accessibilityAddTraits(.isHeader)
+                    ForEach(m.tolerances) { line in
+                        Label {
+                            Text(line.text).font(.callout).monospacedDigit()
+                        } icon: {
+                            Image(systemName: line.within.map { $0 ? "checkmark.circle" : "xmark.octagon" } ?? "minus.circle")
+                                .foregroundStyle(line.within.map { $0 ? Theme.positive : Theme.danger } ?? Theme.textSecondary)
+                        }
+                        .accessibilityLabel(line.within.map { "\(line.text), \($0 ? "within" : "outside") tolerance" } ?? line.text)
+                    }
+                    ForEach([m.windows, m.boundary, m.abstentions, m.firstValid, m.chunkings], id: \.self) { text in
+                        Text(text).font(.callout).foregroundStyle(Theme.textSecondary).monospacedDigit().fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.top, Theme.Space.xs)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .font(.callout)
         }
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
+    }
+}
+
+/// Stored identifiers (hashes, ids) in monospace, folded away by default (decision #63).
+struct DetailsDisclosure: View {
+    let rows: [FreezeSheetModel.Row]
+    @State private var expanded = false
+
+    var body: some View {
+        DisclosureGroup("Details", isExpanded: $expanded) {
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: Theme.Space.l, verticalSpacing: Theme.Space.xs) {
+                ForEach(rows) { row in
+                    GridRow {
+                        Text(row.label).font(.callout).foregroundStyle(Theme.textSecondary).gridColumnAlignment(.trailing)
+                        Text(row.value).font(Theme.Fonts.monoCaption).foregroundStyle(Theme.textPrimary)
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(.top, Theme.Space.xs)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(.callout)
     }
 }

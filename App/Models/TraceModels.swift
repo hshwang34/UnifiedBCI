@@ -15,6 +15,7 @@ struct TraceModel: Equatable {
     static let unavailableTitle = "Signal unavailable"
     static let unavailableMessage = "The window could not be loaded. The recording is unchanged."
     static let flaggedLegend = "Flagged channels carry a flag and list the rules that fired."
+    static let flaggedLegendShared = "Flagged channels carry a flag; hover a lane for its details."
     static let warmupTag = "warm-up"
     /// Why the warm-up is drawn rather than cut: the evaluation skips it, the view says so.
     static func warmupText(_ seconds: Double) -> String {
@@ -69,6 +70,9 @@ struct TraceModel: Equatable {
     /// Warm-up inside this window (band-passed only), in segment seconds.
     let warmup: ClosedRange<Double>?
     let warmupNote: String?
+    /// Brief 011: "All 16 channels: Large deflections" when the flagged lanes share their
+    /// flags; the lanes then carry a marker only and the detail is in each lane's tooltip.
+    var sharedFlags: String? { QualityModel.sharedFlagLine(lanes.map(\.flags)) }
 
     /// `flags`: channel id → titles of the rules that fired in this segment.
     init(window w: SignalWindow, processed: Bool, flags: [String: [String]]) {

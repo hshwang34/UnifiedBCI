@@ -65,6 +65,8 @@ struct RecordingDetailView: View {
                 VStack(alignment: .leading, spacing: Theme.Space.s) {
                     table
                         .scrollContentBackground(.hidden)
+                        // The last row scrolls clear of the card's rounded bottom edge.
+                        .contentMargins(.bottom, Theme.Space.m, for: .scrollContent)
                         .card(padding: 0)
                         .frame(height: Self.tableHeight)
                         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { tableWidth = $0 }
@@ -210,7 +212,7 @@ struct RecordingDetailView: View {
         case .channels:
             // Rows by `ChannelTableRow.id`, unique even when the manifest repeats a channel id.
             Table(model.channelTableRows.sorted(using: channelSort), selection: $selectedChannel, sortOrder: $channelSort) {
-                TableColumn("ID", value: \.row.id) { r in channelCell(r.row) { Text(r.row.id).font(Theme.Fonts.mono) } }.width(min: 40, ideal: 56)
+                TableColumn("ID", value: \.row.id) { r in channelCell(r.row) { Text(r.row.id).monospacedDigit() } }.width(min: 40, ideal: 56)
                 TableColumn("Label", value: \.row.labelSortKey) { r in channelCell(r.row) { DeclaredText(value: r.row.label ?? RecordingDetailModel.undeclared, declared: r.row.label != nil) } }.width(min: 40, ideal: 72)
                 TableColumn("Unit", value: \.row.unitSortKey) { r in channelCell(r.row) { DeclaredText(value: r.row.unit ?? RecordingDetailModel.undeclared, declared: r.row.unit != nil) } }.width(min: 32, ideal: 52)
                 TableColumn("Kind", value: \.row.kindSortKey) { r in channelCell(r.row) { DeclaredText(value: r.row.kind ?? RecordingDetailModel.undeclared, declared: r.row.kind != nil) } }.width(min: 32, ideal: 52)
@@ -220,7 +222,7 @@ struct RecordingDetailView: View {
             let rows = model.segments.sorted(using: segmentSort)
             if narrow {
                 Table(rows, sortOrder: $segmentSort) {
-                    TableColumn("Run", value: \.runID) { Text($0.runID).font(Theme.Fonts.mono) }.width(min: 48, ideal: 76)
+                    TableColumn("Run", value: \.runID) { Text($0.runName).monospacedDigit().help("Stored run id: \($0.runID)") }.width(min: 48, ideal: 76)
                     TableColumn("Duration", value: \.duration) { Text($0.duration).monospacedDigit() }.width(min: 40, ideal: 60)
                     TableColumn("Samples", value: \.samples) { Text("\($0.samples)").monospacedDigit() }.width(min: 40, ideal: 60)
                     TableColumn("Gaps", value: \.gaps) { Text("\($0.gaps)").monospacedDigit() }.width(min: 28, ideal: 40)
@@ -229,8 +231,8 @@ struct RecordingDetailView: View {
             } else {
                 Table(rows, sortOrder: $segmentSort) {
                     TableColumn("Segment", value: \.index) { Text("\($0.index)").monospacedDigit() }.width(min: 40, ideal: 56)
-                    TableColumn("Run", value: \.runID) { Text($0.runID).font(Theme.Fonts.mono) }.width(min: 48, ideal: 76)
-                    TableColumn("Session", value: \.session).width(min: 40, ideal: 60)
+                    TableColumn("Run", value: \.runID) { Text($0.runName).monospacedDigit().help("Stored run id: \($0.runID)") }.width(min: 48, ideal: 76)
+                    TableColumn("Session", value: \.session) { Text($0.sessionName).help($0.session == "—" ? "No session recorded" : "Stored session id: \($0.session)") }.width(min: 40, ideal: 60)
                     TableColumn("Duration", value: \.duration) { Text($0.duration).monospacedDigit() }.width(min: 40, ideal: 60)
                     TableColumn("Samples", value: \.samples) { Text("\($0.samples)").monospacedDigit() }.width(min: 40, ideal: 60)
                     TableColumn("Gaps", value: \.gaps) { Text("\($0.gaps)").monospacedDigit() }.width(min: 28, ideal: 40)
@@ -244,17 +246,17 @@ struct RecordingDetailView: View {
             let rows = eventSort.isEmpty ? model.events : model.events.sorted(using: eventSort)
             if narrow {
                 Table(rows, sortOrder: $eventSort) {
-                    TableColumn("Label", value: \.label) { Text($0.label).font(Theme.Fonts.mono) }.width(min: 64, ideal: 112)
+                    TableColumn("Label", value: \.label) { Text($0.label) }.width(min: 64, ideal: 112)
                     TableColumn("Onset (s)", value: \.onsetSortKey) { Text($0.onsetText).monospacedDigit() }.width(min: 40, ideal: 60)
-                    TableColumn("Run", value: \.runID) { Text($0.runID).font(Theme.Fonts.mono) }.width(min: 48, ideal: 64)
+                    TableColumn("Run", value: \.runID) { Text($0.runName).monospacedDigit().help("Stored run id: \($0.runID)") }.width(min: 48, ideal: 64)
                 }
                 .alternatingRowBackgrounds()
             } else {
                 Table(rows, sortOrder: $eventSort) {
-                    TableColumn("Label", value: \.label) { Text($0.label).font(Theme.Fonts.mono) }.width(min: 64, ideal: 112)
+                    TableColumn("Label", value: \.label) { Text($0.label) }.width(min: 64, ideal: 112)
                     TableColumn("Onset (s)", value: \.onsetSortKey) { Text($0.onsetText).monospacedDigit() }.width(min: 40, ideal: 60)
-                    TableColumn("Run", value: \.runID) { Text($0.runID).font(Theme.Fonts.mono) }.width(min: 48, ideal: 64)
-                    TableColumn("Trial", value: \.trial) { Text($0.trial).font(Theme.Fonts.mono) }.width(min: 64, ideal: 96)
+                    TableColumn("Run", value: \.runID) { Text($0.runName).monospacedDigit().help("Stored run id: \($0.runID)") }.width(min: 48, ideal: 64)
+                    TableColumn("Trial", value: \.trial) { Text($0.trial).monospacedDigit() }.width(min: 64, ideal: 96)
                 }
                 .alternatingRowBackgrounds()
             }

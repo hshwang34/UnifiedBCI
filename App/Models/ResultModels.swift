@@ -177,6 +177,20 @@ struct ResultDetailModel {
         let accuracy: String
         /// The run-level bootstrap interval for balanced accuracy, or why there is none.
         let balancedAccuracyInterval: String
+        /// Decision #62, the hero's display text: "0.48–0.79" when balanced accuracy has a
+        /// run-level interval; nil when it has none (the hero then leads with the trial-level one).
+        var intervalHeadline: String? = nil
+        /// "95 % interval, run-level bootstrap over 3 held-out runs".
+        var intervalCaption: String = ""
+        /// "Point estimate 0.62", always beside the interval or the bare number.
+        var pointEstimate: String = ""
+        /// "Point estimate · no interval" with its reason, when there is no run-level interval.
+        var noIntervalTag: String? = nil
+        var noIntervalReason: String? = nil
+        /// The trial-level accuracy interval as display text ("0.32–0.84") and its caption.
+        var accuracyIntervalText: String? = nil
+        var accuracyCaption: String = ""
+        var accuracyPoint: String = ""
     }
 
     struct Cell: Identifiable, Equatable {
@@ -221,6 +235,8 @@ struct ResultDetailModel {
         let rate: Double
         let sentence: String
         let symbol: String
+        /// "Always guessing the larger class scores 0.53 here.", in readable words beside the bar.
+        var detail: String { "Always guessing the larger class scores \(Fmt.fixed(rate)) on these trials." }
     }
 
     let report: EvaluationReport
@@ -260,6 +276,8 @@ struct ResultDetailModel {
     let pairedLine: String
     let cvLine: String
     let splitFields: [RecordingDetailModel.Field]
+    /// Stored identifiers shown under Details (monospace).
+    let detailFields: [RecordingDetailModel.Field]
     let exclusions: [String]
 
     /// - Parameters:
@@ -267,13 +285,16 @@ struct ResultDetailModel {
     ///   - modelName: display names for the worker's model keys (from `fit_evaluate_defaults`).
     /// `isDemo`: the recording came from the Demo source, whose stored warning is not shown
     /// on screen (decision #42).
-    init(stored: StoredResult, allResults: [ResultMeta] = [], modelName: (String) -> String = { $0 }, isDemo: Bool = false) throws {
+    /// `className`: a stored class label's name for primary text (protocol display name, else
+    /// `ClassDisplay.name`).
+    init(stored: StoredResult, allResults: [ResultMeta] = [], modelName: (String) -> String = { $0 }, isDemo: Bool = false,
+         className: (String) -> String = ClassDisplay.name) throws {
         let r = try EvaluationReport.decode(stored.evaluationJSON)
         report = r
         meta = stored.meta
         let config = stored.pipeline.configuration
         classNames = [config["label_left"] ?? "class 0", config["label_right"] ?? "class 1"]
-        classDisplayNames = classNames.map(ClassDisplay.name)
+        classDisplayNames = classNames.map(className)
         referenceName = modelName(r.comparison.reference)
         baselineName = modelName(r.comparison.baseline)
         guard let ref = r.models[r.comparison.reference], let base = r.models[r.comparison.baseline] else {
@@ -305,7 +326,8 @@ struct ResultDetailModel {
         }
 
         let raw = classNames
-        let names = raw.map(ClassDisplay.inline)
+        // Running text and VoiceOver keep the stored label beside the name.
+        let names = raw.map { r in className(r) == r ? r : "\(className(r)) (\(r))" }
         var cells: [Cell] = []
         for (i, row) in h.confusionMatrix.enumerated() where i < 2 {
             let total = row.prefix(2).reduce(0, +)
@@ -319,12 +341,12 @@ struct ResultDetailModel {
         let perClass = (0..<2).map { i -> String in
             let total = cells.filter { $0.row == i }.map(\.count).reduce(0, +)
             let right = cells.first { $0.row == i && $0.column == i }?.count ?? 0
-            return "\(right) of \(total) \(ClassDisplay.name(raw[i]))"
+            return "\(right) of \(total) \(className(raw[i]))"
         }
         confusionSummary = "Of \(h.nTestTrials) held-out trials, \(correct) were classified correctly: \(perClass.joined(separator: " and "))."
 
         classCounts = (0..<2).map { i in
-            CountRow(className: raw[i], displayName: ClassDisplay.name(raw[i]), train: r.classCounts.train[safe: i] ?? 0, holdout: r.classCounts.holdout[safe: i] ?? 0)
+            CountRow(className: raw[i], displayName: className(raw[i]), train: r.classCounts.train[safe: i] ?? 0, holdout: r.classCounts.holdout[safe: i] ?? 0)
         }
         let baseRuns = Dictionary(base.holdout.perRun.map { ($0.runId, $0) }, uniquingKeysWith: { a, _ in a })
         perRun = h.perRun.map { run in
@@ -345,15 +367,22 @@ struct ResultDetailModel {
 
         let sp = r.splitPolicy
         splitFields = [
-            .init(label: "Unit", value: sp.unit),
-            .init(label: "Grouping", value: "by \(sp.grouping)"),
-            .init(label: "Holdout", value: sp.holdout),
-            .init(label: "Held-out runs", value: r.splitManifest.holdoutRuns.joined(separator: ", "), mono: true),
-            .init(label: "Training runs", value: r.splitManifest.trainingRuns.joined(separator: ", "), mono: true),
-            .init(label: "Folds", value: "\(r.splitManifest.folds.count) (\(sp.cv))"),
-            .init(label: "Seed", value: "\(sp.seed)", mono: true),
-            .init(label: "Evidence", value: sp.evidence),
+            .init(label: "Held-out runs", value: r.splitManifest.holdoutRuns.joined(separator: ", ")),
+            .init(label: "Training runs", value: r.splitManifest.trainingRuns.joined(separator: ", ")),
+            .init(label: "Cross-validation", value: "\(r.splitManifest.folds.count) fold\(r.splitManifest.folds.count == 1 ? "" : "s"), whole runs"),
+            .init(label: "Seed", value: "\(sp.seed)"),
         ]
+        // Decision #63: the exact stored values, for Details.
+        detailFields = [
+            .init(label: "Unit", value: sp.unit, mono: true),
+            .init(label: "Grouping", value: sp.grouping, mono: true),
+            .init(label: "Holdout", value: sp.holdout, mono: true),
+            .init(label: "CV", value: sp.cv, mono: true),
+            .init(label: "Evidence", value: sp.evidence, mono: true),
+            .init(label: "Recipe", value: stored.pipeline.recipe, mono: true),
+            .init(label: "Baseline", value: r.comparison.baseline, mono: true),
+        ] + raw.enumerated().map { .init(label: "Class \($0.offset + 1) label", value: $0.element, mono: true) }
+            + [.init(label: "Result ID", value: stored.meta.resultID.uuidString, mono: true)]
         exclusions = r.exclusions.map { e in
             "Trial \(e.trialId) (\(e.runId), \(names[safe: e.label] ?? "class \(e.label)")): \(EvidenceText.exclusionReason(e.reason))"
         }
@@ -371,9 +400,20 @@ struct ResultDetailModel {
         } else {
             interval = "Balanced-accuracy interval: unavailable"
         }
+        let runCI = h.nTestRuns >= 2 ? h.balancedAccuracyRunBootstrapCi95.flatMap { Fmt.interval($0) } : nil
         return Headline(balancedAccuracy: "Balanced accuracy \(value)", balancedAccuracyValue: value,
                         accuracy: "Accuracy \(Fmt.fixed(h.accuracy)) · 95 % CI \(accCI) (trial-level, n = \(h.nTestTrials))",
-                        balancedAccuracyInterval: interval)
+                        balancedAccuracyInterval: interval,
+                        intervalHeadline: runCI,
+                        intervalCaption: runCI == nil ? "" : "95 % interval · run-level bootstrap over \(h.nTestRuns) held-out runs",
+                        pointEstimate: "Point estimate \(value)",
+                        noIntervalTag: runCI == nil ? "Point estimate · no interval" : nil,
+                        noIntervalReason: runCI != nil ? nil : h.nTestRuns == 1
+                            ? "Only one run was held out, so balanced accuracy has no run-level interval. Read the trial-level accuracy interval below for the uncertainty."
+                            : "Balanced accuracy has no run-level interval for this result. Read the trial-level accuracy interval below for the uncertainty.",
+                        accuracyIntervalText: Fmt.interval(h.accuracyCi95),
+                        accuracyCaption: "Accuracy · 95 % interval, trial-level, n = \(h.nTestTrials)",
+                        accuracyPoint: "Point estimate \(Fmt.fixed(h.accuracy))")
     }
 }
 
@@ -424,7 +464,10 @@ struct EvaluateInspectorModel {
 
     init(manifest m: RecordingManifest, events: [EventRecord], latest: EvaluationReport?,
          defaults: EvaluationDefaults?, recipes: [EvaluationDefaults.Recipe] = [], modelName: (String) -> String,
-         protocol p: ProtocolRecord? = nil, windowEndMs: Int? = nil) {
+         protocol p: ProtocolRecord? = nil, windowEndMs: Int? = nil, pageShowsSourceWarning: Bool = false) {
+        let className: (String) -> String = { raw in
+            p?.classes.first { $0.label == raw && !$0.displayName.isEmpty }?.displayName ?? ClassDisplay.name(raw)
+        }
         recordingTitle = RecordingDetailModel.title(for: m)
         let runCount = RunCountModel.runs(m)
         let usable = RunCountModel.evaluableRuns(events)
@@ -447,7 +490,7 @@ struct EvaluateInspectorModel {
         // Trials per class: cue events carry a trial id; rests do not.
         let trials = Dictionary(grouping: events.filter { $0.trialID != nil }, by: \.label).mapValues(\.count)
         if !trials.isEmpty {
-            let parts = trials.sorted { $0.key < $1.key }.map { "\($0.value) “\($0.key)”" }
+            let parts = trials.sorted { $0.key < $1.key }.map { "\($0.value) \(className($0.key))" }
             bullets.append(Bullet(symbol: "number",
                                   text: "\(parts.joined(separator: " and ")) trials. Small samples give wide intervals; an accuracy that looks good can still be compatible with chance."))
         }
@@ -461,7 +504,8 @@ struct EvaluateInspectorModel {
         if let subject = m.source.subject {
             bullets.append(Bullet(symbol: "person", text: "One subject (\(subject)): no claim about anyone else."))
         }
-        switch m.source.kind {
+        // Decision #66: the page's warning chip already says it; the inspector doesn't repeat it.
+        switch pageShowsSourceWarning ? "" : m.source.kind {
         case "public_dataset":
             bullets.append(Bullet(symbol: "exclamationmark.triangle", text: "Public recording, not recorded on your device; your hardware may behave differently."))
         case "synthetic":
