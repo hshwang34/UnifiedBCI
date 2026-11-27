@@ -1,6 +1,6 @@
 # 009 — Bug loop and observability
 
-**Status:** in review · **Owner:** PM · **PR:** #60 · **Updated:** 2026-11-26
+**Status:** shipped · **Owner:** PM · **PR:** #60 · **Updated:** 2026-11-27
 
 ## Problem
 The first full agent eval (brief 008) found two bugs. One was the goal picker blocking
