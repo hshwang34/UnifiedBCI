@@ -11,6 +11,8 @@ struct StartRunForm: Equatable {
     var runsPerSession: Int
     var displays: [CueDisplayInfo]
     var displayID: UInt32?
+    /// Decision #69: a short session that checks the setup, not a performance estimate.
+    private(set) var quickCheck = false
 
     /// Newest version of each lineage first; the default protocol is picked when nothing is.
     init(protocols: [ProtocolRecord], displays: [CueDisplayInfo], remembered: CueDisplayPicker.Remembered?,
@@ -38,7 +40,13 @@ struct StartRunForm: Equatable {
     /// Picking a protocol takes its runs per session as the new default.
     mutating func pick(_ id: UUID) {
         protocolID = id
-        if let p = selected { runsPerSession = p.runsPerSession }
+        if let p = selected { runsPerSession = quickCheck ? QuickCheck.runs : p.runsPerSession }
+    }
+
+    /// Quick check (decision #69): 3 short runs; off restores the protocol's own count.
+    mutating func setQuickCheck(_ on: Bool) {
+        quickCheck = on
+        runsPerSession = on ? QuickCheck.runs : (selected?.runsPerSession ?? runsPerSession)
     }
 
     /// Why Start is disabled; nil when it can be pressed.
@@ -49,6 +57,35 @@ struct StartRunForm: Equatable {
         if !(1...ProtocolRecord.maxRunsPerSession).contains(runsPerSession) { return StartRunCopy.badRuns }
         if display == nil { return StartRunCopy.noDisplay }
         return nil
+    }
+}
+
+/// Decision #69: the Quick check session. It runs a stored protocol version derived from the
+/// chosen one (same classes, timing and instructions; fewer trials), so its run plans name
+/// exactly what was shown, and its results are labelled from that stored fact.
+enum QuickCheck {
+    static let runs = 3
+    static let trialsPerClass = 8
+    static let nameSuffix = " · quick check"
+
+    static let toggle = "Quick check (about 3 min)"
+    static let toggleHelp = "Three short runs to confirm the cap, signal, cue window and recording work. Not a performance estimate."
+    static let resultNote = "Setup check, not a performance estimate: a quick-check session has too few trials to say how well the decoder works."
+
+    static func isQuickCheck(_ p: ProtocolRecord) -> Bool { p.name.hasSuffix(nameSuffix) }
+
+    /// The quick-check version of `p` (a quick-check protocol is its own quick check).
+    static func draft(from p: ProtocolRecord) -> ProtocolDraft {
+        let base = isQuickCheck(p) ? String(p.name.dropLast(nameSuffix.count)) : p.name
+        return ProtocolDraft(name: base + nameSuffix, classes: p.classes, timing: p.timing,
+                             trialsPerClass: trialsPerClass, runsPerSession: runs, instructions: p.instructions)
+    }
+
+    /// An existing version that is exactly this quick check, newest first.
+    static func existing(for draft: ProtocolDraft, in list: [ProtocolRecord]) -> ProtocolRecord? {
+        list.filter { $0.name == draft.name && $0.classes == draft.classes && $0.timing == draft.timing
+            && $0.trialsPerClass == draft.trialsPerClass && $0.instructions == draft.instructions }
+            .max { $0.version < $1.version }
     }
 }
 

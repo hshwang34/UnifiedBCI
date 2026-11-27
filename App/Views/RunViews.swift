@@ -37,6 +37,8 @@ struct StartRunSheet: View {
                         }
                     }
                     .help(StartRunCopy.seedHelp)
+                    Toggle(QuickCheck.toggle, isOn: Binding(get: { form.quickCheck }, set: { form.setQuickCheck($0) }))
+                        .help(QuickCheck.toggleHelp)
                     Stepper(value: $form.runsPerSession, in: 1...ProtocolRecord.maxRunsPerSession) {
                         LabeledContent(StartRunCopy.runsLabel) {
                             Text("\(form.runsPerSession)").monospacedDigit().contentTransition(.numericText())
@@ -68,7 +70,7 @@ struct StartRunSheet: View {
             HStack {
                 Spacer()
                 Button(StartRunCopy.cancel, role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction).controlSize(.large)
-                Button { session.startRuns(form) } label: { Label(StartRunCopy.start, systemImage: "play.fill") }
+                Button { Task { await session.startRunsFromSheet(form) } } label: { Label(StartRunCopy.start, systemImage: "play.fill") }
                     .appProminentButton()
                     .keyboardShortcut(.defaultAction)
                     .disabled(reason != nil)

@@ -256,6 +256,28 @@ final class ProjectSession: Identifiable {
         }
     }
 
+    /// Start in the sheet. With Quick check on (decision #69) the quick-check version of the
+    /// chosen protocol is found or stored first, then the runs start on it.
+    func startRunsFromSheet(_ form: StartRunForm) async {
+        guard form.quickCheck, let chosen = form.selected else { return startRuns(form) }
+        let draft = QuickCheck.draft(from: chosen)
+        do {
+            let known = try await store.protocols().protocols
+            let record: ProtocolRecord
+            if let existing = QuickCheck.existing(for: draft, in: known) {
+                record = existing
+            } else {
+                record = try await store.createProtocolVersion(draft, basedOn: QuickCheck.isQuickCheck(chosen) ? chosen : nil)
+            }
+            var f = form
+            if !f.protocols.contains(where: { $0.protocolID == record.protocolID }) { f.protocols.append(record) }
+            f.pick(record.protocolID)
+            startRuns(f)
+        } catch {
+            startRunSheetError = ProtocolCopy.notSaved(error)
+        }
+    }
+
     /// Opens the participant window on the chosen display and starts the first run.
     func startRuns(_ form: StartRunForm) {
         guard let (setup, host, screen) = prepareRuns(form) else { return }

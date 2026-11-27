@@ -70,6 +70,40 @@ evidence was a macOS crash report. We can't fix what we can't see, and we can't 
   (`.private` by default), and the export lists exactly what it includes.
 - Log growth: the files are bounded per launch, and old launches are deleted.
 
+## What the loop found and fixed (2026-11-27)
+The live view's crash, the freezes and the blank window had one family of causes, found with
+the new diagnostics: geometry and task dumps, plus real-window checks.
+1. **Unbounded inspector height.** The live inspector's note used vertically-fixed text.
+   Measured at a narrow width, it asked for about 1400 pt. The split view grew past the
+   780 pt window, which clipped the top of every column: a blank sidebar and list, and a
+   hidden header. During the inspector's collapse animation the same unbounded height became
+   the 19-second layout storm behind the 2026-11-26 crash. **Fix:** the note is in a scroll
+   view, and the inspector stays open in the live view.
+2. **The window rebuilt five times a second.** The window root, sidebar and live header read
+   the whole acquisition snapshot, which is replaced on every 200 ms poll. **Fix:** state,
+   reconnects and the recording id are separate observed properties, set only when they change.
+3. **A stuck polling task.** The 200 ms status poll was a sleeping main-actor Task. It was
+   found recorded as the main thread's "current task" while the thread was idle. The UI froze
+   at "Ready", and the next executor check (a click, app activation, an accessibility read)
+   crashed. This was reproduced on `main` too. **Fix:** a run-loop timer.
+4. **The live plot.** It is now an AppKit view (`LivePlotView`) that repaints on its own
+   timer, so streaming never runs SwiftUI updates or window layout. Tick labels no longer
+   overprint the scale caption.
+5. **Launches with no window.** Saved window state from a force-quit made later launches show
+   no window at all. **Fix:** the app ignores saved state (decision #7).
+6. **Smaller fixes:** the live header adapts to narrow widths, the goal picker no longer
+   blocks agent-opened projects, and the Debug live-record waits for the stream.
+
+**Follow-up (not done):** the protocol-run and live-feedback status loops are also sleeping
+main-actor Tasks. They pass every flow today, but should move to timers too.
+
+**Debug tools added:**
+- `-BCILayoutDump YES` logs the window and split-view geometry.
+- `-BCIHitTestStress YES` hit-tests the windows continuously.
+- `scripts/crash_repro.sh` (under `scripts/agent_eval/`) reproduces the crash scenario.
+- `scripts/verify_flows.sh` checks every flow for hangs, crashes, error events and snapshots.
+- `scripts/app_lock.sh` lets only one Debug app run at a time.
+
 ## Resume (paused 2026-11-26, branch `fix-agent-eval`, worktree `.claude/worktrees/feature-agent-control`)
 - **Done:**
   - Observability: AppLog, the per-launch file, `bci app diagnostics`, Export Diagnostics.

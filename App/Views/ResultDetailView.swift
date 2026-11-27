@@ -16,6 +16,9 @@ struct ResultDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Space.cardGap) {
                     ResultHero(model: m, session: session, stored: stored)
+                    if session.recordingProtocols[stored.meta.recordingID].map(QuickCheck.isQuickCheck) == true {
+                        StatusChip(kind: .warning, text: QuickCheck.resultNote)
+                    }
                     ForEach(m.notes, id: \.self) { StatusChip(kind: .warning, text: $0) }
                     if let warning = m.warning {
                         StatusChip(kind: .warning, text: warning)
