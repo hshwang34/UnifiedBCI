@@ -43,7 +43,7 @@ final class LiveFeedbackController {
     /// Runner updates → feed, feed reports → `feedback.jsonl`, and the status poll.
     @ObservationIgnored private var forwarding: Task<Void, Never>?
     @ObservationIgnored private var reporting: Task<Void, Never>?
-    @ObservationIgnored private var polling: Task<Void, Never>?
+    @ObservationIgnored private var polling: Timer?
     @ObservationIgnored private var stopping: Task<Void, Never>?
 
     private init(model: ModelRecord, protocolRecord: ProtocolRecord, policy: FeedbackPolicy, liveRunID: UUID, recordingID: UUID,
@@ -101,15 +101,17 @@ final class LiveFeedbackController {
                 await runner.presented(sequence: r.sequence, display: r.display, at: r.presentedAt, reason: r.reason, measured: r.measured)
             }
         }
-        polling = Task { [weak self] in
-            while !Task.isCancelled {
+        // Brief 009: a main run-loop timer, not a sleeping main-actor Task. 4 Hz is plenty for
+        // the words and tiles; the mirrored bar reads the feed itself.
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
                 guard let self else { return }
-                let s = runner.status
+                let s = self.runner.status
                 if s != self.status { self.status = s }
-                // 4 Hz is plenty for the words and tiles; the mirrored bar reads the feed itself.
-                try? await Task.sleep(for: .milliseconds(250))
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        polling = timer
     }
 
     /// The protocol's host with the cues routed to the runner: each cue reaches the runner
@@ -153,7 +155,7 @@ final class LiveFeedbackController {
         await forwarding?.value
         feed.finish()
         await reporting?.value
-        polling?.cancel()
+        polling?.invalidate()
         (forwarding, reporting, polling) = (nil, nil, nil)
         let (summary, latency) = await runner.summaries()
         status = runner.status

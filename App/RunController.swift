@@ -114,23 +114,38 @@ final class RunController {
         setParticipant(.instructions, context: participantContext(runIndex: index))
         surface.show()
         installKeys()
+        // Brief 009: the status poll is a main run-loop timer, not a sleeping main-actor
+        // Task (that pattern left a stale "current task" on the main thread; see brief 009).
+        var adopted = false
+        let tick: @MainActor () -> Void = { [weak self] in
+            guard let self, !self.tornDown else { return }
+            let s = runner.status
+            self.status = s
+            if !adopted, let id = s.recordingID { adopted = true; self.onRecording(id) }
+            if s.startedAt != nil, self.runsStarted == index { self.runsStarted = index + 1 }
+            self.syncParticipant(s.state)
+        }
+        startPolling(every: 0.1, tick)
         task = Task { [weak self] in
-            let run = Task { await runner.run() }
-            var adopted = false
-            while !Task.isCancelled {
-                let s = runner.status
-                guard let self else { return }
-                self.status = s
-                if !adopted, let id = s.recordingID { adopted = true; self.onRecording(id) }
-                if s.startedAt != nil, self.runsStarted == index { self.runsStarted = index + 1 }
-                self.syncParticipant(s.state)
-                if case .ended = s.state { break }
-                if case .failed = s.state { break }
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-            let final = await run.value
+            let final = await runner.run()
+            self?.stopPolling()
             self?.ended(final)
         }
+    }
+
+    @ObservationIgnored private var poll: Timer?
+
+    private func startPolling(every interval: TimeInterval, _ tick: @escaping @MainActor () -> Void) {
+        stopPolling()
+        tick()
+        let timer = Timer(timeInterval: interval, repeats: true) { _ in MainActor.assumeIsolated { tick() } }
+        RunLoop.main.add(timer, forMode: .common)
+        poll = timer
+    }
+
+    private func stopPolling() {
+        poll?.invalidate()
+        poll = nil
     }
 
     private func ended(_ s: ProtocolRunner.Status) {
@@ -260,6 +275,7 @@ final class RunController {
     /// Closes the participant window and stops listening for keys (window closing, quit).
     func tearDown() {
         tornDown = true
+        stopPolling()
         task?.cancel()
         runner?.abortRun()
         if let keys { NSEvent.removeMonitor(keys) }
