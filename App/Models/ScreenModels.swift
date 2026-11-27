@@ -24,6 +24,26 @@ enum Fmt {
                                                 locale: Locale(identifier: "en_US_POSIX"), timeZone: timeZone, calendar: Calendar(identifier: .gregorian)))
     }
 
+    /// "Today, 7:58 AM", "Yesterday, 7:58 AM", else "Nov 27, 2026, 7:58 AM": a stored time as
+    /// people read it (decision #67). Tests pin `now`, `locale`, `timeZone` and `calendar`.
+    static func relativeDateTime(_ date: Date, now: Date = Date(), locale: Locale = .current,
+                                 timeZone: TimeZone = .current, calendar: Calendar = .current) -> String {
+        var cal = calendar
+        cal.timeZone = timeZone
+        cal.locale = locale
+        let time = shortTime(date, locale: locale, timeZone: timeZone, calendar: cal)
+        if cal.isDate(date, inSameDayAs: now) { return "Today, \(time)" }
+        if let y = cal.date(byAdding: .day, value: -1, to: now), cal.isDate(date, inSameDayAs: y) { return "Yesterday, \(time)" }
+        var style = Date.FormatStyle(date: .abbreviated, time: .omitted, locale: locale, calendar: cal, timeZone: timeZone)
+        style.capitalizationContext = .standalone
+        return "\(date.formatted(style)), \(time)"
+    }
+
+    /// "7:58 AM" (or "07:58" where the locale uses a 24-hour clock).
+    static func shortTime(_ date: Date, locale: Locale = .current, timeZone: TimeZone = .current, calendar: Calendar = .current) -> String {
+        date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, locale: locale, calendar: calendar, timeZone: timeZone))
+    }
+
     /// "13:17", local, for lists whose rows are already grouped by day.
     static func time(_ date: Date, timeZone: TimeZone = .current) -> String {
         date.formatted(Date.VerbatimFormatStyle(format: "\(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits)",
@@ -63,7 +83,9 @@ enum WelcomeModel {
                       symbol: "cable.connector", disabledReason: nil),
     ]
 
-    static let emptyRecents = "No recent projects."
+    static let emptyRecents = "No recent projects yet"
+    static let emptyRecentsDetail = "Projects you open or create appear here. Start with the example: a public recording you can evaluate in a minute."
+    static let emptyRecentsAction = "Explore an example"
 }
 
 /// One row of the welcome window's recent-projects list.
@@ -97,7 +119,7 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .recordings: return "Recordings"
         case .protocols: return "Protocols"
-        case .pipelines: return "Pipelines"
+        case .pipelines: return "Models"
         case .results: return "Results"
         case .liveTest: return "Live Test"
         }
@@ -107,7 +129,7 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .recordings: return "waveform"
         case .protocols: return "list.bullet.clipboard"
-        case .pipelines: return "slider.horizontal.3"
+        case .pipelines: return "cube.transparent"
         case .results: return "chart.bar.doc.horizontal"
         case .liveTest: return "bolt.horizontal.circle"
         }
@@ -191,6 +213,10 @@ struct RecordingDetailModel {
         let duration: String
         let gaps: Int
         let endReason: String
+        /// "Run 1" for a run whose stored id is a UUID (live recordings), else the stored id
+        /// (decision #63); the stored id stays in the row's tooltip.
+        var runName: String = ""
+        var sessionName: String = ""
         var id: Int { index }
     }
 
@@ -203,6 +229,8 @@ struct RecordingDetailModel {
         let runID: String
         let trial: String
         let segment: Int
+        /// "Run 1" when the stored run id is a UUID (see `runName(_:ordinal:)`).
+        var runName: String = ""
         var onsetText: String { onsetSeconds.map { Fmt.fixed($0, 3) } ?? "—" }
         var onsetSortKey: Double { onsetSeconds ?? -1 }
     }
@@ -237,7 +265,7 @@ struct RecordingDetailModel {
         // kind, file, hash, derivation, warning) stays in the manifest and every export.
         let demo = Self.isDemo(m)
         badge = demo ? Self.demo : nil
-        warning = demo ? nil : s.warning ?? (isPublicDataset ? "Public recording (\(s.dataset ?? "public dataset")) — not recorded on your device." : nil)
+        warning = Self.pageWarning(for: m)
 
         var fields: [Field] = []
         if demo {
@@ -273,17 +301,39 @@ struct RecordingDetailModel {
         montageLayout = MontageLayout(montage: m.montage, reference: m.reference, channels: channels)
 
         let rate = m.timing.nominalSampleRateHz
+        var runOrdinal: [String: Int] = [:], sessionOrdinal: [String: Int] = [:]
+        for seg in m.segments.sorted(by: { $0.index < $1.index }) {
+            if runOrdinal[seg.runID] == nil { runOrdinal[seg.runID] = runOrdinal.count + 1 }
+            if let s = seg.sessionID, sessionOrdinal[s] == nil { sessionOrdinal[s] = sessionOrdinal.count + 1 }
+        }
         segments = m.segments.sorted { $0.index < $1.index }.map { seg in
             let samples = m.chunks.filter { $0.segment == seg.index }.reduce(0) { $0 + $1.sampleCount }
             return SegmentRow(index: seg.index, runID: seg.runID, session: seg.sessionID ?? "—", samples: samples,
                               duration: rate > 0 ? "\(Fmt.fixed(Double(samples) / rate, 1)) s" : "—",
-                              gaps: seg.detectedGaps.count, endReason: seg.endReason?.rawValue ?? "—")
+                              gaps: seg.detectedGaps.count, endReason: seg.endReason?.rawValue ?? "—",
+                              runName: Self.runName(seg.runID, ordinal: runOrdinal[seg.runID] ?? 1),
+                              sessionName: seg.sessionID.map { UUID(uuidString: $0) != nil ? "Session \(sessionOrdinal[$0] ?? 1)" : $0 } ?? "—")
         }
         self.events = events.map { e in
             EventRow(id: e.eventID, label: e.label,
                      onsetSeconds: e.sampleAssociation.flatMap { rate > 0 ? Double($0.sampleIndex) / rate : nil },
-                     runID: e.runID, trial: e.trialID ?? "—", segment: e.sampleAssociation?.segment ?? Int.max)
+                     runID: e.runID, trial: e.trialID ?? "—", segment: e.sampleAssociation?.segment ?? Int.max,
+                     runName: Self.runName(e.runID, ordinal: runOrdinal[e.runID] ?? 1))
         }.sorted { ($0.segment, $0.onsetSortKey) < ($1.segment, $1.onsetSortKey) }
+    }
+
+    /// A run's name for primary text: a generated UUID becomes "Run N"; a dataset's own
+    /// run name (S001R04) is already readable and stays.
+    static func runName(_ runID: String, ordinal: Int) -> String {
+        UUID(uuidString: runID) != nil ? "Run \(ordinal)" : runID
+    }
+
+    /// The warning chip at the top of the recording page: the manifest's own warning (a
+    /// public dataset without one gets the spec's line); none for the Demo (decision #42).
+    static func pageWarning(for m: RecordingManifest) -> String? {
+        let s = m.source
+        guard !isDemo(m) else { return nil }
+        return s.warning ?? (s.kind == "public_dataset" ? "Public recording (\(s.dataset ?? "public dataset")) — not recorded on your device." : nil)
     }
 
     static let demo = "Demo"
@@ -398,4 +448,31 @@ struct ProgressDisplay: Equatable {
         let name = stage
         accessibilityValue = position.map { "\(name), \($0) of \(Self.stages.count)" } ?? name
     }
+}
+
+// MARK: - Project window chrome
+
+/// Toolbar, placeholder and banner copy for the project window (brief 011).
+enum WindowCopy {
+    static let evaluateHelp = "Evaluate the selected recording (⌘R)"
+    static let cancelHelp = "Cancel the evaluation (⌘.)"
+    static let parametersHelp = "Evaluation parameters: seed, CSP components and the analysis window"
+    static let parametersDisabled = "Parameters apply to the next evaluation; they can't change while one runs."
+    static let exportHelp = "Export the selected result (⇧⌘X)"
+    static let resultLoading = "The result is still loading."
+    static let inspectorShow = "Show Inspector (⌥⌘I)"
+    static let inspectorHide = "Hide Inspector (⌥⌘I)"
+    static let inspectorLive = "Evaluate works on a saved recording; the inspector returns when you leave the live view."
+
+    /// Models section with nothing frozen yet (decision #64: no release-planning copy).
+    static let noModelsTitle = "No frozen models yet"
+    static let noModelsText = "A frozen model is a result's fitted classifier, kept for replay and live feedback. "
+        + "Open a result and choose Freeze for live use…."
+    static let showResults = "Show Results"
+    static let noModelSelected = "Select a model to see its details and replays."
+
+    static let analysisUnavailableTitle = "Analysis unavailable"
+    static let analysisUnavailableMessage = "The analysis worker stopped. Your recording is unchanged. Retry starts a fresh worker."
+    static let evaluationFailedTitle = "Evaluation failed"
+    static let evaluationFailedMessage = "The analysis worker refused this request; nothing was saved. Retrying without a change will fail the same way."
 }

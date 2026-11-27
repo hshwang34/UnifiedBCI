@@ -65,7 +65,7 @@ struct ProjectWindow: View {
                 .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 260)
         } content: {
             ContentColumn(session: session)
-                .navigationSplitViewColumnWidth(min: 250, ideal: 250, max: 360)
+                .navigationSplitViewColumnWidth(min: 230, ideal: 250, max: 300)
         } detail: {
             DetailColumn(session: session)
                 // Zero minimums: the page scrolls inside; it must never make the window
@@ -95,36 +95,11 @@ struct ProjectWindow: View {
         }
         .navigationTitle(session.name)
         .navigationSubtitle(subtitle)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                if session.isRunning {
-                    Button { session.cancel() } label: { Label("Cancel", systemImage: "stop.fill") }
-                        .labelStyle(.titleAndIcon)
-                        .help("Cancel the evaluation (⌘.)")
-                } else {
-                    Button { session.evaluate() } label: { Label("Evaluate", systemImage: "play.fill") }
-                        .labelStyle(.titleAndIcon)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!session.canEvaluate)
-                        .help(session.evaluateDisabledReason ?? "Evaluate the selected recording (⌘R)")
-                }
-            }
-            FixedToolbarSpacer()
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button("Parameters…") { showParameters.toggle() }
-                    .help("Evaluation parameters")
-                    .popover(isPresented: $showParameters, arrowEdge: .bottom) { ParametersPopover(session: session) }
-                Button { workspace.exportPanel(for: session) } label: { Label("Export…", systemImage: "square.and.arrow.up") }
-                    .disabled(session.selectedResultID == nil || session.section != .results)
-                    .help("Export the selected result (⇧⌘X)")
-            }
-            FixedToolbarSpacer()
-            ToolbarItem(placement: .primaryAction) {
-                Button { session.showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.trailing") }
-                    .disabled(session.section != .recordings || showsLive)
-                    .help(session.showInspector ? "Hide Inspector (⌥⌘I)" : "Show Inspector (⌥⌘I)")
-            }
-        }
+        .toolbar { ProjectToolbar(session: session, showParameters: $showParameters, showsLive: showsLive) }
+        // Brief 011 item 13: the title never shows through the toolbar over scrolled content.
+        .hardTopScrollEdge()
+        // Decision #68: below 1200 pt the inspector starts hidden, never animated, never while live.
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in adaptInspector(to: width) }
         .focusedSceneValue(\.projectSession, session)
         // Brief 007: "Show me" rings the control a step's anchor names, sheets included.
         .environment(session.spotlight)
@@ -169,6 +144,26 @@ struct ProjectWindow: View {
 
     private var showsLive: Bool { session.section == .recordings && session.liveShown && session.hasLiveRow }
 
+    /// Below this window width the Evaluate inspector starts hidden (decision #68).
+    static let inspectorAutoHideWidth: CGFloat = 1200
+    @State private var autoHidInspector = false
+
+    /// Collapses the inspector when the window gets narrow, and reopens it when it widens only
+    /// if it was this that hid it. No animation, and never while the live view shows: an
+    /// animated collapse during stream start wedged the main actor (brief 009).
+    private func adaptInspector(to width: CGFloat) {
+        guard !showsLive, width > 0 else { return }
+        var t = Transaction()
+        t.disablesAnimations = true
+        if width < Self.inspectorAutoHideWidth, session.showInspector {
+            withTransaction(t) { session.showInspector = false }
+            autoHidInspector = true
+        } else if width >= Self.inspectorAutoHideWidth, autoHidInspector {
+            withTransaction(t) { session.showInspector = true }
+            autoHidInspector = false
+        }
+    }
+
     private var subtitle: String {
         if showsLive, let live = session.live, let source = live.source {
             return AcquisitionStateModel.statusLine(live.state, source: source, recording: live.isRecording, reconnects: live.snapshot.health.reconnects)
@@ -177,10 +172,65 @@ struct ProjectWindow: View {
         case .recordings: return session.selectedRecording.map { RecordingDetailModel.title(for: $0.manifest) } ?? "Recordings"
         case .results:
             if let id = session.selectedResultID, let meta = session.results.first(where: { $0.resultID == id }) {
-                return "Result · seed \(meta.seed) · \(ProjectSession.time(meta.createdAt))"
+                return "Result · \(Fmt.relativeDateTime(meta.createdAt))"
             }
             return "Results"
         default: return session.section.title
+        }
+    }
+}
+
+// MARK: Toolbar
+
+/// Decision #65: only what the section can do. Recordings: Evaluate and Parameters…; a
+/// selected result: Freeze for live use… and Export…; the inspector toggle on Recordings.
+/// The live view's Record and Disconnect live in the live screen itself.
+private struct ProjectToolbar: ToolbarContent {
+    @Bindable var session: ProjectSession
+    @Binding var showParameters: Bool
+    let showsLive: Bool
+    @Environment(Workspace.self) private var workspace
+
+    var body: some ToolbarContent {
+        if session.section == .recordings && !showsLive {
+            ToolbarItem(placement: .primaryAction) {
+                if session.isRunning {
+                    Button { session.cancel() } label: { Label("Cancel", systemImage: "stop.fill") }
+                        .labelStyle(.titleAndIcon)
+                        .help(WindowCopy.cancelHelp)
+                } else {
+                    Button { session.evaluate() } label: { Label("Evaluate", systemImage: "play.fill") }
+                        .labelStyle(.titleAndIcon)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!session.canEvaluate)
+                        .help(session.evaluateDisabledReason ?? WindowCopy.evaluateHelp)
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button("Parameters…") { showParameters.toggle() }
+                    .disabled(session.isRunning)
+                    .help(session.isRunning ? WindowCopy.parametersDisabled : WindowCopy.parametersHelp)
+                    .popover(isPresented: $showParameters, arrowEdge: .bottom) { ParametersPopover(session: session) }
+            }
+        }
+        if session.section == .results && session.selectedResultID != nil {
+            ToolbarItem(placement: .primaryAction) {
+                Button(ReplayCopy.freezeButton) { if let stored = session.selectedResult { session.showFreeze(stored) } }
+                    .disabled(session.selectedResult == nil)
+                    .help(session.selectedResult == nil ? WindowCopy.resultLoading : ReplayCopy.freezeHelp)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button { workspace.exportPanel(for: session) } label: { Label("Export…", systemImage: "square.and.arrow.up") }
+                    .help(WindowCopy.exportHelp)
+            }
+        }
+        if session.section == .recordings {
+            FixedToolbarSpacer()
+            ToolbarItem(placement: .primaryAction) {
+                Button { session.showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.trailing") }
+                    .disabled(showsLive)
+                    .help(showsLive ? WindowCopy.inspectorLive : session.showInspector ? WindowCopy.inspectorHide : WindowCopy.inspectorShow)
+            }
         }
     }
 }
@@ -194,10 +244,15 @@ private struct ProjectSidebar: View {
         List(selection: Binding(get: { session.section }, set: { if let s = $0 { session.section = s } })) {
             Section("Project") {
                 ForEach(SidebarSection.allCases) { section in
-                    Label(section.title, systemImage: section.symbol)
-                        .symbolRenderingMode(.hierarchical)
-                        .badge(count(section))
-                        .tag(section)
+                    let n = count(section)
+                    HStack(spacing: Theme.Space.s) {
+                        Label(section.title, systemImage: section.symbol)
+                            .symbolRenderingMode(.hierarchical)
+                        Spacer(minLength: Theme.Space.xs)
+                        if n > 0 { SidebarCount(count: n, selected: session.section == section) }
+                    }
+                    .tag(section)
+                    .accessibilityElement(children: .combine)
                 }
             }
         }
@@ -265,6 +320,24 @@ private struct ProjectSidebar: View {
         case .results: return session.results.count
         default: return 0
         }
+    }
+}
+
+/// A count beside a sidebar row: full-contrast digits on a capsule that reads on the plain
+/// sidebar and on the selected row (the system badge was secondary text on both).
+private struct SidebarCount: View {
+    let count: Int
+    let selected: Bool
+
+    var body: some View {
+        Text("\(count)")
+            .font(.caption.weight(.semibold))
+            .monospacedDigit()
+            .foregroundStyle(Theme.textPrimary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 1)
+            .background(selected ? Color.white.opacity(0.22) : Theme.surface2, in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: selected ? 0 : 1))
     }
 }
 
@@ -387,19 +460,19 @@ private struct ResultRow: View {
     let results: [ResultMeta]
 
     var body: some View {
-        let time = ProjectSession.time(node.meta.createdAt)
+        let when = Fmt.relativeDateTime(node.meta.createdAt)
         HStack(spacing: 6) {
             if node.isReproduction {
                 Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(Theme.textSecondary)
-                Text("Reproduction").lineLimit(1)
             } else if node.diverged {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning)
-                Text("Differs").lineLimit(1)
-            } else {
-                Text("Seed \(node.meta.seed)").lineLimit(1)
             }
-            Spacer(minLength: 4)
-            Text(time).foregroundStyle(Theme.textSecondary).monospacedDigit()
+            VStack(alignment: .leading, spacing: 1) {
+                Text(node.isReproduction ? "Reproduction" : node.diverged ? "Differs from original" : when).lineLimit(1)
+                Text(node.isReproduction || node.diverged ? when : "Seed \(node.meta.seed)")
+                    .font(.caption).foregroundStyle(Theme.textSecondary).monospacedDigit().lineLimit(1)
+            }
+            .padding(.vertical, 2)
         }
         .help(fullDescription)
         .accessibilityElement(children: .ignore)
@@ -407,15 +480,15 @@ private struct ResultRow: View {
     }
 
     private var fullDescription: String {
-        let time = ProjectSession.time(node.meta.createdAt)
-        if node.isReproduction { return "Reproduction of \(originalTime), run at \(time)" }
-        if node.diverged { return "Differs from the \(originalTime) original, run at \(time)" }
-        return "Seed \(node.meta.seed), \(time)"
+        let time = Fmt.relativeDateTime(node.meta.createdAt)
+        if node.isReproduction { return "Reproduction of \(originalTime), run \(time)" }
+        if node.diverged { return "Differs from the \(originalTime) original, run \(time)" }
+        return "Result of \(time), seed \(node.meta.seed)"
     }
 
     private var originalTime: String {
         let id = node.meta.reproductionOf ?? node.meta.divergedFrom
-        return results.first { $0.resultID == id }.map { ProjectSession.time($0.createdAt) } ?? "original"
+        return results.first { $0.resultID == id }.map { Fmt.relativeDateTime($0.createdAt) } ?? "original"
     }
 }
 
@@ -448,11 +521,7 @@ private struct RecipeRow: View {
         VStack(alignment: .leading, spacing: Theme.Space.s) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(recipe.name).font(Theme.Fonts.sectionHeader)
-                HStack(spacing: Theme.Space.s) {
-                    Text(recipe.id).font(Theme.Fonts.monoCaption)
-                    Text(recipe.role).font(.caption)
-                }
-                .foregroundStyle(Theme.textSecondary)
+                Text(recipe.role).font(.caption).foregroundStyle(Theme.textSecondary)
             }
             ForEach(recipe.steps, id: \.self) { step in
                 Label {
@@ -463,6 +532,8 @@ private struct RecipeRow: View {
             }
         }
         .padding(.vertical, Theme.Space.s)
+        // Decision #63: the stored recipe id stays one hover away.
+        .help("Recipe id: \(recipe.id)")
         .accessibilityElement(children: .combine)
     }
 }
@@ -496,11 +567,19 @@ private struct DetailColumn: View {
                 Placeholder(title: "No Result Selected", symbol: SidebarSection.results.symbol, text: nil)
             }
         case .pipelines:
-            if let model = session.frozen.selectedModel {
+            // The frozen model's detail by default: the selection, else the newest model.
+            if let model = session.frozen.selectedModel ?? session.frozen.models.last {
                 FrozenModelDetailView(session: session, model: model).id(model.modelID)
             } else {
-                Placeholder(title: "Read-only in phase 1", symbol: SidebarSection.pipelines.symbol,
-                        text: "These recipes run as shipped. Parameters… changes the window, CSP components and seed of one evaluation; the values are stored with its result.")
+                ContentUnavailableView {
+                    Label(WindowCopy.noModelsTitle, systemImage: SidebarSection.pipelines.symbol).foregroundStyle(Theme.textSecondary)
+                } description: {
+                    Text(WindowCopy.noModelsText).foregroundStyle(Theme.textSecondary)
+                } actions: {
+                    Button(WindowCopy.showResults) { session.section = .results }
+                        .disabled(session.results.isEmpty)
+                        .help(session.results.isEmpty ? "No results yet. Evaluate a recording first." : "")
+                }
             }
         case .protocols:
             if let r = session.selectedProtocol, let list = session.protocolList {
@@ -538,6 +617,19 @@ private struct StatusArea: View {
     let session: ProjectSession
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private var hasContent: Bool {
+        session.banner != nil || session.progress != nil || session.notice.map { !Self.shownOnPage($0, session: session) } == true
+    }
+
+    /// Decision #66: a reproduction (or a divergence) is named by the result's own chip,
+    /// so the toast doesn't repeat it while that result is on screen.
+    static func shownOnPage(_ notice: ProjectSession.Notice, session: ProjectSession) -> Bool {
+        switch notice {
+        case .reproduced, .diverged: return session.section == .results && session.selectedResultID != nil
+        default: return false
+        }
+    }
+
     var body: some View {
         Group {
             if let banner = session.banner {
@@ -545,7 +637,7 @@ private struct StatusArea: View {
             } else if let p = session.progress {
                 ProgressPanel(progress: p) { session.cancel() }
                     .transition(.opacity.combined(with: .offset(y: -8)))
-            } else if let notice = session.notice {
+            } else if let notice = session.notice, !Self.shownOnPage(notice, session: session) {
                 NoticeView(notice: notice, text: session.noticeText(notice), dismiss: session.dismissNotice)
                     .transition(.opacity.combined(with: .offset(y: -8)))
             }
@@ -557,6 +649,8 @@ private struct StatusArea: View {
         .frame(minWidth: 0, idealWidth: 300, maxWidth: 680)
         .padding(.horizontal, Theme.Space.l)
         .padding(.top, Theme.Space.m)
+        // Its own slot: the page title below starts after a clear gap (brief 011 item 7).
+        .padding(.bottom, hasContent ? Theme.Space.s : 0)
         .animation(Theme.motion(reduceMotion: reduceMotion), value: session.progress == nil)
         .animation(Theme.motion(reduceMotion: reduceMotion), value: session.notice)
     }
@@ -643,12 +737,16 @@ struct ErrorBanner: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
         VStack(alignment: .leading, spacing: Theme.Space.s) {
-                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
+                HStack(alignment: .center, spacing: Theme.Space.s) {
                     Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(Theme.danger)
                     Text(title).font(.headline).foregroundStyle(Theme.textPrimary)
                     Spacer()
                     if let retry {
-                        Button("Retry", action: retry).appProminentButton()
+                        Button(action: retry) { Label("Retry", systemImage: "arrow.clockwise") }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Theme.accentFill)
+                            .controlSize(.large)
+                            .help("Start a fresh analysis worker and try again")
                     }
                 }
                 // No fixedSize here or in anything else in this inset: a fixed-size text is
@@ -704,15 +802,15 @@ extension ErrorBanner {
 
     private static func title(_ banner: ProjectSession.Banner) -> String {
         switch banner {
-        case .analysisUnavailable: return "Analysis unavailable"
-        case .failed: return "Evaluation failed"
+        case .analysisUnavailable: return WindowCopy.analysisUnavailableTitle
+        case .failed: return WindowCopy.evaluationFailedTitle
         }
     }
 
     private static func message(_ banner: ProjectSession.Banner) -> String {
         switch banner {
-        case .analysisUnavailable: return "The analysis worker stopped. Your recording is unchanged."
-        case .failed: return "The analysis worker refused this request; nothing was saved. Retrying without a change will fail the same way."
+        case .analysisUnavailable: return WindowCopy.analysisUnavailableMessage
+        case .failed: return WindowCopy.evaluationFailedMessage
         }
     }
 

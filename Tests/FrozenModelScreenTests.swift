@@ -51,7 +51,7 @@ final class FrozenModelScreenTests: XCTestCase {
         XCTAssertNil(session.frozen.freezeDraft)
         XCTAssertNil(session.frozen.sheet)
         XCTAssertEqual(session.notice, .frozen(name: "Tiny model"))
-        XCTAssertEqual(session.noticeText(.frozen(name: "Tiny model")), "Frozen as \u{201C}Tiny model\u{201D}. It is listed under Pipelines.")
+        XCTAssertEqual(session.noticeText(.frozen(name: "Tiny model")), "Frozen as \u{201C}Tiny model\u{201D}. It is listed under Models.")
         XCTAssertEqual(session.frozen.models.map(\.modelID), [model.modelID])
         XCTAssertEqual(session.frozen.selectedModelID, model.modelID)
         let row = try XCTUnwrap(session.frozen.rows(results: session.results).first)
@@ -61,7 +61,9 @@ final class FrozenModelScreenTests: XCTestCase {
         XCTAssertEqual(FreezeSheetModel.channels(["ch00", "ch01"], labels: ["ch00": "C3", "ch01": " "]), "2, in this order: C3, ch01",
                        "an undeclared label keeps the id")
         XCTAssertEqual(FrozenModelRowModel.facts(model).map(\.label),
-                       ["Channels", "Sample rate", "Band-pass", "Window", "Filter warm-up", "Classes", "Training runs", "Frozen", "Arrays SHA-256"])
+                       ["Channels", "Sample rate", "Band-pass", "Window", "Filter warm-up", "Classes", "Training runs", "Frozen"])
+        XCTAssertEqual(FrozenModelRowModel.details(model).first { $0.label == "Arrays SHA-256" }?.value, model.fittedSHA256,
+                       "the full hash is kept under Details (decision #63)")
 
         // The same fit again: the sheet stays open with the store's reason.
         session.showFreeze(stored)
@@ -126,7 +128,7 @@ final class FrozenModelScreenTests: XCTestCase {
                                                  mismatches: ["chunks of 1: decision differs at segment 0, window ending at sample 99"]),
                                    summary: .init(predictions: 10, byValidity: ["valid": 6, "insufficient_window": 4], abstained: 2))
         let view = ParityViewModel(record: record, sampleRateHz: 125)!
-        XCTAssertEqual(view.headline, "Streaming differs from offline")
+        XCTAssertEqual(view.headline, "Live path differs from offline")
         XCTAssertEqual(view.tolerances.map(\.within), [nil, nil, false], "missing quantities are not compared, never a number")
         XCTAssertEqual(view.tolerances[0].text, "Band-passed samples: not compared")
         XCTAssertEqual(view.cueLocked, "Cue-locked trial windows compared: 4")
@@ -143,14 +145,14 @@ final class FrozenModelScreenTests: XCTestCase {
         claimed.parity?.mismatches = []
         let inconsistent = ParityViewModel(record: claimed, sampleRateHz: 125)!
         XCTAssertFalse(inconsistent.passed)
-        XCTAssertEqual(inconsistent.headline, "Streaming differs from offline")
+        XCTAssertEqual(inconsistent.headline, "Live path differs from offline")
 
         // Decision #40 copy: 2 s is suggested only to a longer window.
         XCTAssertNil(FreezeSheetModel.suggestion(offset: 0.5, length: 2.0, cue: 4.0))
         XCTAssertEqual(FreezeSheetModel.suggestion(offset: 0.5, length: 1.5, cue: 4.0),
                        "This model's 1.5 s window is shorter than the 2 s suggested for live use, so feedback can show for more of each cue. "
                        + "Its held-out result was measured with this window.")
-        XCTAssertTrue(FreezeSheetModel.suggestion(offset: 0.5, length: 3.0, cue: 4.0)!.hasPrefix("For live feedback, evaluate with a 2 s window: feedback would then show for 1.5 s"))
+        XCTAssertTrue(FreezeSheetModel.suggestion(offset: 0.5, length: 3.0, cue: 4.0)!.hasPrefix("Next time, evaluate with a 2 s window for live feedback: feedback would then show for 1.5 s"))
         XCTAssertEqual(FreezeSheetModel.eligibleSpanSeconds(offset: -0.5, length: 2, cue: 4), 2, "a window never reaches back before the cue")
     }
 

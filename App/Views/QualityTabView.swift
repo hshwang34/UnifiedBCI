@@ -67,6 +67,11 @@ struct QualityTabView: View {
                     Text(section.title).font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
                 }
                 Text(section.summary).font(.callout).foregroundStyle(Theme.textSecondary)
+                if let shared = section.sharedFlags {
+                    Label { Text(shared).font(.callout.weight(.semibold)).foregroundStyle(Theme.textPrimary) } icon: {
+                        Image(systemName: "flag.fill").foregroundStyle(Theme.warning)
+                    }
+                }
             }
             channelTable(section)
             if let spectrum = model.spectrum(section: segment, channel: selected) {
@@ -95,7 +100,9 @@ struct QualityTabView: View {
                 .accessibilityHidden(true)
             Divider()
             List(section.rows, selection: $selected) { r in
-                ChannelLine(label: Text(r.label).font(Theme.Fonts.mono), kind: Text(r.kindUnit).foregroundStyle(Theme.textSecondary)) { FlagsCell(row: r) }
+                ChannelLine(label: Text(r.label).font(.body.weight(.medium)), kind: Text(r.kindUnit).foregroundStyle(Theme.textSecondary)) {
+                    FlagsCell(row: r, compact: section.sharedFlags != nil)
+                }
                     .padding(.vertical, Theme.Space.xxs)
                     // VoiceOver reads the row as one sentence: channel first, then flags.
                     .accessibilityElement(children: .ignore)
@@ -170,12 +177,21 @@ private struct ChannelLine<Flags: View>: View {
 /// any checks that could not run.
 private struct FlagsCell: View {
     let row: QualityModel.ChannelRow
+    /// The section names the shared flags once: a marker, with the detail in the tooltip.
+    var compact = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             if let status = row.status { Text(status).foregroundStyle(Theme.textSecondary) }
-            ForEach(row.flags, id: \.ruleID) { flag in
-                Label { Text(flag.text) } icon: { Image(systemName: "flag.fill").foregroundStyle(Theme.warning) }
+            if compact, !row.flags.isEmpty {
+                Label { Text(row.flags.map(\.detail).joined(separator: " · ")).foregroundStyle(Theme.textPrimary).monospacedDigit() } icon: {
+                    Image(systemName: "flag.fill").foregroundStyle(Theme.warning)
+                }
+                .help(row.flags.map(\.text).joined(separator: "\n"))
+            } else {
+                ForEach(row.flags, id: \.ruleID) { flag in
+                    Label { Text(flag.text) } icon: { Image(systemName: "flag.fill").foregroundStyle(Theme.warning) }
+                }
             }
             ForEach(row.notAssessed, id: \.self) { Text($0).font(.caption).foregroundStyle(Theme.textSecondary) }
         }

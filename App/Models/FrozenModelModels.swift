@@ -62,15 +62,18 @@ struct FreezeSheetModel: Equatable {
     /// Decision #40: suggest a 2 s window when the evaluation used another length.
     let windowSuggestion: String?
     let evidence: String
-    let confidenceNote = "The bar shows model confidence: how strongly the classifier favours one of its two classes. "
+    let confidenceNote = "During live feedback the bar shows model confidence: how strongly the classifier favours one of its two classes. "
         + "It is not calibrated and is not a probability of intent."
+    /// Brief 011: what the Model / Baseline choice means, in one sentence.
+    static let roleExplainer = "Model is the result's main classifier. Baseline is the simpler log-variance classifier it was compared with: "
+        + "freeze it to check live whether the model adds anything."
     let canFreeze: Bool
 
     static let suggestedWindowSeconds = 2.0
 
     /// `channelLabels`: channel id → the label the recording declares (`ChannelSpec.label`).
     init(result: StoredResult, report: EvaluationReport?, role: ModelRole, sessions: [String?], cueLengthSeconds: Double?,
-         channelLabels: [String: String] = [:]) {
+         channelLabels: [String: String] = [:], className: (String) -> String = ClassDisplay.name) {
         let p = result.pipeline
         let c = p.configuration
         let offset = c["window_offset_s"].flatMap(Double.init)
@@ -84,7 +87,7 @@ struct FreezeSheetModel: Equatable {
         let sessionText = sessions.isEmpty || sessions.contains(where: { $0 == nil }) ? "session unknown"
             : "session \(knownSessions.sorted().joined(separator: ", "))"
         var rows = [
-            Row(label: "Model", value: "\(recipe), the fit on the training runs of the result from \(date)"),
+            Row(label: "Model", value: "\(recipe), fitted on the training runs of the result from \(Fmt.relativeDateTime(result.meta.createdAt))"),
             Row(label: "Training runs", value: runs.isEmpty ? "not recorded" : "\(runs.joined(separator: ", ")) · \(sessionText)"),
             Row(label: "Channels", value: Self.channels(p.expectedChannelIDs, labels: channelLabels)),
             Row(label: "Sample rate", value: Fmt.hertz(p.expectedSampleRateHz)),
@@ -95,7 +98,7 @@ struct FreezeSheetModel: Equatable {
         if let offset, let length {
             rows.append(Row(label: "Window", value: "\(Fmt.seconds(length)) starting \(Fmt.seconds(offset)) after the cue"))
         }
-        rows.append(Row(label: "Classes", value: [c["label_left"], c["label_right"]].compactMap { $0 }.joined(separator: " vs ")))
+        rows.append(Row(label: "Classes", value: [c["label_left"], c["label_right"]].compactMap { $0 }.map(className).joined(separator: " vs ")))
         self.rows = rows
         canFreeze = offset != nil && length != nil
 
@@ -129,7 +132,7 @@ struct FreezeSheetModel: Equatable {
             let s = eligibleSpanSeconds(offset: offset, length: suggestedWindowSeconds, cue: c)
             return s > 0 ? ": feedback would then show for \(Fmt.seconds(s)) of each cue" : ""
         } ?? ""
-        return "For live feedback, evaluate with a 2 s window\(then). This model's \(Fmt.seconds(length)) window leaves less of the cue for feedback."
+        return "Next time, evaluate with a 2 s window for live feedback\(then). This model's \(Fmt.seconds(length)) window leaves less of the cue for feedback; it can still be frozen."
     }
 
     /// Decision #40: only windows wholly inside the imagery period show feedback.
@@ -178,7 +181,10 @@ struct ParityViewModel: Equatable {
     }
 
     let passed: Bool
+    /// "Live path matches offline": the verdict, leading the view (decision #63).
     let headline: String
+    /// One sentence saying what was checked, in plain words.
+    let summary: String
     let symbol: String
     let tolerances: [Line]
     let windows: String
@@ -233,7 +239,10 @@ struct ParityViewModel: Equatable {
         }
         // The headline can't say "matches" while a line shows a difference over its tolerance.
         passed = p.passed && !tolerances.contains { $0.within == false }
-        headline = passed ? "Streaming matches offline within tolerance" : "Streaming differs from offline"
+        headline = passed ? "Live path matches offline" : "Live path differs from offline"
+        summary = passed
+            ? "Fed through in small pieces, as it would arrive live, the recording gave the same filtered signal, features and scores as the offline evaluation on all \(p.windowsCompared) windows compared."
+            : "Fed through in small pieces, as it would arrive live, the recording gave results that differ from the offline evaluation. The details below say where."
         symbol = passed ? "checkmark.seal" : "exclamationmark.triangle"
         let cue = p.cueLockedCompared.map { ", \($0) of them cue-locked trial windows" } ?? ""
         windows = "\(p.windowsCompared) windows compared\(cue)"
@@ -268,7 +277,7 @@ struct FrozenModelRowModel: Equatable, Identifiable {
         id = model.modelID
         name = model.name
         source = "\(FreezeSheetModel.recipeName(model.recipe)) · from the result of "
-            + (sourceResultDate.map { FreezeSheetModel.dateText($0) } ?? "a result no longer in this project")
+            + (sourceResultDate.map { Fmt.relativeDateTime($0) } ?? "a result no longer in this project")
         usage = liveRuns == 0 ? "Not used in a live run yet" : "Used in \(liveRuns) live run\(liveRuns == 1 ? "" : "s")"
     }
 
@@ -281,10 +290,21 @@ struct FrozenModelRowModel: Equatable, Identifiable {
             .init(label: "Band-pass", value: "\(Fmt.fixed(m.bandpass.lowHz, 1))–\(Fmt.fixed(m.bandpass.highHz, 1)) Hz, causal, order \(m.bandpass.order)"),
             .init(label: "Window", value: "\(Fmt.seconds(m.window.lengthSeconds)) starting \(Fmt.seconds(m.window.offsetSeconds)) after the cue"),
             .init(label: "Filter warm-up", value: "\(m.warmupSamples) samples (\(Fmt.seconds(Double(m.warmupSamples) / max(m.expectedSampleRateHz, 1))))"),
-            .init(label: "Classes", value: "\(m.classLabels[0]) vs \(m.classLabels[1])"),
+            .init(label: "Classes", value: "\(ClassDisplay.name(m.classLabels[0])) vs \(ClassDisplay.name(m.classLabels[1]))"),
             .init(label: "Training runs", value: m.trainingRunIDs.isEmpty ? "not recorded" : m.trainingRunIDs.joined(separator: ", ")),
-            .init(label: "Frozen", value: FreezeSheetModel.dateText(m.frozenAt)),
-            .init(label: "Arrays SHA-256", value: String(m.fittedSHA256.prefix(16)) + "…"),
+            .init(label: "Frozen", value: Fmt.relativeDateTime(m.frozenAt)),
+        ]
+    }
+
+    /// The exact stored values, under Details (decision #63).
+    static func details(_ m: ModelRecord) -> [FreezeSheetModel.Row] {
+        [
+            .init(label: "Recipe", value: m.recipe),
+            .init(label: "Class labels", value: m.classLabels.joined(separator: ", ")),
+            .init(label: "Channel ids", value: m.expectedChannelIDs.joined(separator: ", ")),
+            .init(label: "Frozen at", value: FreezeSheetModel.dateText(m.frozenAt)),
+            .init(label: "Arrays SHA-256", value: m.fittedSHA256),
+            .init(label: "Model ID", value: m.modelID.uuidString),
         ]
     }
 }
@@ -296,7 +316,8 @@ enum ReplayCopy {
     static let replayButton = "Replay…"
     static let replayHelp = "Run a recording through a frozen model chunk by chunk and compare with offline"
     static let modelsSection = "Frozen models"
-    static let recipesSection = "Recipes"
+    static let recipesSection = "Recipes they come from"
+    static let parityDetails = "Details"
     static let noModels = "No frozen models. Open a result and choose Freeze for live use…."
     static let noModelForReplay = "No frozen model yet. Open a result and choose Freeze for live use… first."
     static let replaysTitle = "Replays"
@@ -305,7 +326,7 @@ enum ReplayCopy {
     static let replayExplainer = "The recording is fed through the model in pieces of 1, 7, 13 and 125 samples and a seeded random mix, "
         + "and every window is compared with the offline evaluation. Channels must match the model exactly; nothing is reordered or resampled."
 
-    static func frozen(_ name: String) -> String { "Frozen as \u{201C}\(name)\u{201D}. It is listed under Pipelines." }
+    static func frozen(_ name: String) -> String { "Frozen as \u{201C}\(name)\u{201D}. It is listed under Models." }
 
     static func replayRow(_ r: LiveRunRecord, recording: String) -> String {
         "\(FreezeSheetModel.dateText(r.startedAt)) · \(recording) · " + (r.parity?.passed == true ? "matches" : "differs")

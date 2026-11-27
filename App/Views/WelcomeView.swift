@@ -62,12 +62,7 @@ struct WelcomeView: View {
                     Text("Version \(Self.version)").font(.callout).foregroundStyle(Theme.textSecondary)
                 }
                 Spacer(minLength: Theme.Space.l)
-                if workspace.showsAgentCard {
-                    AgentWelcomeCard(dismiss: workspace.dismissAgentCard)
-                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                }
             }
-            .animation(LaunchArguments.reduceMotion(system: systemReduceMotion) ? nil : .smooth(duration: 0.3), value: workspace.showsAgentCard)
             HStack(alignment: .top, spacing: Theme.Space.xl) {
                 GlassGroup(spacing: 12) {
                     VStack(spacing: Theme.Space.m) {
@@ -85,7 +80,15 @@ struct WelcomeView: View {
                     }
                 }
                 .frame(width: 380)
-                recentList
+                VStack(alignment: .leading, spacing: Theme.Space.m) {
+                    recentList
+                    // Brief 011: news sits below the projects as a slim row, not in the hero spot.
+                    if workspace.showsAgentCard {
+                        AgentWelcomeCard(dismiss: workspace.dismissAgentCard)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(LaunchArguments.reduceMotion(system: systemReduceMotion) ? nil : .smooth(duration: 0.3), value: workspace.showsAgentCard)
             }
             .frame(maxHeight: .infinity, alignment: .top)
         }
@@ -101,9 +104,18 @@ struct WelcomeView: View {
             Text("Recent Projects").font(Theme.Fonts.sectionHeader).foregroundStyle(Theme.textPrimary)
             Group {
                 if workspace.recents.isEmpty {
-                    Text(WelcomeModel.emptyRecents)
-                        .foregroundStyle(Theme.textSecondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    VStack(spacing: Theme.Space.s) {
+                        Image(systemName: "shippingbox").font(.system(size: 28)).foregroundStyle(Theme.textSecondary)
+                            .accessibilityHidden(true)
+                        Text(WelcomeModel.emptyRecents).font(.headline).foregroundStyle(Theme.textPrimary)
+                        Text(WelcomeModel.emptyRecentsDetail).font(.callout).foregroundStyle(Theme.textSecondary)
+                            .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                        Button(WelcomeModel.emptyRecentsAction) { perform(.example) }
+                            .buttonStyle(.borderedProminent)
+                            .padding(.top, Theme.Space.xs)
+                    }
+                    .padding(Theme.Space.l)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List(workspace.recents, selection: $selection) { recent in
                         RecentRow(recent: recent)
@@ -202,7 +214,7 @@ private struct RecentRow: View {
                     .lineLimit(1)
                     .truncationMode(.head)
                 if let date = recent.modified, recent.exists {
-                    Text("Modified \(date, format: .relative(presentation: .named))")
+                    Text("Modified \(Fmt.relativeDateTime(date))")
                         .font(.caption)
                         .foregroundStyle(Theme.textSecondary)
                 }

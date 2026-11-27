@@ -236,12 +236,21 @@ final class ProtocolEditor: Identifiable {
         var cue: CueSymbol
     }
 
+    /// Where an issue shows: under its field (brief 011), or in the footer when nil.
+    enum Field: Hashable {
+        case name, displayName(Int), label(Int), fixation, cue, restMin, restMax, trialsPerClass, runsPerSession, instructions
+    }
+
     struct Issue: Identifiable, Equatable {
-        enum Kind: Equatable { case error, warning }
+        /// `.status` is neutral ("Nothing changed from v1"): it blocks Save but is not an error.
+        enum Kind: Equatable { case error, warning, status }
         let kind: Kind
         let text: String
+        var field: Field? = nil
         var id: String { text }
     }
+
+    func issues(for field: Field) -> [Issue] { issues.filter { $0.field == field } }
 
     nonisolated let id = UUID()
     let base: ProtocolRecord
@@ -282,28 +291,28 @@ final class ProtocolEditor: Identifiable {
     /// The draft, or nil while a duration doesn't parse.
     var draft: ProtocolDraft? { Self.validate(self).draft }
     var issues: [Issue] { Self.validate(self).issues }
-    var canSave: Bool { !isSaving && draft != nil && !issues.contains { $0.kind == .error } }
+    var canSave: Bool { !isSaving && draft != nil && !issues.contains { $0.kind == .error || $0.kind == .status } }
 
     static func validate(_ e: ProtocolEditor) -> (draft: ProtocolDraft?, issues: [Issue]) {
         var issues: [Issue] = []
-        func ms(_ text: String, _ what: String) -> Int? {
+        func ms(_ text: String, _ what: String, _ field: Field) -> Int? {
             switch parseMilliseconds(text) {
             case .success(let v): return v
             case .failure(let why):
-                issues.append(.init(kind: .error, text: why.text(what)))
+                issues.append(.init(kind: .error, text: why.text(what), field: field))
                 return nil
             }
         }
-        func count(_ text: String, _ what: String) -> Int? {
+        func count(_ text: String, _ what: String, _ field: Field) -> Int? {
             let t = text.trimmingCharacters(in: .whitespaces)
             guard !t.isEmpty, t.count <= 6, t.utf8.allSatisfy({ (0x30...0x39).contains($0) }), let v = Int(t) else {
-                issues.append(.init(kind: .error, text: "\(what) must be a whole number."))
+                issues.append(.init(kind: .error, text: "\(what) must be a whole number.", field: field))
                 return nil
             }
             return v
         }
-        let trials = count(e.trialsPerClass, "Trials per class"), runs = count(e.runsPerSession, "Runs per session")
-        let parsed = (ms(e.fixation, "Fixation"), ms(e.cue, "Cue"), ms(e.restMin, "Shortest rest"), ms(e.restMax, "Longest rest"))
+        let trials = count(e.trialsPerClass, "Trials per class", .trialsPerClass), runs = count(e.runsPerSession, "Runs per session", .runsPerSession)
+        let parsed = (ms(e.fixation, "Fixation", .fixation), ms(e.cue, "Cue", .cue), ms(e.restMin, "Shortest rest", .restMin), ms(e.restMax, "Longest rest", .restMax))
         let parsesAll = parsed.0 != nil && parsed.1 != nil && parsed.2 != nil && parsed.3 != nil && trials != nil && runs != nil
         // A field that doesn't parse is checked as the base's value, so every other rule
         // is still named; there is no draft until all parse.
@@ -313,13 +322,39 @@ final class ProtocolEditor: Identifiable {
                                   timing: .init(fixationMs: f, cueMs: c, restMinMs: rMin, restMaxMs: rMax),
                                   trialsPerClass: trials ?? e.base.trialsPerClass, runsPerSession: runs ?? e.base.runsPerSession,
                                   instructions: e.instructions)
-        issues += ProtocolRecord.problems(draft).map { Issue(kind: .error, text: ProtocolCopy.problem($0)) }
+        issues += ProtocolRecord.problems(draft).map { Issue(kind: .error, text: ProtocolCopy.problem($0), field: field(of: $0, in: e)) }
         if parsesAll, let same = e.lineage.first(where: { $0.draft == draft }) {
-            issues.append(.init(kind: .error, text: "Nothing changed from v\(same.version). Change a value to save a new version."))
+            issues.append(.init(kind: .status, text: "Nothing changed from v\(same.version). Change a value to save a new version."))
         }
-        if let w = ProtocolCopy.windowWarning(cueMs: c, windowEndMs: e.windowEndMs) { issues.append(.init(kind: .warning, text: w)) }
+        if let w = ProtocolCopy.windowWarning(cueMs: c, windowEndMs: e.windowEndMs) { issues.append(.init(kind: .warning, text: w, field: .cue)) }
         var seen = Set<String>()
         return (parsesAll ? draft : nil, issues.filter { seen.insert($0.text).inserted })
+    }
+
+    /// The field a rule names, so its message sits under that field.
+    static func field(of p: ProtocolProblem, in e: ProtocolEditor) -> Field? {
+        switch p {
+        case .text("name"): return .name
+        case .text("instructions"): return .instructions
+        case .text("display name"):
+            return e.classes.firstIndex { !ChannelMapRecord.isSane($0.displayName) }.map(Field.displayName)
+        case .label(let l), .reservedLabel(let l):
+            return e.classes.firstIndex { $0.label == l }.map(Field.label)
+        case .duplicateLabel(let l):
+            return e.classes.lastIndex { $0.label == l }.map(Field.label)
+        case .duration(let what):
+            switch what {
+            case "fixation": return .fixation
+            case "cue": return .cue
+            case "shortest rest": return .restMin
+            case "longest rest": return .restMax
+            default: return nil
+            }
+        case .restRange: return .restMin
+        case .trialsPerClass: return .trialsPerClass
+        case .runsPerSession: return .runsPerSession
+        default: return nil
+        }
     }
 
     enum ParseProblem: Error, Equatable {

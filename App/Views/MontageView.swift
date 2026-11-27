@@ -19,7 +19,8 @@ struct MontageView: View {
     @State private var dragBase: Orbit?
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
 
-    static let stageHeight: CGFloat = 340
+    /// Brief 011: capped so the tables below stay above the fold at 1100 × 640.
+    static let stageHeight: CGFloat = 260
     /// Framed on the dome, not the study's neck-inclusive framing, so labels have room.
     static let target = SIMD3<Double>(0, -6, 6)
     static let distance = 640.0

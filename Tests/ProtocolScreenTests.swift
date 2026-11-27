@@ -83,6 +83,7 @@ final class ProtocolScreenTests: XCTestCase {
         XCTAssertEqual(e.subtitle, "Saves as v2, based on v1. v1 stays as it is.")
         XCTAssertEqual(e.fixation, "2")
         XCTAssertEqual(e.issues.map(\.text), ["Nothing changed from v1. Change a value to save a new version."])
+        XCTAssertEqual(e.issues.map(\.kind), [.status], "nothing changed is a neutral status, not an error (brief 011)")
         XCTAssertFalse(e.canSave)
 
         e.cue = "4.0005"
@@ -94,6 +95,11 @@ final class ProtocolScreenTests: XCTestCase {
         XCTAssertTrue(texts.contains("Fixation must be more than 0 s and at most 30 s."), "\(texts)")
         XCTAssertTrue(texts.contains("“rest” is the name of a protocol event. Choose another label."), "\(texts)")
         XCTAssertTrue(texts.contains("Trials per class must be 1–100."), "\(texts)")
+        // Each message sits under its field (brief 011).
+        XCTAssertEqual(e.issues(for: .cue).map(\.text).first, "Cue can have at most 3 decimal places: durations are kept to the millisecond.")
+        XCTAssertEqual(e.issues(for: .fixation).map(\.text), ["Fixation must be more than 0 s and at most 30 s."])
+        XCTAssertEqual(e.issues(for: .label(1)).map(\.text), ["“rest” is the name of a protocol event. Choose another label."])
+        XCTAssertEqual(e.issues(for: .trialsPerClass).map(\.text), ["Trials per class must be 1–100."])
         XCTAssertNil(e.draft)
         XCTAssertFalse(e.canSave)
 
