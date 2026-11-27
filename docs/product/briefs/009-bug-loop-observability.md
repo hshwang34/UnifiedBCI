@@ -94,8 +94,9 @@ the new diagnostics: geometry and task dumps, plus real-window checks.
 6. **Smaller fixes:** the live header adapts to narrow widths, the goal picker no longer
    blocks agent-opened projects, and the Debug live-record waits for the stream.
 
-**Follow-up (not done):** the protocol-run and live-feedback status loops are also sleeping
-main-actor Tasks. They pass every flow today, but should move to timers too.
+**Follow-up (done, 2026-11-27):** the protocol-run (`RunController`) and live-feedback
+(`LiveFeedbackController`) status loops were also sleeping main-actor Tasks; both are now
+main run-loop timers, like `ConnectController`.
 
 **Debug tools added:**
 - `-BCILayoutDump YES` logs the window and split-view geometry.
