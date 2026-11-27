@@ -103,6 +103,9 @@ struct LivePreviewModel {
 
 /// The acquisition screen's own copy (health rows, banners and buttons come from AcquisitionModels).
 enum LiveScreenModel {
+    /// The inspector while the live view is shown (brief 009: it stays open instead of collapsing).
+    static let inspectorNoteTitle = "Evaluate"
+    static let inspectorNote = "Evaluate works on a saved recording. Stop recording, then select the recording in the list to evaluate it."
     static let rowTitle = "Live"
     static let healthHeader = "Stream health"
     static let channelMap = "Channel Map…"

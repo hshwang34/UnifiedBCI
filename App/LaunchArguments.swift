@@ -60,6 +60,8 @@ import Foundation
 ///                                              class, 3 runs, the minimum Evaluate accepts) on that
 ///                                              stream; snapshots "run-instructions", "run-cue" (the
 ///                                              operator panel and the participant window mid-run),
+///                                              "run-rest", "run-paused" (paused in a rest),
+///                                              "run-fixation", participant-<card>.png (offscreen),
 ///                                              "run-summary", then evaluates the recording:
 ///                                              "run-evaluated"
 ///     -BCILiveTest N                           with -BCIConnectSource: a live run of N trials per class
@@ -255,6 +257,7 @@ enum LaunchArguments {
         #if DEBUG
         guard !done else { return }
         done = true
+        HitTestStress.startIfAsked()          // brief 009: -BCIHitTestStress YES
         let defaults = UserDefaults.standard
         let snapshots = defaults.string(forKey: "BCISnapshotDir").map { URL(fileURLWithPath: $0, isDirectory: true) }
         func snap(_ name: String, settle: Duration = .seconds(1.5)) async {
@@ -265,7 +268,11 @@ enum LaunchArguments {
         defer {
             // From a run-loop perform, not a main-queue block: `.terminateLater` spins a nested
             // run loop, and a busy (serial) main queue would starve the shutdown Task.
-            if defaults.bool(forKey: "BCIQuitWhenDone") { NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0) }
+            if defaults.bool(forKey: "BCIQuitWhenDone") {
+                // As ⌘Q does: an open sheet would make AppKit refuse to quit (brief 009).
+                workspace.dismissSheetsForQuit()
+                NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0.3)
+            }
         }
         if let dir = defaults.string(forKey: "BCIOffscreenSnapshotDir") {
             OffscreenSnapshots.run(into: URL(fileURLWithPath: dir, isDirectory: true))
@@ -397,7 +404,8 @@ enum LaunchArguments {
             if defaults.bool(forKey: "BCIGuideShowMe"), let step = session.guideProgress?.current?.step {
                 session.showGuideTarget(step)
                 await snap("guide-showme", settle: .milliseconds(1300))
-                await session.spotlight.awaitHighlight()
+                // No wait for the ring to end: the snapshot is taken, and in background Debug
+                // runs that wait never returned (the app itself stays responsive; brief 009).
             }
         }
         if let raw = defaults.string(forKey: "BCISection"), let section = SidebarSection(rawValue: raw) {
@@ -511,11 +519,18 @@ enum LaunchArguments {
         if model.declaredMap != nil { model.confirmMap() } else { model.recordWithoutPositions() }
         await model.perform(.startPreview)               // the sheet hands over to the screen
         await snap("live-preview", .seconds(12))         // the 10 s window is full
+        if UserDefaults.standard.bool(forKey: "BCILayoutDump") { dumpLayout(session) }
         let liveTrials = UserDefaults.standard.integer(forKey: "BCILiveTest")
         if liveTrials > 0 { return await liveTest(session, trialsPerClass: liveTrials, snap: snap) }
         let trials = UserDefaults.standard.integer(forKey: "BCIStartRun")
         if trials > 0 { return await protocolRun(session, trialsPerClass: trials, snap: snap) }
         guard recordSeconds > 0 else { return }
+        // Without -BCISnapshotDir the snap above doesn't wait: let the stream come up first,
+        // or Record is pressed before the preview runs and nothing is recorded (brief 009).
+        let streamDeadline = ContinuousClock.now + .seconds(15)
+        while model.state != .streaming || model.recordDisabledReason != nil, ContinuousClock.now < streamDeadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
         await model.perform(.record)
         guard model.isRecording else { return await snap("live-record-refused", .seconds(1)) }
         let shown = min(recordSeconds, 6)
@@ -559,6 +574,10 @@ enum LaunchArguments {
         await snap("run-start-sheet", .seconds(1))
         session.startRuns(form)
         guard let runs = session.runs else { return await snap("run-refused", .seconds(1)) }
+        if let dir = UserDefaults.standard.string(forKey: "BCISnapshotDir") {
+            OffscreenSnapshots.participantCards(runs.setup.protocolRecord, runsPerSession: runs.setup.runsPerSession,
+                                                into: URL(fileURLWithPath: dir, isDirectory: true))
+        }
         for run in 0..<runs.setup.runsPerSession {
             if run > 0 { runs.startNextRun() }
             if run == 0 { await snap("run-instructions", .seconds(1.5)) } else { try? await Task.sleep(for: .seconds(1)) }
@@ -566,6 +585,17 @@ enum LaunchArguments {
             if run == 0 {
                 while runs.status?.phase != .cue, runs.isRunActive { try? await Task.sleep(for: .milliseconds(20)) }
                 await snap("run-cue", .milliseconds(600))
+                // Brief 010: the rest, an operator pause (in the rest, so no trial is aborted)
+                // with its card, then the next fixation.
+                while runs.status?.phase != .rest, runs.isRunActive { try? await Task.sleep(for: .milliseconds(10)) }
+                await snap("run-rest", .milliseconds(100))
+                if runs.status?.phase == .rest {
+                    runs.pause()
+                    await snap("run-paused", .seconds(1.2))
+                    runs.resume()
+                }
+                while runs.status?.phase != .fixation, runs.isRunActive { try? await Task.sleep(for: .milliseconds(10)) }
+                await snap("run-fixation", .milliseconds(300))
             }
             await runs.awaitRun()
             if run == 0 { await snap("run-summary", .seconds(3)) }
@@ -650,6 +680,23 @@ enum LaunchArguments {
             await snap("live-result", .seconds(2.5))
             window.setFrame(frame, display: true)
         }
+    }
+
+    /// Debug `-BCILayoutDump YES` (brief 009): the project window's geometry, to the
+    /// diagnostics log: window, content view, and every split view and its items.
+    private static func dumpLayout(_ session: ProjectSession) {
+        guard let window = NSApp.windows.first(where: { $0.title == session.name }), let content = window.contentView else { return }
+        func r(_ f: NSRect) -> String { "\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height))" }
+        AppLog.info(.ui, "layout_window", ["frame": r(window.frame), "contentLayout": r(window.contentLayoutRect),
+                                            "contentView": r(content.frame), "fitting": "\(Int(content.fittingSize.width))x\(Int(content.fittingSize.height))"])
+        func walk(_ v: NSView, depth: Int) {
+            if let split = v as? NSSplitView {
+                AppLog.info(.ui, "layout_split", ["depth": "\(depth)", "frame": r(split.frame), "vertical": "\(split.isVertical)",
+                                                   "items": split.arrangedSubviews.map { "\(r($0.frame)) fit=\(Int($0.fittingSize.height))" }.joined(separator: " | ")])
+            }
+            for sub in v.subviews where depth < 14 { walk(sub, depth: depth + 1) }
+        }
+        walk(content, depth: 0)
     }
 
     /// Start run…'s form for a new version of `draft` (created here), seed fixed.

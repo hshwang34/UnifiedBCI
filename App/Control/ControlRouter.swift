@@ -35,13 +35,19 @@ final class ControlRouter {
             return reply(.response(request.id, ["cancelled": .bool(job != nil)]))
         }
         guard let spec = ControlCatalog.spec(request.method) else {
+            AppLog.notice(.control, "request", ["method": "unknown", "outcome": ControlError.Code.unknownMethod.rawValue])
             return reply(.failure(request.id, ControlError(.unknownMethod, "no method \(request.method); see bci describe")))
         }
-        if let e = ControlCatalog.validate(spec, request.params) { return reply(.failure(request.id, e)) }
+        let started = ContinuousClock.now
+        if let e = ControlCatalog.validate(spec, request.params) {
+            AppLog.notice(.control, "request", ["method": spec.name, "outcome": e.code, "ms": AppLog.ms(since: started)])
+            return reply(.failure(request.id, e))
+        }
         let call = ControlCall(router: self, spec: spec, params: request.params?.objectValue ?? [:], client: client)
         let project = call.projectURL
         guard spec.kind == .job else {
             let outcome = await run(call)
+            Self.logRequest(spec.name, outcome, started: started, job: nil)
             log(call, outcome: outcome, job: nil)
             switch outcome {
             case .success(let r): reply(.response(request.id, r))
@@ -61,6 +67,7 @@ final class ControlRouter {
             guard let self else { return }
             let outcome = await self.run(call)
             job.finish(outcome)
+            Self.logRequest(spec.name, outcome, started: started, job: job.id)
             self.log(call, outcome: outcome, job: job.id)
             self.activity.jobEnded(project: project, stillRunning: self.jobs.filter { !$0.isFinished }.count)
         }
@@ -89,6 +96,7 @@ final class ControlRouter {
     private func dispatch(_ c: ControlCall) async throws -> JSON {
         switch c.spec.name {
         case "app.status": return appStatus()
+        case "app.diagnostics": return await appDiagnostics(c)
         case "jobs.list": return .object(["jobs": .array(jobs.map(\.status))])
         case "jobs.status": return try job(c).status
         case "jobs.wait":
@@ -146,7 +154,7 @@ final class ControlRouter {
         if jobs.count > 200 { jobs = Array(jobs.prefix(200)) }
     }
 
-    private func appStatus() -> JSON {
+    func appStatus() -> JSON {
         .object([
             "appVersion": .string(ControlServer.appVersion),
             "protocol": .int(Int64(ControlProtocol.version)),
@@ -160,6 +168,17 @@ final class ControlRouter {
             // Decision #26: this interface never says a board was tested.
             "hardwareTested": false,
         ])
+    }
+
+    /// One line per call in the app log (brief 009): method, outcome code, duration, job.
+    private static func logRequest(_ method: String, _ outcome: Result<JSON, ControlError>, started: ContinuousClock.Instant, job: String?) {
+        let code: String
+        switch outcome {
+        case .success: code = "ok"
+        case .failure(let e): code = e.code
+        }
+        let level: AppLog.Level = code == "ok" || code == ControlError.Code.cancelled.rawValue ? .info : .notice
+        AppLog.log(level, .control, "request", ["method": method, "outcome": code, "ms": AppLog.ms(since: started), "job": job ?? "-"])
     }
 
     // MARK: Action log (decision #49)
@@ -190,6 +209,7 @@ final class ControlRouter {
         if let s = workspace.sessions[Workspace.canonical(url)] { return s }
         do {
             let s = try await workspace.session(for: url)
+            s.openedByAgent = true
             workspace.noteRecent(s.url)
             workspace.show(s.url)
             return s

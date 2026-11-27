@@ -27,6 +27,7 @@ extension ControlRouter {
         do {
             let store = try await Task.detached(priority: .userInitiated) { try ProjectStore.create(at: url, name: name) }.value
             let s = await workspace.adopt(store)
+            s.openedByAgent = true
             workspace.noteRecent(s.url)
             workspace.show(s.url)
             c.createdProject = s.url
@@ -43,6 +44,7 @@ extension ControlRouter {
         do {
             let store = try await Task.detached(priority: .userInitiated) { try ProjectStore.importBundledExample(from: source, into: url) }.value
             let s = await workspace.adopt(store)
+            s.openedByAgent = true
             workspace.noteRecent(s.url)
             workspace.show(s.url)
             c.createdProject = s.url

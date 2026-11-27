@@ -52,7 +52,7 @@ method `group.verb` is run as `bci group verb --param value`. `BCI_PROJECT` stan
 
 | Area | Methods |
 |---|---|
-| App, jobs, operator | `app.status`, `jobs.list`, `jobs.status`, `jobs.wait`, `jobs.cancel`, `operator.pending`, `operator.request` |
+| App, jobs, operator | `app.status`, `app.diagnostics`, `jobs.list`, `jobs.status`, `jobs.wait`, `jobs.cancel`, `operator.pending`, `operator.request` |
 | Projects | `project.create`, `project.import_example`, `project.open`, `project.close`, `project.show` |
 | Recordings | `recordings.list`, `recordings.show`, `recordings.verify`, `recordings.inspect` |
 | Evaluation | `evaluate.defaults`, `evaluate.run`, `results.list`, `results.show`, `export.result` |
@@ -156,6 +156,30 @@ Every call that changes something is appended to `<project>/logs/agent-actions.j
 as `{ts, client, method, params, outcome, job, result?}`. This is a log for the person,
 not provenance. Export leaves it out, and it can't be turned off.
 
+## Diagnostics (brief 009, decision #53)
+
+`bci app diagnostics [--limit N]` shows what the app was doing just before something broke:
+
+- `appVersion`, `pid`, `launchedAt`, `uptimeS`, `memory` (`residentBytes`, `footprintBytes`);
+- `openProjects` (as in `app.status`, plus each one's `acquisition` and `evaluation` state)
+  and `activeJobs`;
+- `recentEvents` (newest last, default 200, at most 2000) and `recentErrors` (the last 50
+  at level error or fault), each `{ts, category, level, message}`;
+- `logFile`, and `crashReports`: every `BCIWorkspace*.ips` in
+  `~/Library/Logs/DiagnosticReports` since the previous launch (at most 7 days back),
+  summarised as file, time, exception type, signal and the faulting thread's first 8 symbols.
+
+The app logs to macOS's log system (subsystem `com.hshwang34.BCIWorkspace`, categories
+`control`, `jobs`, `evaluation`, `acquisition`, `runs`, `store`, `ui`, `app`); see it with
+`log stream --predicate 'subsystem == "com.hshwang34.BCIWorkspace"'`. Each line is an event
+name with ids, states, error codes and durations. Paths and error text are `.private`, and
+never reach the event list or the file. EEG samples, labels, participant details and project
+contents are never logged. Each launch also writes its events to
+`~/Library/Logs/BCIWorkspace/<launch time>-<pid>.jsonl` (at most 5 MB; the newest 10
+launches are kept). Help ▸ Export Diagnostics… puts this launch's and the previous launch's
+file, recent crash reports, `about.json` and a README in one folder for a bug report.
+Nothing is uploaded.
+
 ## Evaluating agents on this interface
 
 `scripts/agent_eval/run.sh` checks how a real agent behaves with this setup. It runs Claude
@@ -165,6 +189,9 @@ each scenario the harness grades two things:
 
 - **the transcript:** which tools were called with what, and the final answer;
 - **the project left on disk:** how many results and recordings it has.
+
+It also saves `bci app diagnostics` after each scenario (`<id>.diagnostics.json`) and copies
+any BCI Workspace crash report written during the run into `crashes/`, listed in `summary.md`.
 
 ```bash
 scripts/agent_eval/run.sh 01             # one scenario (prefix match)

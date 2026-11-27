@@ -20,6 +20,11 @@ struct SignalTraceCard: View {
                 // The latest window failed: say so instead of leaving the last one on screen.
                 problem
             } else if let model {
+                if let shared = model.sharedFlags {
+                    Label { Text(shared).font(.callout.weight(.semibold)).foregroundStyle(Theme.textPrimary) } icon: {
+                        Image(systemName: "flag.fill").foregroundStyle(Theme.warning)
+                    }
+                }
                 TraceStack(model: model, selected: $selected)
                 captions(model)
             } else {
@@ -93,7 +98,9 @@ struct SignalTraceCard: View {
             }
             if let note = model.warmupNote { Text(note) }
             if model.lanes.contains(where: \.isFlagged) {
-                Label { Text(TraceModel.flaggedLegend) } icon: { Image(systemName: "flag.fill").foregroundStyle(Theme.warning) }
+                Label { Text(model.sharedFlags == nil ? TraceModel.flaggedLegend : TraceModel.flaggedLegendShared) } icon: {
+                    Image(systemName: "flag.fill").foregroundStyle(Theme.warning)
+                }
             }
         }
         .font(.caption).foregroundStyle(Theme.textSecondary)
@@ -120,6 +127,9 @@ private struct TraceStack: View {
     static let tagHeight: CGFloat = 14
 
     private var top: CGFloat { model.warmup == nil ? 0 : Self.tagHeight }
+    /// Flags said once above the lanes: each lane keeps a marker only.
+    private var compact: Bool { model.sharedFlags != nil }
+    private var labelWidth: CGFloat { compact ? 72 : Self.labelWidth }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -127,8 +137,8 @@ private struct TraceStack: View {
             ForEach(model.lanes) { lane in
                 HStack(spacing: 0) {
                     label(lane)
-                        .frame(width: Self.labelWidth, height: Self.laneHeight, alignment: .leading)
-                        .background(lane.isFlagged ? Theme.warningFill : .clear)
+                        .frame(width: labelWidth, height: Self.laneHeight, alignment: .leading)
+                        .background(lane.isFlagged && !compact ? Theme.warningFill : .clear)
                     Color.clear
                 }
                 .frame(height: Self.laneHeight)
@@ -151,9 +161,11 @@ private struct TraceStack: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 4) {
                 if lane.isFlagged { Image(systemName: "flag.fill").foregroundStyle(Theme.warning).imageScale(.small) }
-                Text(lane.label).font(Theme.Fonts.monoCaption.weight(lane.isFlagged ? .semibold : .regular)).foregroundStyle(Theme.textPrimary)
+                Text(lane.label).font(.caption.weight(lane.isFlagged ? .semibold : .regular)).monospacedDigit().foregroundStyle(Theme.textPrimary)
             }
-            if lane.isFlagged {
+            if compact {
+                EmptyView()
+            } else if lane.isFlagged {
                 Text(lane.flags.joined(separator: ", ")).font(.caption2).foregroundStyle(Theme.textSecondary).lineLimit(1)
             } else if let note = lane.note {
                 Text(note).font(.caption2).foregroundStyle(Theme.textSecondary).lineLimit(1)
@@ -165,7 +177,7 @@ private struct TraceStack: View {
     private var canvas: some View {
         Canvas { ctx, size in
             // Right inset leaves room for the last tick's label.
-            let x0 = Self.labelWidth + Theme.Space.s, width = max(1, size.width - x0 - Theme.Space.m)
+            let x0 = labelWidth + Theme.Space.s, width = max(1, size.width - x0 - Theme.Space.m)
             let span = max(model.endS - model.startS, 1e-9)
             func x(_ t: Double) -> CGFloat { x0 + CGFloat((t - model.startS) / span) * width }
             let plotHeight = Self.laneHeight * CGFloat(model.lanes.count)

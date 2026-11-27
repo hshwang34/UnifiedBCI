@@ -116,7 +116,14 @@ final class Workspace {
         // holding the key, nor into a gap with neither key nor session.
         let task = Task {
             defer { self.opening[key] = nil }
-            let session = try await ProjectSession.open(at: key, launch: launch)
+            let session: ProjectSession
+            do {
+                session = try await ProjectSession.open(at: key, launch: launch)
+            } catch {
+                AppLog.error(.store, "project_open_failed", ["error": AppLog.kind(error)], detail: "\(key.path) \(error)")
+                throw error
+            }
+            AppLog.info(.app, "project_open", ["open": String(self.sessions.count + 1)], detail: key.path)
             self.sessions[key] = session
             session.windowProvider = { [weak self] in self?.windows[key]?.window }
             return session
@@ -156,6 +163,7 @@ final class Workspace {
         let task = Task {
             defer { self.adopting[key] = nil }
             let session = await ProjectSession.adopt(store, url: key, launch: launch)
+            AppLog.info(.app, "project_open", ["open": String(self.sessions.count + 1), "new": "yes"], detail: key.path)
             self.sessions[key] = session
             session.windowProvider = { [weak self] in self?.windows[key]?.window }
             return session
@@ -181,6 +189,7 @@ final class Workspace {
         guard let session = sessions.removeValue(forKey: key) else { return }
         // The task releases the key itself, before anyone awaiting it resumes, so a
         // waiter's re-check never sees a finished teardown still holding the key.
+        AppLog.info(.app, "project_close", ["open": String(sessions.count)], detail: key.path)
         let task = Task {
             await session.shutdown()
             self.closing[key] = nil

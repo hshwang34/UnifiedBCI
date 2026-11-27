@@ -58,6 +58,18 @@ Live feedback (brief 006): `-BCIFreezeAndReplay YES` (with `-BCIAutoEvaluate`) f
 first result, then shows Replay and the parity view; `-BCILiveTest N` (with
 `-BCIConnectSource demo|synthetic`) runs a live run of N trials per class, first recording,
 evaluating and freezing a model if none matches.
+Brief 009 diagnostics:
+- `-BCILayoutDump YES` (with `-BCIConnectSource`) logs window and split-view geometry to
+  `~/Library/Logs/BCIWorkspace/`.
+- `-BCIHitTestStress YES` hit-tests every window continuously, the click path.
+- `scripts/verify_flows.sh [flow…]` runs every flow and checks for a hang, a crash, error
+  events and missing snapshots.
+- `scripts/agent_eval/crash_repro.sh` runs the agent recording loop under stress.
+- Wrap any app launch in `scripts/app_lock.sh`, so only one Debug copy runs. Two copies break
+  each other's snapshots.
+- The app ignores saved window state, so a launch always shows Welcome.
+- `bci app diagnostics` returns recent events, errors, jobs and crash summaries.
+
 Full list in the file's header comment.
 
 ## Architecture

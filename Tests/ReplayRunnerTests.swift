@@ -78,7 +78,7 @@ final class ReplayRunnerTests: XCTestCase {
         XCTAssertTrue(preds.filter { $0.validity != .valid }.allSatisfy { $0.action == .abstain })
 
         let view = try XCTUnwrap(ParityViewModel(record: stored, sampleRateHz: model.expectedSampleRateHz))
-        XCTAssertEqual(view.headline, "Streaming matches offline within tolerance")
+        XCTAssertEqual(view.headline, "Live path matches offline")      // brief 011: a verdict first
         XCTAssertTrue(view.tolerances[0].text.hasPrefix("Band-passed samples: largest difference "), view.tolerances[0].text)
         XCTAssertTrue(view.tolerances[0].text.hasSuffix("allowed 1 × 10⁻⁸ µV"), view.tolerances[0].text)
         XCTAssertTrue(view.windows.hasPrefix("\(parity.windowsCompared) windows compared"))
@@ -209,8 +209,9 @@ final class ReplayRunnerTests: XCTestCase {
         let m = FreezeSheetModel(result: StoredResult(meta: meta, evaluationJSON: Data(), pipeline: pipeline), report: nil, role: .reference,
                                  sessions: ["S1"], cueLengthSeconds: 4.0)
         XCTAssertEqual(m.feedbackSpan, "Feedback can't show: the 0.5 s offset and the 3.5 s window fill the whole 4.0 s cue.")
-        XCTAssertEqual(m.windowSuggestion, "For live feedback, evaluate with a 2 s window: feedback would then show for 1.5 s of each cue. "
-                       + "This model's 3.5 s window leaves less of the cue for feedback.")
+        // Brief 011: phrased as guidance for next time (decision #40 unchanged).
+        XCTAssertEqual(m.windowSuggestion, "Next time, evaluate with a 2 s window for live feedback: feedback would then show for 1.5 s of each cue. "
+                       + "This model's 3.5 s window leaves less of the cue for feedback; it can still be frozen.")
         XCTAssertEqual(m.rows.map(\.label), ["Model", "Training runs", "Channels", "Sample rate", "Band-pass", "Window", "Classes"])
         XCTAssertEqual(m.rows[2].value, "2, in this order: ch00, ch01")
         XCTAssertEqual(m.rows[4].value, "8.0–30.0 Hz, causal, order 4")

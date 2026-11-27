@@ -160,3 +160,54 @@ Format: `#n · date · decision` — then *why*, and where it lives in code/docs
 
 #52 · 2026-11-25 · `bci` ships inside the app as `Contents/Helpers/bci` and is signed with it. `bci install` symlinks it into `~/.local/bin` (no sudo).
 *Why:* lead decision; one notarized download, no installer. Brief 008.
+
+#53 · 2026-11-26 · Diagnostics stay on the Mac: structured logs in macOS's log system and a bounded per-launch file. Nothing is uploaded, and no crash-reporting service or account is used.
+*Why:* PM decision; keeps the PRD's local-only, no-account promise. Brief 009 Q1.
+
+#54 · 2026-11-26 · The bug loop covers the agent paths and crashes: everything the agent eval, the smoke run and the crash watcher find. It is done when the eval is clean. A sweep of the whole app is a separate pass.
+*Why:* PM decision; a bounded, measurable target. Brief 009 Q2.
+
+#55 · 2026-11-26 · The loop runs in the working session (eval → triage → fix → rerun) until the eval passes 5/5 twice in a row with no crash, at most 5 rounds. There is no scheduled nightly run for now.
+*Why:* PM decision; no ongoing usage cost. Brief 009 Q3.
+
+#56 · 2026-11-26 · Help ▸ Export Diagnostics… writes a folder the person can attach to a bug report: logs, crash reports and versions, never EEG data or project files.
+*Why:* PM decision. Brief 009 Q4.
+
+#57 · 2026-11-27 · The cue replaces the fixation cross: at cue onset the cross disappears and the arrow appears in its place, centred, on the same refresh, with no cross-fade. The cue is a solid SF Symbol arrow (`arrowshape.left/right/up/down.fill`), pre-rendered, shown at full contrast on its scheduled frame and static until cue end.
+*Why:* lead decision, PM delegated design calls (2026-11-27). Overlapping cross and arrow was the PM's main complaint; replacing keeps the gaze at the centre and gives one clean onset to mark. Brief 010; `App/Views/CueWindow.swift`.
+
+#58 · 2026-11-27 · The participant sees progress (runs done, as dots, and "Run n of N") only on the instructions and between-run cards, never during fixation, cue or rest. There is no trials-left indicator inside a run.
+*Why:* lead decision, PM delegated design calls (2026-11-27). Anything that changes during a trial can draw the eye and evoke a visual response; between runs it helps the participant pace themselves. Brief 010.
+
+#59 · 2026-11-27 · The live feedback bar is a capsule in its own calm blue (≈9:1 on the background), under the cue and clear of every arrow. It jumps to each new length on the refresh that reports it, with no display interpolation, and the operator's mirror does the same. Decision #40's rule (windows wholly inside the imagery period) is unchanged.
+*Why:* lead decision, PM delegated design calls (2026-11-27). A tween would draw lengths the model never produced; a separate colour keeps the bar from merging with the white cue. Brief 010.
+
+#60 · 2026-11-27 · The participant window shows a card outside the measured phases: instructions (run, legend of arrows, "the run starts when the operator is ready"), "Paused" while paused, "Run complete" or "Run ended" with a short-break line between runs, and "All runs done" after the last run. Rests stay blank. Cards fade in and out (instant under Reduce Motion) and are never on screen with a cross or a cue; the instructions card fades the moment Space is pressed.
+*Why:* lead decision, PM delegated design calls (2026-11-27). A participant could not tell a rest from a pause from a break (brief 005's break screen was never built). Brief 010.
+
+#61 · 2026-11-27 · The operator panel leads with a state badge, run dots with a trial progress bar, and the trial drawn to scale with the current phase highlighted; every run button shows its key (Space, esc, ⌘.). In Live Test, the run controls sit directly under the feedback card.
+*Why:* lead decision, PM delegated design calls (2026-11-27). The next action and its key must be obvious at a glance, especially on one display where the keyboard is the only control. Brief 010.
+
+#62 · 2026-11-27 · A result's headline is an interval with its point estimate inside it. When balanced accuracy has no run-level interval, the screen says "point estimate, no interval" beside the number and shows the trial-level accuracy interval as the larger figure; the larger-class reference is always readable beside it. The live-run card follows the same rule.
+*Why:* lead decision, PM delegated design calls (2026-11-27). Honesty first: a bare number reads as more certain than it is (PRD scientific rules). Brief 011.
+
+#63 · 2026-11-27 · Primary text uses researcher words: class display names, recipe names, "Run 1" for an unnamed run, "Live path matches offline" for replay parity. Exact stored values (labels, recipe ids, run and session ids, hashes, hop windows, chunkings) stay one click away in a Details disclosure or a tooltip. Monospace is used only for those stored identifiers.
+*Why:* lead decision, PM delegated design calls (2026-11-27). The users are researchers, not ML engineers; reproducibility still needs the exact values. Brief 011.
+
+#64 · 2026-11-27 · The sidebar's "Pipelines" section is called "Models" (frozen models, then the recipes they come from). Release-planning wording ("phase 1") never appears in the app.
+*Why:* lead decision, PM delegated design calls (2026-11-27). Brief 011.
+
+#65 · 2026-11-27 · The toolbar is contextual: Recordings offers Evaluate and Parameters…; a selected result offers Freeze for live use… and Export…; other sections and the live view offer neither. Every disabled control says why.
+*Why:* lead decision, PM delegated design calls (2026-11-27). Brief 011.
+
+#66 · 2026-11-27 · Each caveat appears once per screen: the recording's dataset or synthetic warning is the chip at the top of the page (not repeated in the inspector), and a reproduction is named by the result's own chip, not also by a toast.
+*Why:* lead decision, PM delegated design calls (2026-11-27). Repetition teaches people to skip warnings. Brief 011.
+
+#67 · 2026-11-27 · Dates on screen are localized and relative ("Today, 7:58 AM"). Stored names, exports and default model names keep the fixed `2026-11-27 07:58` form.
+*Why:* lead decision, PM delegated design calls (2026-11-27). Brief 011.
+
+#68 · 2026-11-27 · The Evaluate inspector starts hidden when the project window is narrower than 1200 pt, so the tables keep their width; the person can always show it again. It never collapses while the live view shows (brief 009 crash).
+*Why:* lead decision, PM delegated design calls (2026-11-27). Brief 011.
+
+#69 · 2026-11-27 · Start Run offers a "Quick check" session (3 runs × 8 trials per class, about 3 minutes) for confirming that the cap, signal, cue window and recording work end to end. Its results are labelled "setup check, not a performance estimate". The full protocol stays the default for real measurements, and stopping early by looking at the score is not offered.
+*Why:* PM decision (2026-11-27). Checking the setup shouldn't cost a 20-minute session, but a few trials can't separate skill from chance (a 4/5 score has a 95 % CI of about 0.28–0.99), and stopping when the score looks good inflates it.

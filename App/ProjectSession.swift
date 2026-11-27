@@ -251,7 +251,30 @@ final class ProjectSession: Identifiable {
                                         displays: CueWindowController.displays(operatorScreen: operatorScreen),
                                         remembered: CueDisplayPicker.remembered(in: .standard))
         } catch {
+            AppLog.error(.store, "protocols_unreadable", ["error": AppLog.kind(error)], detail: "\(error)")
             startRunError = ProtocolCopy.unreadableList(error)
+        }
+    }
+
+    /// Start in the sheet. With Quick check on (decision #69) the quick-check version of the
+    /// chosen protocol is found or stored first, then the runs start on it.
+    func startRunsFromSheet(_ form: StartRunForm) async {
+        guard form.quickCheck, let chosen = form.selected else { return startRuns(form) }
+        let draft = QuickCheck.draft(from: chosen)
+        do {
+            let known = try await store.protocols().protocols
+            let record: ProtocolRecord
+            if let existing = QuickCheck.existing(for: draft, in: known) {
+                record = existing
+            } else {
+                record = try await store.createProtocolVersion(draft, basedOn: QuickCheck.isQuickCheck(chosen) ? chosen : nil)
+            }
+            var f = form
+            if !f.protocols.contains(where: { $0.protocolID == record.protocolID }) { f.protocols.append(record) }
+            f.pick(record.protocolID)
+            startRuns(f)
+        } catch {
+            startRunSheetError = ProtocolCopy.notSaved(error)
         }
     }
 
@@ -489,6 +512,7 @@ final class ProjectSession: Identifiable {
             await frozen.reload()
             loadError = nil
         } catch {
+            AppLog.error(.store, "reload_failed", ["error": AppLog.kind(error)], detail: "\(error)")
             loadError = "\(error)"
         }
     }
@@ -577,6 +601,7 @@ final class ProjectSession: Identifiable {
                     self.selectedProtocolID = ProtocolListModel(list: list, usage: usage).groups.first?.rows.first?.id
                 }
             } catch let e {
+                AppLog.error(.store, "protocols_unreadable", ["error": AppLog.kind(e)], detail: "\(e)")
                 self.protocolsError = ProtocolCopy.unreadableList(e)
             }
         }
@@ -616,6 +641,7 @@ final class ProjectSession: Identifiable {
             loadProtocols()
             await awaitProtocols()
         } catch {
+            AppLog.error(.store, "protocol_not_saved", ["error": AppLog.kind(error)], detail: "\(error)")
             editor.saveError = ProtocolCopy.notSaved(error)
         }
     }
@@ -708,7 +734,10 @@ final class ProjectSession: Identifiable {
         notice = nil
         // The worker's defaults decide the request; a lookup in flight is waited for.
         await defaultsTask?.value
+        let started = ContinuousClock.now
+        AppLog.info(.evaluation, "evaluation_start", ["recording": recordingID.uuidString])
         let state = await runner.evaluateAndWait(makeRequest(recordingID: recordingID))
+        Self.logEvaluationEnd(state, started: started)
         await finished(state)
         return state
     }
@@ -720,13 +749,28 @@ final class ProjectSession: Identifiable {
     @discardableResult
     func retryAndWait() async -> EvaluationRunner.State {
         notice = nil
+        let started = ContinuousClock.now
+        AppLog.info(.evaluation, "evaluation_retry")
         let state = await runner.retryAndWait()
+        Self.logEvaluationEnd(state, started: started)
         await finished(state)
         if workerDefaults == nil, case .done = state { loadDefaults() }
         return state
     }
 
     func cancel() { runner.cancel() }
+
+    /// Brief 009: how an evaluation ended. The reason text stays private (it can name files).
+    private static func logEvaluationEnd(_ state: EvaluationRunner.State, started: ContinuousClock.Instant) {
+        let ms = AppLog.ms(since: started)
+        switch state {
+        case .done(let id): AppLog.info(.evaluation, "evaluation_end", ["state": "done", "result": id.uuidString, "ms": ms])
+        case .failed(let r): AppLog.error(.evaluation, "evaluation_end", ["state": "failed", "ms": ms], detail: r)
+        case .analysisUnavailable(let r): AppLog.error(.evaluation, "evaluation_end", ["state": "analysis_unavailable", "ms": ms], detail: r)
+        case .cancelled: AppLog.info(.evaluation, "evaluation_end", ["state": "cancelled", "ms": ms])
+        case .idle, .running: AppLog.info(.evaluation, "evaluation_end", ["state": ControlRouter.stateName(state), "ms": ms])
+        }
+    }
 
     private func finished(_ state: EvaluationRunner.State) async {
         switch state {
@@ -899,6 +943,16 @@ final class ProjectSession: Identifiable {
     }
 
     /// The protocol's cue length for a recording its run plans name, else nil.
+    /// A class label's name for primary text (decision #63): the recording's protocol
+    /// display name when it has one, else `ClassDisplay.name` ("Left-fist cue").
+    func className(recording: UUID?) -> (String) -> String {
+        let classes = recording.flatMap { recordingProtocols[$0]?.classes } ?? []
+        return { raw in
+            if let c = classes.first(where: { $0.label == raw }), !c.displayName.trimmingCharacters(in: .whitespaces).isEmpty { return c.displayName }
+            return ClassDisplay.name(raw)
+        }
+    }
+
     func cueLength(_ recording: UUID) -> Double? {
         recordingProtocols[recording].map { Double($0.timing.cueMs) / 1000 }
     }
@@ -913,6 +967,7 @@ final class ProjectSession: Identifiable {
         } catch ProjectStoreError.alreadyExists {
             notice = .exportFailed("\(destination.lastPathComponent) already exists. Export never overwrites; choose a new name.")
         } catch {
+            AppLog.error(.store, "export_failed", ["result": resultID.uuidString, "error": AppLog.kind(error)], detail: "\(error)")
             notice = .exportFailed("\(error)")
         }
         announce(noticeText(notice!))
@@ -942,6 +997,10 @@ final class ProjectSession: Identifiable {
     }
     /// The goal picker sheet is up.
     var showsGuidePicker = false
+    /// Brief 008: a coding agent opened this project. The goal picker isn't offered to an
+    /// agent (it would block every action with `ui_busy`); nothing is saved, so the person is
+    /// asked as usual the next time they open the project themselves.
+    var openedByAgent = false
     /// The step "Skip step" last skipped and the step that became current then.
     private var guideSkipUndo: (skipped: GuideStep.ID, currentAfter: GuideStep.ID?)?
     /// The step "Undo skip" puts back: only the step just skipped, and only until the
@@ -1061,7 +1120,7 @@ final class ProjectSession: Identifiable {
     /// Opens the picker the first time a project opens without a goal. "Asked" is saved
     /// when the picker is answered (a goal or Not now), so a quit before that asks again.
     func askForGuideGoalIfNeeded() {
-        guard guide.shouldAsk, !isClosing, !isSheetUp else { return }
+        guard guide.shouldAsk, !isClosing, !isSheetUp, !openedByAgent else { return }
         showsGuidePicker = true
     }
 

@@ -133,6 +133,12 @@ extension View {
     @ViewBuilder func softScrollEdge(_ edges: Edge.Set) -> some View {
         if #available(macOS 26, *) { self.scrollEdgeEffectStyle(.soft, for: edges) } else { self }
     }
+
+    /// A hard top scroll edge for every scroll view below (macOS 26): the toolbar gets an
+    /// opaque band, so the window title never shows through scrolled content (brief 011).
+    @ViewBuilder func hardTopScrollEdge() -> some View {
+        if #available(macOS 26, *) { self.scrollEdgeEffectStyle(.hard, for: .top) } else { self }
+    }
 }
 
 private struct CardModifier: ViewModifier {

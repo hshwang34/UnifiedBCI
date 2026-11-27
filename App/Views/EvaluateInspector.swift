@@ -11,7 +11,8 @@ struct EvaluateInspector: View {
             let model = EvaluateInspectorModel(manifest: handle.manifest, events: session.eventsByRecording[handle.id] ?? [],
                                                latest: session.latestReport[handle.id], defaults: session.workerDefaults,
                                                recipes: session.recipes, modelName: session.modelName,
-                                               protocol: session.recordingProtocols[handle.id], windowEndMs: session.evaluationWindowEndMs)
+                                               protocol: session.recordingProtocols[handle.id], windowEndMs: session.evaluationWindowEndMs,
+                                               pageShowsSourceWarning: RecordingDetailModel.pageWarning(for: handle.manifest) != nil)
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Space.l) {
                     section("Evaluate") {

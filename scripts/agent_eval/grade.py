@@ -2,7 +2,7 @@
 """Grades one agent-eval run (brief 008): the Claude Code transcript plus the project left
 on disk, against a scenario's checks. Stdlib only. Prints one JSON object.
 
-    grade.py <scenario.json> <transcript.jsonl> <project.bciproj>
+    grade.py <scenario.json> <transcript.jsonl> <project.bciproj> [crashed: true|false]
 """
 import json
 import re
@@ -70,7 +70,10 @@ def main():
     scenario = json.loads(Path(sys.argv[1]).read_text())
     tools, final, meta = load_transcript(Path(sys.argv[2]))
     project = Path(sys.argv[3])
+    crashed = len(sys.argv) > 4 and sys.argv[4] == "true"
     rows = []
+    if crashed:
+        rows.append({"check": "app_alive", "pattern": None, "why": "the app must not crash", "ok": False, "detail": "the app crashed"})
     for c in scenario["checks"]:
         ok, detail = check(c, tools, final, project)
         rows.append({"check": c["type"] + (f" {c.get('tool', '')}" if "tool" in c else ""), "pattern": c.get("pattern"),

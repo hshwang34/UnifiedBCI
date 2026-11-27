@@ -22,6 +22,10 @@ struct BCIWorkspaceApp: App {
         .windowBackgroundDragBehavior(.enabled)
         .windowResizability(.contentSize)
         .defaultPosition(.center)
+        // Brief 009: never restored from saved state. A launch after a force-quit (or after
+        // the Welcome window was closed) otherwise came up with no window at all; decision #7
+        // says the Welcome window is what a launch shows.
+        .restorationBehavior(.disabled)
         .keyboardShortcut("0", modifiers: [.command, .shift])
         .commands { WorkspaceCommands(workspace: appDelegate.workspace) }
 
@@ -65,6 +69,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     init(workspace: Workspace) {
         self.workspace = workspace
+        // Brief 009 / decision #7: a launch shows the Welcome window and nothing else. macOS's
+        // saved window state (written after a crash or force-quit) made later launches come up
+        // with no window at all, so it is ignored. Registration domain: a user can still override.
+        UserDefaults.standard.register(defaults: ["ApplePersistenceIgnoreState": true])
         super.init()
     }
 
@@ -75,10 +83,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        AppLog.notice(.app, "terminate", ["openProjects": String(workspace.sessions.count)])
+        DiagnosticsLog.shared.flush()
         agentControl.stop()
     }
 
+    /// Quit from the Dock, logout, shutdown or a script arrives as the quit Apple Event, which
+    /// macOS refuses while a sheet is open (brief 009: "Show me" can leave the Connect sheet
+    /// up). It takes the same path as ⌘Q: close sheets, then quit.
+    @objc func handleQuitEvent(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
+        workspace.dismissSheetsForQuit()
+        NSApp.terminate(nil)
+    }
+
     func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleQuitEvent(_:withReply:)),
+                                                     forEventClass: AEEventClass(kCoreEventClass), andEventID: AEEventID(kAEQuitApplication))
+        // Brief 009: opens this launch's diagnostics file (and prunes old ones) first.
+        AppLog.notice(.app, "launch", ["version": ControlServer.appVersion, "pid": String(getpid()),
+                                       "agentControl": ControlSettings.standard.enabled ? "on" : "off"])
         LaunchArguments.applyAppearance()
         HeadGlassWarmUp.start()
         // Lead default 6, decided before the Welcome window's first frame (no welcome-then-
@@ -202,6 +225,9 @@ struct WorkspaceCommands: Commands {
                 .disabled(session == nil || session?.isSheetUp == true || workspace.welcomeFlow.isIntro)
             Button(GuideCopy.menuShowGuide) { session?.showGuide() }
                 .disabled(session == nil || session?.showsGuideCard == true)
+            Divider()
+            // Brief 009 / decision #56: a folder for a bug report; never EEG data.
+            Button(DiagnosticsCopy.menuExport) { workspace.exportDiagnosticsPanel() }
         }
         #if DEBUG
         CommandMenu("Debug") {

@@ -7,38 +7,34 @@ struct AgentWelcomeCard: View {
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        HStack(alignment: .center, spacing: Theme.Space.l) {
-            VStack(alignment: .leading, spacing: 2) {
-                Label(AgentIntroCopy.cardBadge.uppercased(), systemImage: AgentIntroCopy.symbol)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Theme.accentInk)
-                Text(AgentIntroCopy.cardTitle)
-                    .font(.system(.headline, design: .rounded))
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                Text(AgentIntroCopy.cardDetail)
-                    .font(.callout)
-                    .foregroundStyle(Theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        // Brief 011: a slim row under Recent Projects, not a hero card.
+        HStack(alignment: .center, spacing: Theme.Space.s) {
+            Image(systemName: AgentIntroCopy.symbol)
+                .font(.title3)
+                .foregroundStyle(Theme.accentInk)
+                .accessibilityHidden(true)
+            // The title only, wrapping; the detail is the row's tooltip and VoiceOver text.
+            Text(AgentIntroCopy.cardTitle)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(Theme.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .help(AgentIntroCopy.cardDetail)
+            Spacer(minLength: 0)
+            Button(AgentIntroCopy.cardAction) {
+                dismiss()
+                openSettings()
             }
-            VStack(spacing: Theme.Space.xs) {
-                Button(AgentIntroCopy.cardAction) {
-                    dismiss()
-                    openSettings()
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                Button(AgentIntroCopy.cardClose, action: dismiss)
-                    .buttonStyle(.plain)
-                    .font(.caption)
-                    .foregroundStyle(Theme.textSecondary)
-            }
+            .controlSize(.small)
+            Button(action: dismiss) { Image(systemName: "xmark") }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Theme.textSecondary)
+                .help(AgentIntroCopy.cardClose)
+                .accessibilityLabel(AgentIntroCopy.cardClose)
         }
-        .padding(.horizontal, Theme.Space.l)
-        .padding(.vertical, Theme.Space.m)
-        .frame(maxWidth: 380)
-        .glassSurface(cornerRadius: 16)
+        .padding(.horizontal, Theme.Space.m)
+        .padding(.vertical, Theme.Space.s)
+        .frame(maxWidth: .infinity)
+        .glassSurface(cornerRadius: 14)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(AgentIntroCopy.cardBadge): \(AgentIntroCopy.cardTitle). \(AgentIntroCopy.cardDetail)")
     }

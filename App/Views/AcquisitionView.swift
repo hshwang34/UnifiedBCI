@@ -39,13 +39,29 @@ struct AcquisitionView: View {
 
     private var source: ConnectSource { live.source ?? .demo }
 
+    /// Buttons beside the status when there is room, below it when the column is narrow, so
+    /// the text is never squeezed to a word per line (brief 009: that tall wrap also made the
+    /// split view's layout pass expensive enough to stall the app).
     private var header: some View {
-        HStack(alignment: .top, spacing: Theme.Space.l) {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: Theme.Space.l) {
+                headerText.frame(minWidth: 280, alignment: .leading)
+                Spacer(minLength: Theme.Space.m)
+                controls
+            }
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                headerText
+                controls
+            }
+        }
+    }
+
+    private var headerText: some View {
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
                 Text(LiveScreenModel.title(source)).font(Theme.Fonts.title).foregroundStyle(Theme.textPrimary)
                     .accessibilityAddTraits(.isHeader)
                 let lines = AcquisitionStateModel.statusLines(live.state, source: source, recording: live.isRecording,
-                                                              reconnects: live.snapshot.health.reconnects)
+                                                              reconnects: live.reconnects)
                 Label {
                     Text("\(lines.state) · \(lines.source)").lineLimit(2)
                 } icon: {
@@ -62,11 +78,9 @@ struct AcquisitionView: View {
                     }
                 } else {
                     Text(LiveScreenModel.mapLine(live.choice)).font(.callout).foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Spacer(minLength: Theme.Space.m)
-            controls
-        }
     }
 
     private var controls: some View {
@@ -181,11 +195,11 @@ private struct PreviewCard: View {
                 .fixedSize()
             }
             let lanes = max(1, live.preview?.rows.count ?? live.laneLabels.count)
-            // At most 15 redraws a second, and none while no new frame has arrived: the
-            // Canvas re-renders only when its captured frame count changes.
-            TimelineView(.animation(minimumInterval: 1.0 / 15, paused: live.state != .streaming)) { _ in
-                canvas(lanes: lanes, frame: live.preview?.framesIngested ?? -1, scale: live.scale)
-            }
+            // Brief 009: an AppKit view repaints the plot on its own 15 Hz timer, so streaming
+            // never runs a SwiftUI update or a window layout pass (LivePlotView).
+            LivePlotView(buffer: live.preview, labels: live.laneLabels, lanes: lanes, scale: live.scale,
+                         streaming: live.state == .streaming, onHeight: { [auto] in auto.record($0) })
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
             .frame(height: Self.laneHeight * CGFloat(lanes) + Self.axisHeight)
             .accessibilityElement()
             .accessibilityLabel(accessibilityText)
@@ -207,77 +221,6 @@ private struct PreviewCard: View {
         return LivePreviewModel.accessibilityLabel(channels: b?.rows.count ?? 0, height: height,
                                                    filled: Double(b?.filledCount ?? 0) / Double(max(1, b?.rate ?? 1)))
     }
-
-    /// `frame` is read inside the renderer: a Canvas whose captures don't change is not
-    /// re-rendered, so an unchanged frame count costs nothing.
-    private func canvas(lanes laneCount: Int, frame: Int, scale: LivePreviewModel.Scale) -> some View {
-        let buffer = live.preview
-        let labels = live.laneLabels
-        let isAuto = scale == .auto
-        let auto = auto
-        return Canvas { ctx, size in
-            _ = frame
-            let plotX = Self.labelWidth, plotW = max(1, size.width - plotX - Theme.Space.s)
-            let plotH = Self.laneHeight * CGFloat(laneCount)
-            for i in 0..<laneCount where i % 2 == 1 {
-                ctx.fill(Path(CGRect(x: 0, y: Self.laneHeight * CGFloat(i), width: size.width, height: Self.laneHeight)),
-                         with: .color(Theme.surface2.opacity(0.55)))
-            }
-            for t in LivePreviewModel.ticks {
-                let x = plotX + plotW * CGFloat(t + 10) / 10
-                var grid = Path()
-                grid.move(to: CGPoint(x: x, y: 0)); grid.addLine(to: CGPoint(x: x, y: plotH))
-                ctx.stroke(grid, with: .color(Theme.hairline), lineWidth: 1)
-                // The lane-height caption sits under the left edge instead of "-10 s".
-                guard t > LivePreviewModel.ticks[0] else { continue }
-                ctx.draw(Text(LivePreviewModel.tickLabel(t)).font(.caption.monospacedDigit()).foregroundStyle(Theme.textSecondary),
-                         at: CGPoint(x: x, y: plotH + 3), anchor: t == 0 ? .topTrailing : .top)
-            }
-            guard let buffer else {
-                ctx.draw(Text(LivePreviewModel.waiting).font(.callout).foregroundStyle(Theme.textSecondary),
-                         at: CGPoint(x: plotX + plotW / 2, y: plotH / 2))
-                return
-            }
-            let w = buffer.window()
-            let height: Double
-            switch scale {
-            case .fixed(let h): height = h
-            case .auto: height = auto.height(for: w)
-            }
-            let model = LivePreviewModel(window: w, labels: labels, columns: Int(plotW), height: height)
-            let colW = plotW / CGFloat(max(1, Int(plotW)))
-            for b in model.breakColumns.sorted() {
-                let x = plotX + CGFloat(b) * colW
-                var edge = Path()
-                edge.move(to: CGPoint(x: x, y: 0)); edge.addLine(to: CGPoint(x: x, y: plotH))
-                ctx.stroke(edge, with: .color(Theme.warning), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                ctx.draw(Text(LivePreviewModel.segmentTag).font(.caption).foregroundStyle(Theme.textSecondary),
-                         at: CGPoint(x: x + 4, y: 2), anchor: .topLeading)
-            }
-            let unit = Self.laneHeight / CGFloat(max(height, 1e-9))
-            let limit = Float(height / 2)
-            for (i, lane) in model.lanes.enumerated() {
-                let mid = Self.laneHeight * (CGFloat(i) + 0.5)
-                ctx.draw(Text(lane.label).font(.caption.weight(.medium)).foregroundStyle(Theme.textPrimary),
-                         at: CGPoint(x: Theme.Space.s, y: mid), anchor: .leading)
-                func y(_ v: Float) -> CGFloat { mid - CGFloat(min(max(v, -limit), limit)) * unit }
-                var path = Path()
-                var open = false
-                for (c, e) in lane.columns.enumerated() {
-                    guard let e else { open = false; continue }
-                    let x = plotX + (CGFloat(c) + 0.5) * colW
-                    // Nothing is drawn across the start of a new segment.
-                    if !open || model.breakColumns.contains(c) { path.move(to: CGPoint(x: x, y: y(e.lo))) } else { path.addLine(to: CGPoint(x: x, y: y(e.lo))) }
-                    path.addLine(to: CGPoint(x: x, y: y(e.hi)))
-                    open = true
-                }
-                ctx.stroke(path, with: .color(Theme.accentInk), lineWidth: 1)
-            }
-            ctx.draw(Text(LivePreviewModel.heightText(height, auto: isAuto)).font(.caption.monospacedDigit()).foregroundStyle(Theme.textSecondary),
-                     at: CGPoint(x: 0, y: plotH + 3), anchor: .topLeading)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-    }
 }
 
 /// The auto lane height, re-measured every 2 s so the scale doesn't flicker frame to frame.
@@ -286,6 +229,9 @@ private final class AutoHeight {
     private var value: Double?
     private var measured = Date.distantPast
     var lastHeight: Double { value ?? 100 }
+
+    /// The plot view reports the height it drew with (it measures on its own cadence).
+    func record(_ h: Double) { value = h; measured = Date() }
 
     func height(for w: PreviewBuffer.Window) -> Double {
         if value == nil || Date().timeIntervalSince(measured) >= 2, w.count > 0 {
