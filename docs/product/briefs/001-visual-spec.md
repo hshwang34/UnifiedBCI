@@ -372,11 +372,11 @@ An Icon Composer `.icon` document (Xcode 26), plus a flat 1024 AppIcon fallback 
   - Dark/default: vertical gradient #0A1018 → #12304F.
   - Light appearance: #F2F7FF → #CFE3FF.
   - Tinted appearance: mono.
-- **Glyph layer 1 (glass layer):** a thin circle ("scalp seen from above"), diameter 54% of the canvas, 14 px stroke, #E8F3FF @ 90% (light variant #0A5FCF).
-- **Glyph layer 2:** one calm waveform crossing the circle horizontally, with a single rounded peak.
-  - Left half #E8F3FF @ 35%; right half a #5AA9FF → #58E0D6 gradient.
-  - 16 px stroke, round caps, a soft outer glow (aurora @ 30%, blur 24 px).
-- **Glyph layer 3:** one small solid dot (an electrode) at the upper right of the circle, #58E0D6, 28 px.
+- **Glyph layer 1:** a heavy ring ("scalp seen from above"), diameter 500 on the 1024 grid, 40 px stroke, #E8F3FF (light variant #0A5FCF). No nose notch.
+- **Glyph layer 2:** one calm signal with a single rounded peak at the centre, drawn entirely inside the ring (x 330–694 on the 1024 grid).
+  - Left half (before the peak) #6F829B; right half a #5AA9FF → #58E0D6 gradient.
+  - 36 px stroke, round caps. No glow.
+- Revised 2026-11-27: the earlier thin ring, the electrode dot and the glow were dropped because they thinned out at 16–32 px.
 - No threads, no wordmark, nothing resembling a third-party mark.
 - Replaces the default grid placeholder currently shown on Welcome. Test at 16, 32, 128 and 512.
 
