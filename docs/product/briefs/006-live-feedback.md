@@ -259,6 +259,7 @@ Tests
 - Two worker processes plus acquisition on a 16 GB Mac; evaluation is paused during live runs.
 
 ## Appendix — hand-run checklist on the real Cyton+Daisy (PM, decision #26)
+Run it in the bench order in [`docs/hardware-checklist.md`](../../hardware-checklist.md), which merges briefs 004–006 and adds the newer checks; record results here.
 Needs briefs 004 and 005 checklists passed. Record date, Mac, app commit, firmware, model used.
 
 | # | Step | Pass when |
