@@ -31,6 +31,7 @@ import Foundation
 ///     -BCIFailingWorker YES                    use a worker that dies before it is ready, to
 ///                                              show the "analysis unavailable" banner
 ///     -BCIWindowSize 1100x640                  content size of the project window for snapshots
+///     -BCIWindowOnPrimary YES                  centre the project window on the primary display (recordings)
 ///     -BCIResetFirstRun YES                    show the intro as on a first launch (brief 003)
 ///     -BCIIntroStep N                          start the intro at step N (0-based; implies the intro)
 ///     -BCIIntroTour YES                        with -BCISnapshotDir: snapshot every intro step
@@ -312,6 +313,15 @@ enum LaunchArguments {
         if let size = defaults.string(forKey: "BCIWindowSize")?.split(separator: "x").compactMap({ Double($0) }), size.count == 2 {
             try? await Task.sleep(for: .milliseconds(500))
             NSApp.windows.first { $0.title == session.name }?.setContentSize(NSSize(width: size[0], height: size[1]))
+        }
+        // Screen recordings: centre the project window on the primary display (the menu-bar
+        // screen), whichever display has focus, so every take is framed the same way.
+        if defaults.bool(forKey: "BCIWindowOnPrimary"), let screen = NSScreen.screens.first {
+            try? await Task.sleep(for: .milliseconds(200))
+            if let window = NSApp.windows.first(where: { $0.title == session.name }) {
+                let v = screen.visibleFrame, f = window.frame
+                window.setFrameOrigin(NSPoint(x: (v.midX - f.width / 2).rounded(), y: (v.midY - f.height / 2).rounded()))
+            }
         }
         if let goal = guideGoal { session.setGuideGoalForSnapshot(goal) }
         if defaults.bool(forKey: "BCIGuidePicker") {
