@@ -31,6 +31,7 @@ import Foundation
 ///     -BCIFailingWorker YES                    use a worker that dies before it is ready, to
 ///                                              show the "analysis unavailable" banner
 ///     -BCIWindowSize 1100x640                  content size of the project window for snapshots
+///     -BCIWindowOnPrimary YES                  centre every project window (also agent-opened) on the primary display
 ///     -BCIResetFirstRun YES                    show the intro as on a first launch (brief 003)
 ///     -BCIIntroStep N                          start the intro at step N (0-based; implies the intro)
 ///     -BCIIntroTour YES                        with -BCISnapshotDir: snapshot every intro step
@@ -253,11 +254,39 @@ enum LaunchArguments {
         #endif
     }
 
+    #if DEBUG
+    /// -BCIWindowOnPrimary YES (screen recordings): every project window, including ones a
+    /// coding agent opens later, is sized (-BCIWindowSize) and centred on the primary display
+    /// once, whichever display has focus, so every take is framed the same way.
+    private static var placed = Set<ObjectIdentifier>()
+    private static var placer: Timer?
+    private static func placeProjectWindowsIfAsked(_ workspace: Workspace) {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: "BCIWindowOnPrimary"), placer == nil else { return }
+        let size = defaults.string(forKey: "BCIWindowSize")?.split(separator: "x").compactMap { Double($0) }
+        let timer = Timer(timeInterval: 0.25, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                guard let screen = NSScreen.screens.first else { return }
+                let names = Set(workspace.sessions.values.map(\.name))
+                for window in NSApp.windows where window.isVisible && names.contains(window.title) && !placed.contains(ObjectIdentifier(window)) {
+                    placed.insert(ObjectIdentifier(window))
+                    if let size, size.count == 2 { window.setContentSize(NSSize(width: size[0], height: size[1])) }
+                    let v = screen.visibleFrame, f = window.frame
+                    window.setFrameOrigin(NSPoint(x: (v.midX - f.width / 2).rounded(), y: (v.midY - f.height / 2).rounded()))
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        placer = timer
+    }
+    #endif
+
     static func runOnce(_ workspace: Workspace) async {
         #if DEBUG
         guard !done else { return }
         done = true
         HitTestStress.startIfAsked()          // brief 009: -BCIHitTestStress YES
+        placeProjectWindowsIfAsked(workspace)
         let defaults = UserDefaults.standard
         let snapshots = defaults.string(forKey: "BCISnapshotDir").map { URL(fileURLWithPath: $0, isDirectory: true) }
         func snap(_ name: String, settle: Duration = .seconds(1.5)) async {
