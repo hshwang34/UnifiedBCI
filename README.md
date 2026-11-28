@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/readme-banner-dark.png">
+  <img alt="BCI Workspace — The whole BCI experiment. One app." src="docs/brand/readme-banner-light.png">
+</picture>
+
 # BCI Workspace
 
 A native macOS workspace for producing, inspecting, reproducing, and live-testing a BCI
@@ -247,3 +252,9 @@ notarized: `scripts/release.sh <version>` produces a stapled DMG in `build/relea
 
 Every BrainFlow device, graph editors, plugins, cloud accounts, clinical use, guaranteed
 motor-imagery performance. See PRD section 10.
+
+## License
+
+The code is under the [MIT License](LICENSE). The bundled example recording comes from the
+PhysioNet EEG Motor Movement/Imagery Dataset (ODC-BY); BrainFlow is MIT-licensed. Brand
+assets are in [`docs/brand/`](docs/brand/README.md).

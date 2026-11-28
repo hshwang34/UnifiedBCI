@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0A1018"/><stop offset="1" stop-color="#12304F"/></linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".07"/><stop offset=".45" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <linearGradient id="sig" gradientUnits="userSpaceOnUse" x1="330" y1="0" x2="694" y2="0">
+      <stop offset="0" stop-color="#6F829B"/><stop offset=".5" stop-color="#6F829B"/><stop offset=".5" stop-color="#5AA9FF"/><stop offset="1" stop-color="#58E0D6"/></linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+  <rect x="101" y="101" width="822" height="822" rx="184" fill="none" stroke="#fff" stroke-opacity=".08" stroke-width="2"/>
+  <circle cx="512" cy="512" r="250" fill="none" stroke="#E8F3FF" stroke-width="40"/>
+  <path d="M330 580 H410 C450 580 470 400 512 400 C554 400 574 580 614 580 H694" fill="none" stroke="url(#sig)" stroke-width="36" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
