@@ -275,6 +275,7 @@ closes the segment (`stopped`) before exit.
   assertion covers idle sleep only, not lid close.
 
 ## Appendix — hand-run checklist on the real Cyton+Daisy (PM, decision #26)
+Run it in the bench order in [`docs/hardware-checklist.md`](../../hardware-checklist.md), which merges briefs 004–006 and adds the newer checks; record results here.
 Record for each run: date, Mac model + macOS, app commit, firmware string, dongle port name,
 pass/fail per item, and anything odd. The brief is "shipped" only after a passing run.
 

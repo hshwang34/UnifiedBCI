@@ -244,6 +244,7 @@ one-line caveat above.
   a mixed recording is visible.
 
 ## Appendix — hand-run checklist on the real Cyton+Daisy (PM, decision #26)
+Run it in the bench order in [`docs/hardware-checklist.md`](../../hardware-checklist.md), which merges briefs 004–006 and adds the newer checks; record results here.
 Needs brief 004's checklist passed first. Record date, Mac, displays, app commit, firmware.
 
 | # | Step | Pass when |
